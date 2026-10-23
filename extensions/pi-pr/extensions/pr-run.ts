@@ -30,8 +30,8 @@ export function createPrPolicyStore(agentDir?: string) {
 }
 
 /** Time limit for each caller-supplied validation check; Git and gh helpers keep their shorter limits. */
-export function checkTimeoutMs(run?: PrRun): number {
-	return (run?.policy ?? DEFAULT_PR_POLICY).checkTimeoutMinutes * 60_000;
+export function checkTimeoutMs(run: PrRun): number {
+	return run.policy.checkTimeoutMinutes * 60_000;
 }
 
 /** One explicit /pr invocation; helper resumes never replenish these limits. */

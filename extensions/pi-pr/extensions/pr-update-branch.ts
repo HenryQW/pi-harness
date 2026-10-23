@@ -19,7 +19,9 @@ import {
 	parseNulPaths,
 	parseSingleOutputLine,
 	inspectGitOperation,
+	hasExactKeys,
 	isRecord,
+	pushWithLease,
 	readHead,
 	readRemoteOid,
 	requiredOid,
@@ -55,7 +57,7 @@ class StaleRebaseRoute extends Error {
 type Load = typeof loadCurrentPullRequest;
 
 export type UpdateBranchOptions = {
-	run?: PrRun;
+	run: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -95,7 +97,7 @@ async function readRecovery(path: string, signal?: AbortSignal): Promise<RebaseR
 	}
 	let record: unknown;
 	try { record = JSON.parse(raw); } catch { throw new Error(`Invalid branch update recovery is preserved at ${path}`); }
-	if (!isRecord(record) || Object.keys(record).sort().join(",") !== "identity,original,phase,remote,verified,version" ||
+	if (!isRecord(record) || !hasExactKeys(record, ["identity", "original", "phase", "remote", "verified", "version"]) ||
 		record.version !== 1 || !["pending", "verified", "published"].includes(record.phase as string) ||
 		typeof record.identity !== "string" || record.identity.length > 2048 ||
 		!isOid(record.original) || !isOid(record.remote) || (record.verified !== null && !isOid(record.verified)) ||
@@ -125,7 +127,7 @@ export async function inspectVerifiedRebaseRecovery(pr: CurrentPullRequest, opti
 export class PullRequestBranchUpdater {
 	readonly state: UpdateBranchState = { phase: "ready" };
 
-	private readonly run?: PrRun;
+	private readonly run: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -405,21 +407,17 @@ export class PullRequestBranchUpdater {
 				throw new Error("Verified branch no longer contains the frozen base");
 			}
 			if (remoteBefore === head) {
-				this.run?.observeRemote(head);
+				this.run.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };
 			}
 			await this.freshAuthority(head, true);
-			this.run?.beforePush(original, head);
+			this.run.beforePush(original, head);
 			this.state.phase = "blocked";
 			let pushError: unknown;
 			try {
-				await runChecked(this.exec, "git", [
-					"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-					"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-					`${head}:refs/heads/${this.authority.target.ref}`,
-				], this.execOptions());
+				await pushWithLease(this.exec, this.execOptions(), this.authority.target.fetchSource, this.authority.target.ref, original, head);
 			} catch (error) {
 				pushError = error;
 			}
@@ -430,7 +428,7 @@ export class PullRequestBranchUpdater {
 				throw new Error("Rebase push outcome is unknown; do not retry");
 			}
 			if (remote === head) {
-				this.run?.observeRemote(head);
+				this.run.observeRemote(head);
 				await this.writeRecovery("published", head);
 				this.state.phase = "published";
 				return { kind: "published", head };

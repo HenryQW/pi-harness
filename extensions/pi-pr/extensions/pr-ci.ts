@@ -15,6 +15,7 @@ import {
 	inspectWorktreeState,
 	isAncestor,
 	parseSingleOutputLine,
+	pushWithLease,
 	readHead,
 	readRemoteOid,
 	requiredOid,
@@ -122,7 +123,7 @@ type CiFixPhase = "ready" | "collecting" | "collected" | "published" | "blocked"
 type CiFixState = { phase: CiFixPhase };
 
 export type PullRequestCiFixOptions = {
-	run?: PrRun;
+	run: PrRun;
 	cwd: string;
 	authority: CurrentPullRequest;
 	signal?: AbortSignal;
@@ -301,7 +302,7 @@ function errorMessage(error: unknown): string {
 export class PullRequestCiFixer {
 	readonly state: CiFixState = { phase: "ready" };
 
-	private readonly run?: PrRun;
+	private readonly run: PrRun;
 	private readonly cwd: string;
 	private readonly authority: CurrentPullRequest;
 	private readonly signal?: AbortSignal;
@@ -741,14 +742,10 @@ export class PullRequestCiFixer {
 				const repairHead = await this.validateRepairHead();
 				const original = this.authority.head.oid;
 				await this.finalPublishRevalidation(original, repairHead);
-				this.run?.beforePush(original, repairHead);
+				this.run.beforePush(original, repairHead);
 				let pushError: unknown;
 				try {
-					await runChecked(this.exec, "git", [
-						"push", "--porcelain", "--no-follow-tags", `--force-with-lease=refs/heads/${this.authority.target.ref}:${original}`,
-						"--recurse-submodules=no", "--", this.authority.target.fetchSource,
-						`${repairHead}:refs/heads/${this.authority.target.ref}`,
-					], this.options());
+					await pushWithLease(this.exec, this.options(), this.authority.target.fetchSource, this.authority.target.ref, original, repairHead);
 				} catch (error) {
 					pushError = error;
 				}
@@ -765,7 +762,7 @@ export class PullRequestCiFixer {
 					throw new Error(`CI repair push outcome is unknown: ${errorMessage(error)}`);
 				}
 				if (postcondition === repairHead) {
-					this.run?.observeRemote(repairHead);
+					this.run.observeRemote(repairHead);
 					this.state.phase = "published";
 					return { kind: "published", head: repairHead, attempt: "applied" };
 				}

@@ -93,7 +93,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	authority = { ...authority, head: { ...authority.head, oid: committed.head },
 		target: { ...authority.target, remoteOid: committed.head } };
 	writeFileSync(join(root, "file.txt"), "updated again\n");
-	const resumed = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+	const resumed = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	await resumed.inspect();
 	const second = await resumed.commit(["file.txt"], "fix: follow up");
@@ -108,7 +108,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	authority = { ...authority, head: { ...authority.head, oid: second.head },
 		target: { ...authority.target, remoteOid: second.head } };
 	await t.test("validation rejects a clean commit added after inspection", async () => {
-		const changed = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+		const changed = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 			loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 		await changed.inspect();
 		writeFileSync(join(root, "file.txt"), "unreviewed work\n");
@@ -122,7 +122,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	});
 	git("reset", "--hard", second.head);
 	git("mv", "--", "*.txt", "renamed.txt");
-	const renamed = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+	const renamed = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	assert.deepEqual((await renamed.inspect()).paths, ["renamed.txt", "*.txt"]);
 	await assert.rejects(renamed.commit(["renamed.txt"], "fix: rename"), /Unrelated staged changes/);
@@ -131,7 +131,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	assert.equal(git("status", "--porcelain=v1"), "");
 	git("reset", "--hard", second.head);
 	writeFileSync(join(root, "file.txt"), "commit response will be lost\n");
-	const uncertain = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+	const uncertain = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	await uncertain.inspect();
 	loseCommitResponse = true;
@@ -144,7 +144,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	writeFileSync(join(root, "file.txt"), "local work on stale head\n");
 	authority = { ...authority, local: { worktree: "dirty", head: "equal" },
 		head: { ...authority.head, oid: second.head }, target: { ...authority.target, remoteOid: second.head } };
-	const stale = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+	const stale = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	// Pending work on a non-descendant HEAD may be committed; validation and publication wait for sync.
 	assert.equal((await stale.inspect()).diverged, true);
@@ -155,7 +155,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	await assert.rejects(stale.validate([]), /not a descendant/);
 	assert.equal(pushes, 2);
 	git("reset", "--hard", oldHead);
-	const cleanStale = new PullRequestWorkPublisher({ cwd: root, agentDir: join(dir, "agent"), authority, exec,
+	const cleanStale = new PullRequestWorkPublisher({ run: new PrRun(), cwd: root, agentDir: join(dir, "agent"), authority, exec,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
 	await assert.rejects(cleanStale.inspect(), /not a descendant/);
 });

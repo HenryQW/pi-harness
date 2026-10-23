@@ -164,6 +164,8 @@ function packageCommand(name: string): CommandSpec {
 	return { name, source: "skill", origin: "package" };
 }
 
+const invocation = (run = new PrRun({ ciWaitMinutes: 0 })) => Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} });
+
 function harness(options: HarnessOptions) {
 	const calls: Call[] = [];
 	const messages: Array<{ content: string; options: unknown }> = [];
@@ -310,43 +312,44 @@ function harness(options: HarnessOptions) {
 			},
 		},
 	} as unknown as ExtensionCommandContext;
+	const handler = createPrCommandHandler(pi, {
+		needsFeedbackAttention: async () => options.feedbackChecks?.[feedbackIndex++] ?? false,
+		inspectSweepRecovery: options.inspectSweepRecovery,
+		refreshDelayMs: 0,
+		ciPollMs: 0,
+		refreshAttempts: options.refreshAttempts,
+		async syncLocalHead({ authority }) {
+			events.push("sync");
+			syncs.push(authority.head.oid);
+			return { kind: "fast-forwarded", head: authority.head.oid };
+		},
+		async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
+			if (options.states[stateIndex] === null) {
+				events.push("load");
+				return noPullRequest();
+			}
+			const [api, loadContext, ...rest] = args;
+			return await discoverCurrentPullRequest(api, options.codexReview
+				? { cwd: loadContext.cwd, signal: loadContext.signal, codexReview: true }
+				: loadContext, ...rest);
+		},
+		markWorkflowPromptQueued(identity, queued) { if (queued) queuedPrompts.push(identity); },
+		async reserveWorkflow(reservation) {
+			events.push("reserve");
+			reservations.push(reservation);
+			return {
+				runId: workflowRunId,
+				action: options.reservationAction ?? workflowActions[reservation.route],
+			};
+		},
+		releaseWorkflow(runId) {
+			events.push("release");
+			releases.push(runId);
+		},
+	});
 	return {
 		pi,
-		handler: createPrCommandHandler(pi, {
-			needsFeedbackAttention: async () => options.feedbackChecks?.[feedbackIndex++] ?? false,
-			inspectSweepRecovery: options.inspectSweepRecovery,
-			refreshDelayMs: 0,
-			ciPollMs: 0,
-			refreshAttempts: options.refreshAttempts,
-			async syncLocalHead({ authority }) {
-				events.push("sync");
-				syncs.push(authority.head.oid);
-				return { kind: "fast-forwarded", head: authority.head.oid };
-			},
-			async loadCurrentPullRequest(...args: Parameters<typeof discoverCurrentPullRequest>) {
-				if (options.states[stateIndex] === null) {
-					events.push("load");
-					return noPullRequest();
-				}
-				const [api, loadContext, ...rest] = args;
-				return await discoverCurrentPullRequest(api, options.codexReview
-					? { cwd: loadContext.cwd, signal: loadContext.signal, codexReview: true }
-					: loadContext, ...rest);
-			},
-			markWorkflowPromptQueued(identity, queued) { if (queued) queuedPrompts.push(identity); },
-			async reserveWorkflow(reservation) {
-				events.push("reserve");
-				reservations.push(reservation);
-				return {
-					runId: workflowRunId,
-					action: options.reservationAction ?? workflowActions[reservation.route],
-				};
-			},
-			releaseWorkflow(runId) {
-				events.push("release");
-				releases.push(runId);
-			},
-		}),
+		handler: (args: string, ctx: ExtensionCommandContext, onRouteResolved = invocation()) => handler(args, ctx, onRouteResolved),
 		context,
 		calls,
 		messages,
@@ -402,19 +405,19 @@ const routes: Array<{ name: string; state: PullRequestSpec | null; command: stri
 test("signals route resolution before dispatch, notification, or mutation", async () => {
 	const create = harness({ states: [null], commands: [packageCommand("skill:pi-pr-create")] });
 	await create.handler("", create.context, Object.assign(() => create.events.push("route"), {
-		sessionGeneration: 1, assertCurrent() {},
+		sessionGeneration: 1, run: new PrRun(), assertCurrent() {},
 	}));
 	assert.deepEqual(create.events, ["load", "route", "reserve", "send"]);
 
 	const noAction = harness({ states: [{ state: "MERGED" }] });
 	await noAction.handler("", noAction.context, Object.assign(() => noAction.events.push("route"), {
-		sessionGeneration: 1, assertCurrent() {},
+		sessionGeneration: 1, run: new PrRun(), assertCurrent() {},
 	}));
 	assert.deepEqual(noAction.events, ["load", "route", "notify"]);
 
 	const merge = harness({ states: [{}, {}] });
 	await merge.handler("", merge.context, Object.assign(() => merge.events.push("route"), {
-		sessionGeneration: 1, assertCurrent() {},
+		sessionGeneration: 1, run: new PrRun(), assertCurrent() {},
 	}));
 	assert.deepEqual(merge.events, ["load", "route", "confirm", "load", "merge"]);
 });
@@ -447,7 +450,7 @@ test("dispatches creation for dirty-only zero-ahead work", async () => {
 		},
 	});
 
-	assert.equal(await handler("", app.context), "create");
+	assert.equal(await handler("", app.context, invocation()), "create");
 	assert.deepEqual(app.messages, [{
 		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
 		options: { expandPromptTemplates: true },
@@ -470,7 +473,7 @@ test("links one inferred target and continues to a confirmed guarded merge", asy
 		},
 	});
 
-	assert.equal(await handler("", app.context), "merge");
+	assert.equal(await handler("", app.context, invocation()), "merge");
 	assert(linked);
 	assert.equal(app.confirmations.length, 1);
 	assert.equal(mutationCalls(app.calls).length, 1);
@@ -491,7 +494,7 @@ test("a linked branch does not continue when the fresh PR head changes", async (
 			return linked;
 		},
 	});
-	await assert.rejects(handler("", app.context), /configured pull request context changed/);
+	await assert.rejects(handler("", app.context, invocation()), /configured pull request context changed/);
 	assert(linked);
 	assert.equal(mutationCalls(app.calls).length, 0);
 	assert.deepEqual(app.confirmations, []);
@@ -503,7 +506,7 @@ test("returns silently outside a Git worktree", async () => {
 		loadCurrentPullRequest: async () => ({ kind: "inactive" }),
 	});
 
-	assert.equal(await handler("", app.context), "none");
+	assert.equal(await handler("", app.context, invocation()), "none");
 	assert.deepEqual(app.notifications, []);
 	assert.deepEqual(app.messages, []);
 });
@@ -514,7 +517,7 @@ test("explains an inactive repository whose remotes are not on GitHub", async ()
 		loadCurrentPullRequest: async () => ({ kind: "inactive", nonGitHubHosts: ["gitea.example"] }),
 	});
 
-	assert.equal(await handler("", app.context), "none");
+	assert.equal(await handler("", app.context, invocation()), "none");
 	assert.deepEqual(app.notifications, [{
 		message: "/pr needs a GitHub remote: gh has no credentials for gitea.example; for GitHub Enterprise, run gh auth login --hostname <host>",
 		type: "warning",
@@ -529,7 +532,7 @@ test("does not route an observed GitHub lookup failure to PR creation", async ()
 		},
 	});
 
-	await assert.rejects(handler("", app.context), /Load observed pull request failed/);
+	await assert.rejects(handler("", app.context, invocation()), /Load observed pull request failed/);
 	assert.deepEqual(app.messages, []);
 });
 
@@ -574,7 +577,6 @@ test("merges with the configured merge method", async () => {
 
 test("waits for running CI within the invocation budget, then re-reads GitHub before merging", async () => {
 	const running: PullRequestSpec = { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] };
-	const invocation = (run: PrRun) => Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} });
 
 	const merged = harness({ states: [running, running, {}, {}] });
 	assert.equal(await merged.handler("", merged.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "merge");
@@ -601,7 +603,6 @@ test("waits for running CI within the invocation budget, then re-reads GitHub be
 });
 
 test("the opt-in Codex review gate waits within the CI budget and keeps P0/P1 findings from the merge prompt", async () => {
-	const invocation = (run: PrRun) => Object.assign(() => {}, { sessionGeneration: 1, run, assertCurrent() {} });
 	const codexRequests = (calls: Call[]) => calls.filter(({ args }) => args.some((arg) => arg.startsWith("repos/acme/project/issues/42/")));
 
 	const off = harness({ states: [{ codexReactions: ["eyes"] }, {}] });
@@ -687,6 +688,7 @@ test("checks command generation after discovery and reservation and immediately 
 
 		await assert.rejects(app.handler("", app.context, Object.assign(() => {}, {
 			sessionGeneration: 7,
+			run: new PrRun(),
 			assertCurrent() {
 				checks += 1;
 				if (checks === failAt) throw new Error("session replaced");
@@ -974,6 +976,6 @@ test("flagless /pr routes freshly detected standalone feedback before merge", as
 			return { runId: workflowRunId, action: "start" };
 		},
 	});
-	assert.equal(await handler("", app.context), "sweep");
+	assert.equal(await handler("", app.context, invocation()), "sweep");
 	assert.equal(app.messages[0]?.content, `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start`);
 });
