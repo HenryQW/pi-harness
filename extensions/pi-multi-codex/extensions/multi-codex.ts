@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createConfigStore, extensionConfigDir, field, parsers, registerConfigReporting, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
@@ -241,15 +241,6 @@ function loadStateSync(): UsageState {
 	}
 }
 
-async function loadState(signal?: AbortSignal): Promise<UsageState> {
-	try {
-		return parseState(JSON.parse(await readFile(cachePath(), { encoding: "utf8", signal }))) ?? emptyState(true);
-	} catch (error) {
-		signal?.throwIfAborted();
-		return emptyState(!isMissingCacheFile(error));
-	}
-}
-
 async function saveState(state: UsageState, signal?: AbortSignal): Promise<void> {
 	signal?.throwIfAborted();
 	const file = cachePath();
@@ -326,8 +317,8 @@ function checkedRecently(snapshot: UsageSnapshot | undefined, identity: SlotIden
 	);
 }
 
-function owns(lock: UsageLock | undefined, slot: number, owner: string, accountHash: string): boolean {
-	return lock?.slot === slot && lock.owner === owner && lock.accountHash === accountHash;
+function owns(lock: UsageLock | undefined, owner: string, accountHash: string): boolean {
+	return lock?.owner === owner && lock.accountHash === accountHash;
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -408,9 +399,9 @@ class CodexQuotaStatus {
 	private readonly heartbeats = new Map<number, { owner: string; timer: Timer }>();
 	private readonly active = new Map<number, Promise<void>>();
 	private writes: Promise<void> = Promise.resolve();
-	private onChange: () => void = () => undefined;
+	private readonly onChange: () => void;
 
-	setOnChange(onChange: () => void): void {
+	constructor(onChange: () => void) {
 		this.onChange = onChange;
 	}
 
@@ -420,12 +411,12 @@ class CodexQuotaStatus {
 
 	private async state(): Promise<UsageState> {
 		await this.writes;
-		return loadState();
+		return loadStateSync();
 	}
 
 	private change<T>(change: (state: UsageState) => { value: T; write: boolean }, signal?: AbortSignal): Promise<T | undefined> {
 		const operation = this.writes.then(() => withCacheMutex(async (operationSignal) => {
-			const state = await loadState(operationSignal);
+			const state = loadStateSync();
 			if (state.untrusted) return undefined;
 			const result = change(state);
 			if (result.write) await saveState(state, operationSignal);
@@ -536,17 +527,14 @@ class CodexQuotaStatus {
 			state.locks.set(slot, { slot, owner, accountHash: identity.accountHash, heartbeatAt: now });
 			return { value: true, write: true };
 		}, signal);
-		if (!claimed) return undefined;
-
-		const lock = (await this.state()).locks.get(slot);
-		return owns(lock, slot, owner, identity.accountHash) ? owner : undefined;
+		return claimed ? owner : undefined;
 	}
 
 	private startHeartbeat(slot: number, owner: string, accountHash: string, signal: AbortSignal): void {
 		const timer = setInterval(() => {
 			void this.change((state) => {
 				const lock = state.locks.get(slot);
-				if (!lock || !owns(lock, slot, owner, accountHash)) return { value: false, write: false };
+				if (!lock || !owns(lock, owner, accountHash)) return { value: false, write: false };
 				state.locks.set(slot, { ...lock, heartbeatAt: Date.now() });
 				return { value: true, write: true };
 			}, signal).then((kept) => {
@@ -565,7 +553,7 @@ class CodexQuotaStatus {
 	}
 
 	private async stillOwn(slot: number, owner: string, accountHash: string): Promise<boolean> {
-		return owns((await this.state()).locks.get(slot), slot, owner, accountHash);
+		return owns((await this.state()).locks.get(slot), owner, accountHash);
 	}
 
 	private identityStillCurrent(slot: number, accountHash: string): boolean {
@@ -585,7 +573,7 @@ class CodexQuotaStatus {
 				return { value: false, write: false };
 			}
 			const lock = state.locks.get(slot);
-			if (!owns(lock, slot, owner, identity.accountHash)) return { value: false, write: false };
+			if (!owns(lock, owner, identity.accountHash)) return { value: false, write: false };
 			const previous = state.slots.get(slot);
 			const checkedAt = Date.now();
 			if (outcome && outcome.reset > checkedAt) {
@@ -622,7 +610,6 @@ class CodexQuotaStatus {
 
 	private async refreshSlot(slot: number, identity: SlotIdentity, refresh: QuotaRefresh): Promise<void> {
 		let owner: string | undefined;
-		let discard = false;
 		try {
 			owner = await this.claim(slot, identity, refresh.session.signal);
 			if (!owner || this.refreshContext !== refresh) return;
@@ -631,10 +618,7 @@ class CodexQuotaStatus {
 			const authSignal = AbortSignal.any([refresh.session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
 			const apiKey = await raceWithSignal(refresh.resolveSlotAuth(slot), authSignal);
 			if (!apiKey) throw new Error("Codex OAuth auth did not provide a bearer token.");
-			if (this.refreshContext !== refresh || !this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) {
-				discard = true;
-				return;
-			}
+			if (this.refreshContext !== refresh || !this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) return;
 
 			const fetchSignal = AbortSignal.any([refresh.session.signal, AbortSignal.timeout(OPERATION_TIMEOUT_MS)]);
 			const response = await fetch(USAGE_URL, {
@@ -647,13 +631,9 @@ class CodexQuotaStatus {
 			if (!response.ok) throw new Error(`Codex usage request failed (${response.status}).`);
 			const usage = parseCodexUsage(await response.json());
 			if (!usage) throw new Error("Codex usage response has no usable seven-day window.");
-			if (!this.identityStillCurrent(slot, identity.accountHash) || !(await this.stillOwn(slot, owner, identity.accountHash))) {
-				discard = true;
-				return;
-			}
 			await this.finish(slot, owner, identity, usage, refresh);
 		} catch {
-			if (!refresh.session.signal.aborted && !discard && owner) await this.finish(slot, owner, identity, undefined, refresh);
+			if (!refresh.session.signal.aborted && owner) await this.finish(slot, owner, identity, undefined, refresh);
 		} finally {
 			if (owner) {
 				this.stopHeartbeat(slot, owner);
@@ -808,7 +788,11 @@ function sessionHasAgentWork(ctx: ExtensionContext): boolean {
 export default function multiCodex(pi: ExtensionAPI): void {
 	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
 	if (!native) return;
-	const quota = new CodexQuotaStatus();
+	const quota = new CodexQuotaStatus(() => {
+		if (!sessionContext) return;
+		syncSlots();
+		updateFooter();
+	});
 	const configStore = createConfigStore({
 		extensionId: "pi-multi-codex",
 		fields: { autoSwitchOn429: field(parsers.boolean(), true) },
@@ -913,12 +897,6 @@ export default function multiCodex(pi: ExtensionAPI): void {
 			selectingAutomatically = false;
 		}
 	};
-
-	quota.setOnChange(() => {
-		if (!sessionContext) return;
-		syncSlots();
-		updateFooter();
-	});
 
 	syncSlots();
 
