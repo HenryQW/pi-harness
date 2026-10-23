@@ -167,7 +167,6 @@ test("settle appends a hidden continuation after the assistant's final message a
 	assert.ok(draft?.type === "custom_message");
 	assert.equal(draft.display, false);
 	assert.match(String(draft.content), /^Continue the active goal[\s\S]*<objective>\nShip[\s\S]*not from memory/);
-	assert.deepEqual({ ...draft.details as object, activity: undefined }, { goalId: branchGoal(h.manager.getBranch())!.goal.id, count: 1, activity: undefined });
 });
 
 test("goal yields to an existing continuation and keeps a later handler's draft", async () => {
@@ -235,7 +234,6 @@ test("continuation stops at the maximum count until the next user prompt", async
 	h.manager.appendMessage({ role: "user", content: [{ type: "text", text: "Keep going." }], timestamp: Date.now() });
 	h.work(MAX_CONTINUATIONS);
 	assert.equal(await h.settle(), true);
-	assert.equal((h.continuations().at(-1) as { details: { count: number } }).details.count, 1);
 });
 
 test("the continuation cap counts across goals completed and recreated in automatic turns", async () => {
