@@ -38,8 +38,8 @@ test("a valid config round-trips its shape and derives schedule, defaults, and l
 	assert.equal(jobEnabled(config.jobs[1]!), false);
 	assert.equal(jobNotify(config.jobs[0]!), "notify");
 	assert.equal(jobNotify(config.jobs[1]!), "none");
-	assert.deepEqual(effectiveLimits(config), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
-	assert.deepEqual(effectiveLimits(load({ jobs: [], limits: { maxTurns: 5 } }).value), { maxTurns: 5, idleMinutes: 10, maxMinutes: 30 });
+	assert.deepEqual(effectiveLimits(config.limits), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
+	assert.deepEqual(effectiveLimits(load({ jobs: [], limits: { maxTurns: 5 } }).value.limits), { maxTurns: 5, idleMinutes: 10, maxMinutes: 30 });
 });
 
 test("timeout minutes cannot exceed the executor timer range", () => {
@@ -48,7 +48,7 @@ test("timeout minutes cannot exceed the executor timer range", () => {
 	for (const field of ["idleMinutes", "maxMinutes"]) {
 		const loaded = load({ jobs: [], limits: { [field]: maxMinutes + 1 } });
 		assert.deepEqual(loaded.issues.map((issue) => `${issue.key}: ${issue.message}`), [`limits.${field}: must be positive minutes within the 2147483647 ms timer limit`]);
-		assert.deepEqual(effectiveLimits(loaded.value), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
+		assert.deepEqual(effectiveLimits(loaded.value.limits), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
 	}
 });
 
@@ -88,9 +88,9 @@ test("a bad job is dropped and reported while the other jobs load", () => {
 test("unknown keys and invalid limits warn and use defaults", () => {
 	const loaded = load({ jobs: [], limitz: {}, limits: { maxTurns: 0, idleMinutes: 5, extra: 1 } });
 	assert.deepEqual(loaded.issues.map(({ kind, key }) => `${kind} ${key}`), ["unknown-key limitz", "unknown-key limits.extra", "invalid-value limits.maxTurns"]);
-	assert.deepEqual(effectiveLimits(loaded.value), { maxTurns: 50, idleMinutes: 5, maxMinutes: 30 });
+	assert.deepEqual(effectiveLimits(loaded.value.limits), { maxTurns: 50, idleMinutes: 5, maxMinutes: 30 });
 
 	const pair = load({ jobs: [], limits: { maxTurns: 3, idleMinutes: 30, maxMinutes: 10 } });
 	assert.deepEqual(pair.issues.map(({ key, message }) => `${key}: ${message}`), ["limits: maxMinutes must be greater than idleMinutes"]);
-	assert.deepEqual(effectiveLimits(pair.value), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
+	assert.deepEqual(effectiveLimits(pair.value.limits), { maxTurns: 50, idleMinutes: 10, maxMinutes: 30 });
 });
