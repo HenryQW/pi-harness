@@ -2,17 +2,18 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import fs, { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
+import timers, { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { Compile } from "typebox/compile";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkoutAdmission } from "@henryqw/pi-herdr";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
-import { atomicState, cancelJob, outputTail, readJob, readPrivate, terminal, writePrivate, type JobSpec } from "../internal/command-state.ts";
+import { atomicState, cancelJob, listJobs, outputTail, readJob, readPrivate, terminal, writePrivate, type JobSpec } from "../internal/command-state.ts";
 
 const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const policy = { runtimeMs: 5000, outputBytes: 4096, concurrency: 4, retainedJobs: 100 };
@@ -49,12 +50,61 @@ test("installed standalone runner drains substantial output and trailing bytes b
 		await mkdir(installed, { recursive: true });
 		await cp(new URL("../package.json", import.meta.url), join(installed, "package.json"));
 		await cp(new URL("../dist", import.meta.url), join(installed, "dist"), { recursive: true });
+		await symlink(await realpath(new URL("../node_modules/@henryqw/pi-herdr", import.meta.url)), join(f.root, "node_modules", "@henryqw", "pi-herdr"), "dir");
 		assert.equal(await start(f.dir, f.spec, join(installed, "dist", "command-runner.js")).done, 0);
 		const job = await readJob(f.dir);
 		assert.equal(job.state, expected); assert.equal(job.result?.exitCode, code);
 		assert.equal(await readFile(job.outputPath, "utf8"), code ? "failed" : output);
 		assert.equal(job.claim?.paneId, "pane");
 	}
+});
+
+test("private readers wait for incomplete publication and early cancellation; claims remain write-once", async (t) => {
+	const f = await fixture(t, "true");
+	const file = join(f.dir, "claim.json");
+	const claim = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: "workspace", tabId: "tab", paneId: "pane" };
+	let resume!: () => void, paused!: () => void;
+	const gate = new Promise<void>((resolve) => { resume = resolve; });
+	const opened = new Promise<void>((resolve) => { paused = resolve; });
+	const open = fs.open;
+	const openMock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		const handle = await open(...args);
+		if (args[0] === file && args[1] === "wx") {
+			const write = handle.writeFile.bind(handle);
+			t.mock.method(handle, "writeFile", async (...args: Parameters<typeof handle.writeFile>) => {
+				paused(); await gate; return await write(...args);
+			});
+		}
+		return handle;
+	});
+	syncBuiltinESMExports();
+	const publication = writePrivate(file, claim).then(() => atomicState(f.dir, {
+		...claim, state: "cancelled", updatedAt: Date.now(), exitCode: null, signal: null,
+	}));
+	await opened;
+	// Release the real, empty file only after the reader encounters the publisher's lock.
+	const waitMock = t.mock.method(timers, "setTimeout", async () => { resume(); await publication; });
+	syncBuiltinESMExports();
+	try {
+		const [job] = await listJobs(f.root);
+		assert.deepEqual(job?.claim, claim);
+		assert.equal(job?.state, "cancelled");
+	} finally {
+		resume(); await publication;
+		openMock.mock.restore(); waitMock.mock.restore(); syncBuiltinESMExports();
+	}
+	await assert.rejects(writePrivate(file, { ...claim, runnerId: randomUUID() }), { code: "EEXIST" });
+	assert.deepEqual(await readPrivate(file), claim);
+});
+
+test("malformed private files are refused and never replaced", async (t) => {
+	const f = await fixture(t, "true");
+	const file = join(f.dir, "claim.json");
+	await writeFile(file, "{", { mode: 0o600 });
+	await assert.rejects(readPrivate(file), SyntaxError);
+	await assert.rejects(readJob(f.dir), SyntaxError);
+	await assert.rejects(writePrivate(file, {}), { code: "EEXIST" });
+	assert.equal(await readFile(file, "utf8"), "{");
 });
 
 test("runtime and output limits are terminal errors with bounded readable logs", async (t) => {

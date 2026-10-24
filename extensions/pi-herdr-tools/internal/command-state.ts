@@ -2,6 +2,8 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { withWorktreeLock } from "@henryqw/pi-herdr";
 
 export const COMMAND_STATES = ["starting", "running", "cancelling", "succeeded", "failed", "cancelled", "timeout", "output_limit", "unknown"] as const;
 export type CommandState = typeof COMMAND_STATES[number];
@@ -55,7 +57,23 @@ export async function privateDirectory(dir: string, create = false): Promise<voi
 	const info = await lstat(dir);
 	if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) throw new Error(`Command directory is not private: ${dir}`);
 }
+async function withPrivateLock<T>(dir: string, operation: () => Promise<T>): Promise<T> {
+	// The job directory exists before publication; the state file need not exist yet.
+	for (let attempt = 0; ; attempt++) {
+		let entered = false;
+		try {
+			return await withWorktreeLock(dir, () => { entered = true; return operation(); });
+		} catch (error) {
+			// Retry only lock acquisition, never a read, write, or lock-release failure.
+			if (entered || (error as NodeJS.ErrnoException).code !== "ELOCKED" || attempt >= 400) throw error;
+		}
+		await delay(25);
+	}
+}
 export async function readPrivate(file: string, max = 65_536): Promise<unknown | undefined> {
+	return await withPrivateLock(dirname(file), () => readPrivateUnlocked(file, max));
+}
+async function readPrivateUnlocked(file: string, max = 65_536): Promise<unknown | undefined> {
 	let handle;
 	try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
@@ -69,10 +87,12 @@ export async function readPrivate(file: string, max = 65_536): Promise<unknown |
 	} finally { await handle.close(); }
 }
 export async function writePrivate(file: string, value: unknown): Promise<void> {
-	const handle = await open(file, "wx", 0o600);
-	try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); }
-	finally { await handle.close(); }
-	await syncDirectory(dirname(file));
+	await withPrivateLock(dirname(file), async () => {
+		const handle = await open(file, "wx", 0o600);
+		try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); }
+		finally { await handle.close(); }
+		await syncDirectory(dirname(file));
+	});
 }
 async function syncDirectory(dir: string): Promise<void> {
 	const handle = await open(dir, "r");
@@ -81,46 +101,54 @@ async function syncDirectory(dir: string): Promise<void> {
 export async function atomicState(dir: string, state: RunnerState): Promise<void> {
 	const temp = join(dir, `state-${randomUUID()}.tmp`);
 	await writePrivate(temp, state);
-	await rename(temp, join(dir, "state.json"));
-	await syncDirectory(dir);
+	await withPrivateLock(dir, async () => {
+		await rename(temp, join(dir, "state.json"));
+		await syncDirectory(dir);
+	});
 }
 export async function readJob(dir: string): Promise<Job> {
 	await privateDirectory(dir);
-	const spec = parseSpec(await readPrivate(join(dir, "spec.json")));
-	if (dir.split("/").at(-1) !== spec.id) throw new Error("Command directory identity does not match its specification.");
-	const rawClaim = await readPrivate(join(dir, "claim.json"));
-	const claim = rawClaim === undefined ? undefined : parseIdentity(rawClaim, spec);
-	const rawResult = await readPrivate(join(dir, "state.json"));
-	let result: RunnerState | undefined;
-	if (rawResult !== undefined) {
-		const r = record(rawResult);
-		const identity = parseIdentity(r, spec);
-		if (!claim || !sameIdentity(claim, identity) || !COMMAND_STATES.includes(r.state as CommandState) ||
-			!integer(r.updatedAt, spec.createdAt, Number.MAX_SAFE_INTEGER) || !(r.exitCode === null || integer(r.exitCode, 0, 255)) ||
-			!(r.signal === null || text(r.signal, 32)) || (r.failure !== undefined && (!text(r.failure, 64) || !/^[a-zA-Z0-9_]+$/.test(r.failure)))) throw new Error("Invalid runner completion; ownership remains unknown.");
-		if (r.state === "succeeded" && (r.exitCode !== 0 || r.signal !== null)) throw new Error("Invalid successful command completion.");
-		result = r as unknown as RunnerState;
-	}
-	const dispatch = await readPrivate(join(dir, "dispatch.json"));
-	if (dispatch !== undefined) {
-		const d = record(dispatch);
-		if (d.id !== spec.id || d.token !== spec.token || d.workspaceId !== spec.workspaceId || !text(d.tabId) || !text(d.paneId) ||
-			(claim && (d.tabId !== claim.tabId || d.paneId !== claim.paneId))) throw new Error("Herdr terminal identity does not match the command runner.");
-	}
-	const uncertain = await readPrivate(join(dir, "uncertain.json"));
-	if (uncertain !== undefined) {
-		const u = record(uncertain);
-		if (u.id !== spec.id || u.token !== spec.token) throw new Error("Foreign dispatch record.");
-	}
-	const state = result && (terminal(result.state) || Date.now() - result.updatedAt < 10_000) ? result.state
-		: !claim && uncertain === undefined && Date.now() - spec.createdAt < 10_000 ? "starting" : "unknown";
-	return { spec, dir, claim, result, state, outputPath: join(dir, "output.log") };
+	return await withPrivateLock(dir, async () => {
+		const spec = parseSpec(await readPrivateUnlocked(join(dir, "spec.json")));
+		if (dir.split("/").at(-1) !== spec.id) throw new Error("Command directory identity does not match its specification.");
+		const rawClaim = await readPrivateUnlocked(join(dir, "claim.json"));
+		const claim = rawClaim === undefined ? undefined : parseIdentity(rawClaim, spec);
+		const rawResult = await readPrivateUnlocked(join(dir, "state.json"));
+		let result: RunnerState | undefined;
+		if (rawResult !== undefined) {
+			const r = record(rawResult);
+			const identity = parseIdentity(r, spec);
+			if (!claim || !sameIdentity(claim, identity) || !COMMAND_STATES.includes(r.state as CommandState) ||
+				!integer(r.updatedAt, spec.createdAt, Number.MAX_SAFE_INTEGER) || !(r.exitCode === null || integer(r.exitCode, 0, 255)) ||
+				!(r.signal === null || text(r.signal, 32)) || (r.failure !== undefined && (!text(r.failure, 64) || !/^[a-zA-Z0-9_]+$/.test(r.failure)))) throw new Error("Invalid runner completion; ownership remains unknown.");
+			if (r.state === "succeeded" && (r.exitCode !== 0 || r.signal !== null)) throw new Error("Invalid successful command completion.");
+			result = r as unknown as RunnerState;
+		}
+		const dispatch = await readPrivateUnlocked(join(dir, "dispatch.json"));
+		if (dispatch !== undefined) {
+			const d = record(dispatch);
+			if (d.id !== spec.id || d.token !== spec.token || d.workspaceId !== spec.workspaceId || !text(d.tabId) || !text(d.paneId) ||
+				(claim && (d.tabId !== claim.tabId || d.paneId !== claim.paneId))) throw new Error("Herdr terminal identity does not match the command runner.");
+		}
+		const uncertain = await readPrivateUnlocked(join(dir, "uncertain.json"));
+		if (uncertain !== undefined) {
+			const u = record(uncertain);
+			if (u.id !== spec.id || u.token !== spec.token) throw new Error("Foreign dispatch record.");
+		}
+		const state = result && (terminal(result.state) || Date.now() - result.updatedAt < 10_000) ? result.state
+			: !claim && uncertain === undefined && Date.now() - spec.createdAt < 10_000 ? "starting" : "unknown";
+		return { spec, dir, claim, result, state, outputPath: join(dir, "output.log") };
+	});
 }
 export async function listJobs(root: string): Promise<Job[]> {
 	await privateDirectory(root, true);
 	const entries = await readdir(root);
 	const jobs: Job[] = [];
-	for (const id of entries) jobs.push(await readJob(join(root, jobId(id))));
+	for (const id of entries) {
+		// The job-directory lock is a sibling, not a command record.
+		if (id.endsWith(".lock") && uuid.test(id.slice(0, -5))) continue;
+		jobs.push(await readJob(join(root, jobId(id))));
+	}
 	return jobs;
 }
 export async function cancelJob(job: Job): Promise<void> {
