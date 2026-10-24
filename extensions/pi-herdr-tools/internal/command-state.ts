@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 export const COMMAND_STATES = ["starting", "running", "cancelling", "succeeded", "failed", "cancelled", "timeout", "output_limit", "unknown"] as const;
 export type CommandState = typeof COMMAND_STATES[number];
 export interface JobSpec {
-	version: 1; id: string; token: string; callId: string; sessionId: string; sessionFile: string | null;
+	version: 1; id: string; token: string; callId: string; callEntryId: string; sessionId: string; sessionFile: string | null;
 	createdAt: number; cwd: string; checkout: string; workspaceId: string; socketPath: string;
 	command: string; access: "read" | "write"; runtimeMs: number; outputBytes: number;
 }
@@ -35,7 +35,7 @@ function path(value: unknown): value is string { return text(value) && isAbsolut
 export function parseSpec(value: unknown): JobSpec {
 	const s = record(value);
 	jobId(s.id); jobId(s.token);
-	if (s.version !== 1 || !text(s.callId) || !text(s.sessionId) || !(s.sessionFile === null || path(s.sessionFile)) ||
+	if (s.version !== 1 || !text(s.callId) || !text(s.callEntryId) || !text(s.sessionId) || !(s.sessionFile === null || path(s.sessionFile)) ||
 		!integer(s.createdAt, 1, Number.MAX_SAFE_INTEGER) || !path(s.cwd) || !path(s.checkout) || !path(s.socketPath) ||
 		!text(s.workspaceId) || !text(s.command, 16_384) || !["read", "write"].includes(String(s.access)) ||
 		!integer(s.runtimeMs, 100, 86_400_000) || !integer(s.outputBytes, 1024, 104_857_600)) throw new Error("Invalid command specification; preserved for inspection.");

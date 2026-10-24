@@ -6,10 +6,12 @@
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "license": "MIT",
-  "files": ["LICENSE", "extensions", "internal", "prompts", "docs", "README.md"],
+  "files": ["LICENSE", "dist", "extensions", "internal", "prompts", "docs", "README.md"],
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "build": "tsc --project tsconfig.build.json",
+    "test": "npm run build && node --test test/*.test.ts",
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2022 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts internal/*.ts test/*.test.ts",
+    "prepack": "npm run build",
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +14,7 @@ import { checkoutAdmission } from "@henryqw/pi-herdr";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
 import { atomicState, cancelJob, outputTail, readJob, readPrivate, terminal, writePrivate, type JobSpec } from "../internal/command-state.ts";
 
-const runner = fileURLToPath(new URL("../internal/command-runner.ts", import.meta.url));
+const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const policy = { runtimeMs: 5000, outputBytes: 4096, concurrency: 4, retainedJobs: 100 };
 async function fixture(t: TestContext, command: string, limits = {}) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "herdr command 雪 ")));
@@ -22,14 +22,14 @@ async function fixture(t: TestContext, command: string, limits = {}) {
 	const id = randomUUID();
 	const dir = join(root, id);
 	await mkdir(dir, { mode: 0o700 });
-	const spec: JobSpec = { version: 1, id, token: randomUUID(), callId: "call", sessionId: "session", sessionFile: null,
+	const spec: JobSpec = { version: 1, id, token: randomUUID(), callId: "call", callEntryId: "launch", sessionId: "session", sessionFile: null,
 		createdAt: Date.now(), cwd: root, checkout: root, workspaceId: "workspace", socketPath: "/tmp/test-herdr.sock",
 		command, access: "write", runtimeMs: 5000, outputBytes: 4096, ...limits };
 	await writePrivate(join(dir, "spec.json"), spec);
 	return { root, dir, spec };
 }
-function start(dir: string, spec: JobSpec) {
-	const child = spawn(process.execPath, [runner, dir], { env: { ...process.env, HERDR_WORKSPACE_ID: spec.workspaceId,
+function start(dir: string, spec: JobSpec, runnerPath = runner) {
+	const child = spawn(process.execPath, [runnerPath, dir], { env: { ...process.env, HERDR_WORKSPACE_ID: spec.workspaceId,
 		HERDR_TAB_ID: "tab", HERDR_PANE_ID: "pane", HERDR_SOCKET_PATH: spec.socketPath }, stdio: "ignore" });
 	const done = new Promise<number | null>((resolve) => child.once("exit", resolve));
 	return { child, done };
@@ -40,13 +40,19 @@ async function waitFor<T>(read: () => Promise<T | undefined>, timeout = 8000): P
 	throw new Error("Test observation timed out");
 }
 
-test("packaged standalone runner preserves output and records normal and nonzero completion", async (t) => {
-	for (const [command, expected, code] of [["printf 'a b\\n雪\\n'", "succeeded", 0], ["printf 'failed'; exit 7", "failed", 7]] as const) {
-		const f = await fixture(t, command);
-		assert.equal(await start(f.dir, f.spec).done, 0);
+test("installed standalone runner drains substantial output and trailing bytes before normal and nonzero completion", async (t) => {
+	const output = "x".repeat(2 * 1024 * 1024) + "a b\n雪\n";
+	const command = `exec '${process.execPath}' -e 'process.stdout.write("x".repeat(2 * 1024 * 1024)); process.stdout.end("a b\\n雪\\n")'`;
+	for (const [script, expected, code] of [[command, "succeeded", 0], ["printf 'failed' >&2; exit 7", "failed", 7]] as const) {
+		const f = await fixture(t, script, { outputBytes: Buffer.byteLength(output) + 1024 });
+		const installed = join(f.root, "node_modules", "@henryqw", "pi-herdr-tools");
+		await mkdir(installed, { recursive: true });
+		await cp(new URL("../package.json", import.meta.url), join(installed, "package.json"));
+		await cp(new URL("../dist", import.meta.url), join(installed, "dist"), { recursive: true });
+		assert.equal(await start(f.dir, f.spec, join(installed, "dist", "command-runner.js")).done, 0);
 		const job = await readJob(f.dir);
 		assert.equal(job.state, expected); assert.equal(job.result?.exitCode, code);
-		assert.equal(await outputTail(job), code ? "failed" : "a b\n雪\n");
+		assert.equal(await readFile(job.outputPath, "utf8"), code ? "failed" : output);
 		assert.equal(job.claim?.paneId, "pane");
 	}
 });
@@ -79,6 +85,18 @@ test("private cancellation stops the owned ordinary descendant group; completion
 	await cancelJob(await readJob(completed.dir));
 	assert.equal(await readPrivate(join(completed.dir, "cancel.json")), undefined);
 	assert.equal((await readJob(completed.dir)).state, "succeeded");
+});
+
+test("unclosed output from an escaped descendant records unknown instead of releasing ownership", async (t) => {
+	const script = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setTimeout(()=>{}, 20000)"],{detached:true,stdio:"inherit"}); console.log(child.pid); child.unref()';
+	const f = await fixture(t, `exec '${process.execPath}' -e '${script}'`);
+	const execution = start(f.dir, f.spec);
+	const pid = await waitFor(async () => { const text = await outputTail(await readJob(f.dir)); return /^\d+\n$/.test(text) ? Number(text) : undefined; });
+	t.after(() => { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
+	await execution.done;
+	const job = await readJob(f.dir);
+	assert.equal(job.state, "unknown");
+	assert.equal(job.result?.failure, "output_close_timeout");
 });
 
 test("one-time runner claim prevents duplicate execution, including after an interrupted claim", async (t) => {
@@ -116,7 +134,7 @@ async function environment(t: TestContext) {
 	t.after(() => rm(root, { recursive: true, force: true }));
 	return root;
 }
-function input(root: string) { return { command: "printf once", access: "write" as const, callId: "call", sessionId: "session", sessionFile: null, cwd: root, checkout: root }; }
+function input(root: string) { return { command: "printf once", access: "write" as const, callId: "call", callEntryId: "launch", sessionId: "session", sessionFile: null, cwd: root, checkout: root }; }
 
 test("uncertain dispatch survives restart and rewind, retains admission, and never relaunches duplicate delivery", async (t) => {
 	const root = await environment(t);
@@ -209,35 +227,58 @@ test("runner death cannot authorize a replacement runner or release its checkout
 	assert.doesNotThrow(() => process.kill(pid, 0));
 });
 
-test("pending completion survives reload and rewind without duplicate delivery", async (t) => {
+test("first completion waits for its launch branch, survives reload, and is not repeated after rewind", async (t) => {
 	const root = await environment(t);
 	const previousHome = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
 	t.after(() => { if (previousHome === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousHome; });
 	const sessionManager = SessionManager.inMemory(root);
 	const firstEntry = sessionManager.appendMessage({ role: "user", content: "run a command", timestamp: Date.now() });
+	const launchInput = { action: "launch", command: "printf once", access: "write" };
+	const launchEntry = sessionManager.appendMessage({ role: "assistant",
+		content: [{ type: "toolCall", id: "call", name: "background_command", arguments: launchInput },
+			{ type: "toolCall", id: "sibling", name: "read", arguments: { path: "README.md" } }],
+		api: "test", provider: "test", model: "test", stopReason: "toolUse", timestamp: Date.now(),
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	});
+	sessionManager.appendMessage({ role: "toolResult", toolCallId: "sibling", toolName: "read",
+		content: [{ type: "text", text: "sibling result" }], isError: false, timestamp: Date.now() });
 	let sent = 0;
 	let idle = false;
 	const ctx = { cwd: root, sessionManager, hasUI: false, isIdle: () => idle } as unknown as ExtensionContext;
 	const load = () => {
 		const h = host(root);
-		const api = { ...h.pi, registerTool() {}, registerCommand() {}, sendMessage(message: any) {
+		let tool: any;
+		const api = { ...h.pi, registerTool(value: any) { tool = value; }, registerCommand() {}, sendMessage(message: any, options: any) {
+			assert.equal(options.triggerTurn, false);
 			sent++; sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
 		} } as unknown as ExtensionAPI;
 		const manager = registerCommands(api);
-		return { h, manager };
+		return { h, manager, tool };
 	};
 	const first = load();
-	const writer = new CommandManager(first.manager.root, first.h.admission, async () => { throw new Error("response lost"); });
-	const job = await writer.launch({ ...input(root), sessionId: sessionManager.getSessionId() }, policy);
+	t.mock.method(first.manager, "request", async () => { throw new Error("response lost"); });
+	const result = await first.tool.execute("call", launchInput, undefined, undefined, ctx);
+	const job = await first.manager.get(result.structuredContent.jobs[0].id);
+	assert.equal(job.spec.callEntryId, launchEntry);
 	await start(job.dir, job.spec).done;
 	await first.h.event("session_start", {}, ctx);
 	await first.h.event("session_shutdown", {}, ctx);
 	assert.equal(sent, 0);
 	idle = true;
+	sessionManager.branch(firstEntry);
+	const branchReads = t.mock.method(sessionManager, "getBranch");
+	t.mock.timers.enable({ apis: ["setInterval"] });
 	const reloaded = load();
 	t.after(() => reloaded.h.event("session_shutdown", {}, ctx));
 	await reloaded.h.event("session_start", {}, ctx);
+	t.mock.timers.tick(1000);
+	await waitFor(async () => branchReads.mock.callCount() > 0 ? true : undefined);
+	assert.equal(sent, 0);
+	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
+	assert.equal((await reloaded.manager.get(job.spec.id)).state, "succeeded");
+	sessionManager.branch(launchEntry);
+	t.mock.timers.tick(1000);
 	await waitFor(async () => sent === 1 ? true : undefined);
 	await waitFor(async () => await readPrivate(join(job.dir, "delivered.json")));
 	await reloaded.h.event("session_shutdown", {}, ctx);
@@ -247,6 +288,7 @@ test("pending completion survives reload and rewind without duplicate delivery",
 	const rewound = load();
 	t.after(() => rewound.h.event("session_shutdown", {}, ctx));
 	await rewound.h.event("session_start", {}, ctx);
+	t.mock.timers.tick(1000);
 	await waitFor(async () => await readPrivate(join(job.dir, "delivered.json")));
 	assert.equal(sent, 1);
 });

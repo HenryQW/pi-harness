@@ -59,7 +59,7 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
-Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged Node runner executes `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment. Named Pi-agent launches do not change.
+Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged JavaScript runner uses Node to execute `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment. Named Pi-agent launches do not change.
 
 Launch needs a free checkout. A writer keeps checkout admission until its runner proves termination. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
 
@@ -128,7 +128,7 @@ Status clears on answer, cancellation, failure, `/reload`, session switch, or ex
 
 The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown. Only an exact runner record can restore status or prove completion.
 
-The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending for the launching session until that session is idle. Delivery does not start a model turn. A saved delivery record and the session history prevent duplicate notices, including after rewind.
+The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice. Delivery does not start a model turn. A saved delivery record and the session history prevent duplicate notices, including after rewind.
 
 ### Worktree completion
 
@@ -179,7 +179,7 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically. Archive only verified terminal records when the record limit is reached; never delete active, unknown, or malformed state to permit another launch.
 
-Malformed state is preserved and blocks writes. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership. A runner that cannot prove group termination records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
+Malformed state is preserved and blocks writes. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership. The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
 
 Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
 

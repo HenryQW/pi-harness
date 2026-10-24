@@ -8,7 +8,7 @@ import { createConfigStore, extensionConfigDir, field, parsers, registerConfigRe
 import { checkoutAdmission, checkoutKey, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
 import { cancelJob, jobId, listJobs, outputTail, privateDirectory, readJob, readPrivate, terminal, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
-const runner = fileURLToPath(new URL("./command-runner.ts", import.meta.url));
+const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const completionType = "background-command-completion";
 export const commandParameters = Type.Object({
 	action: Type.String({ enum: ["launch", "list", "status", "cancel"] }),
@@ -56,7 +56,7 @@ export class CommandManager {
 		// Removed records are not proof of termination. Keep their restored ownership.
 		return jobs;
 	}
-	async launch(input: { command: string; access: "read" | "write"; callId: string; sessionId: string; sessionFile: string | null; cwd: string; checkout: string }, policy: CommandPolicy, signal?: AbortSignal): Promise<Job> {
+	async launch(input: { command: string; access: "read" | "write"; callId: string; callEntryId: string; sessionId: string; sessionFile: string | null; cwd: string; checkout: string }, policy: CommandPolicy, signal?: AbortSignal): Promise<Job> {
 		const workspaceId = process.env.HERDR_WORKSPACE_ID;
 		const socketPath = process.env.HERDR_SOCKET_PATH;
 		if (process.env.HERDR_ENV !== "1" || !workspaceId || !socketPath?.startsWith("/")) throw new Error("Background commands require a local Herdr pane and HERDR_SOCKET_PATH.");
@@ -137,9 +137,17 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 			if (input.action === "launch") {
 				const loaded = store.loadSync(); reporter.report(ctx, store, loaded);
 				if (loaded.status !== "ok") throw new Error("Background command config is disabled; repair it before launch.");
-				jobs = [await manager.launch({ command: input.command!, access: input.access as "read" | "write", callId,
-					sessionId: ctx.sessionManager.getSessionId(), sessionFile: ctx.sessionManager.getSessionFile() ?? null,
-					cwd: await realpath(ctx.cwd), checkout: await checkoutKey(pi, ctx) }, loaded.value, signal)];
+				const sessionId = ctx.sessionManager.getSessionId();
+				const sessionFile = ctx.sessionManager.getSessionFile() ?? null;
+				// The latest assistant call entry owns direct and nested calls, even after sibling results move the leaf.
+				const callEntry = ctx.sessionManager.getBranch().reverse().find((entry) => entry.type === "message" && entry.message.role === "assistant" &&
+					entry.message.content.some((part) => part.type === "toolCall"));
+				if (!callEntry) throw new Error("Background command launch requires its assistant tool-call entry on the current branch.");
+				const cwd = await realpath(ctx.cwd);
+				const checkout = await checkoutKey(pi, ctx);
+				if (sessionId !== ctx.sessionManager.getSessionId() || !ctx.sessionManager.getBranch().some((entry) => entry.id === callEntry.id)) throw new Error("Command launch session or branch changed before dispatch.");
+				jobs = [await manager.launch({ command: input.command!, access: input.access as "read" | "write", callId, callEntryId: callEntry.id,
+					sessionId, sessionFile, cwd, checkout }, loaded.value, signal)];
 			} else if (input.action === "list") jobs = await manager.refresh();
 			else {
 				let job = await manager.get(input.id!);
@@ -177,7 +185,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 			for (const job of await manager.refresh()) {
 				if (!terminal(job.state) || job.spec.sessionId !== ctx.sessionManager.getSessionId()) continue;
 				await withWorktreeLock(join(job.dir, "spec.json"), async () => {
-					if (context !== ctx || !ctx.isIdle()) return;
+					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
 					const delivered = await readPrivate(join(job.dir, "delivered.json"));
 					if (delivered !== undefined) {
 						const value = delivered as { id?: string; runnerId?: string } | null;
@@ -187,7 +195,8 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 					const recorded = ctx.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === completionType &&
 						(entry.details as { id?: string; runnerId?: string } | undefined)?.id === job.spec.id &&
 						(entry.details as { runnerId?: string }).runnerId === job.claim?.runnerId);
-					if (context !== ctx || !ctx.isIdle()) return;
+					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
+					if (!recorded && !ctx.sessionManager.getBranch().some((entry) => entry.id === job.spec.callEntryId)) return;
 					if (!recorded) pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}`, display: true, details: summary(job) }, { triggerTurn: false });
 					await writePrivate(join(job.dir, "delivered.json"), { id: job.spec.id, runnerId: job.claim!.runnerId });
 				});

@@ -56,6 +56,7 @@ async function run(dir: string): Promise<void> {
 		log = openSync(join(dir, "output.log"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
 		child = spawn("/bin/sh", ["-c", spec.command], { cwd: spec.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"] });
 		group = child.pid;
+		const closed = new Promise<boolean>((resolve) => child!.once("close", () => resolve(true)));
 		let exited = false;
 		let spawnFailed = false;
 		child.once("error", () => { spawnFailed = true; exited = true; });
@@ -83,10 +84,14 @@ async function run(dir: string): Promise<void> {
 		// Even a successful shell can leave ordinary descendants. They must stop before release.
 		if (reason) await save("cancelling");
 		const proved = await stop();
-		// Let pending stream data and the child's exit event arrive before recording completion.
-		await delay(50);
-		child.stdout!.destroy(); child.stderr!.destroy();
-		await save(!proved ? "unknown" : reason ?? (spawnFailed || exitCode !== 0 || signal ? "failed" : "succeeded"));
+		// Close proves exit and drained pipes. Escaped pipe owners must not hold the runner forever.
+		let drainTimer: ReturnType<typeof setTimeout> | undefined;
+		let drained: boolean;
+		try {
+			drained = await Promise.race([closed, new Promise<boolean>((resolve) => { drainTimer = setTimeout(() => resolve(false), 4000); })]);
+		} finally { clearTimeout(drainTimer); }
+		await save(!proved || !drained ? "unknown" : reason ?? (spawnFailed || exitCode !== 0 || signal ? "failed" : "succeeded"),
+			!drained ? "output_close_timeout" : undefined);
 	} catch (error) {
 		await stop().catch(() => false);
 		await save("unknown", (error as NodeJS.ErrnoException).code ?? "runner_io");
@@ -98,5 +103,5 @@ async function run(dir: string): Promise<void> {
 	}
 }
 
-if (process.argv.length !== 3) throw new Error("Usage: node command-runner.ts <private-job-directory>");
+if (process.argv.length !== 3) throw new Error("Usage: node command-runner.js <private-job-directory>");
 await run(process.argv[2]!).catch(() => { process.stderr.write("Command runner stopped without verified completion; inspect /commands.\n"); process.exitCode = 1; });

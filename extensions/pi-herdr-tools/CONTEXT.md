@@ -19,7 +19,7 @@ The private one-time record that binds an immutable job specification to one run
 An unproved launch or termination outcome. Writer admission and worktree-removal protection remain held; saved process numbers and screen text cannot release them.
 
 **Command completion delivery**:
-A notice saved for the original launching session until it is idle. Command state stays outside transcripts, independent of conversation rewind.
+A notice saved for the original launching session until it is idle and its current branch contains the launch entry. Command state stays outside transcripts, independent of conversation rewind.
 
 ### Clones and handoffs
 
