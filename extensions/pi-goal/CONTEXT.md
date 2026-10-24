@@ -17,7 +17,8 @@ The agent's report of what it inspected in current state (files, command output,
 _Avoid_: Proof, verification
 
 **Continuation**:
-A hidden message that Pi Goal adds when the agent stops while a Goal is active, so that the agent does one more turn.
+A hidden message that Pi Goal adds when the agent stops while a Goal is active, so that the agent does one more turn. Pi Goal does not add a Continuation while Pi Subagent owns a live result that will start a turn in the current session. Budget and Continuation limits still apply.
+The optional synchronous query is `pi-subagent:pending-result`; [Pi Subagent owns its contract](../pi-subagent/CONTEXT.md#pending-result-event-contract).
 _Avoid_: Retry, follow-up
 
 **Budget**:

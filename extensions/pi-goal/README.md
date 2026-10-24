@@ -37,10 +37,14 @@ When the goal has no deliverables, `complete` needs one evidence item with deliv
 ![Pi Goal flow: a user prompt starts the agent run with hidden goal context; when the agent stops, stop guards add a hidden continuation or let Pi settle](./docs/goal-flow.svg)
 
 1. Before each user prompt, Pi Goal adds the goal, the budget numbers, and the completion rules as hidden context.
-2. When the agent stops, Pi Goal checks the stop limits. If no limit applies, it adds a hidden continuation with the same goal context.
+2. When the agent stops, Pi Goal checks the stop limits. If no limit applies and no delegated result is pending, it adds a hidden continuation with the same goal context.
 3. The agent continues in the same run. A successful `complete` or `drop` ends the loop.
 
 Pi Goal does not add a continuation when another extension already continues the same stop. One continuation request then serves both extensions.
+
+Pi Goal waits when Pi Subagent owns a live direct or isolated result that will start a turn in the current session. It adds no empty continuation or no-progress warning during this wait. Budget and maximum-continuation limits still apply. A result or failure restores normal goal handling. Retained, interrupted, unknown, or other-session work does not cause a wait.
+
+Background-command notices do not start turns and do not cause a wait. Pi Subagent is optional; without it, the normal stop checks apply.
 
 ## State and storage
 

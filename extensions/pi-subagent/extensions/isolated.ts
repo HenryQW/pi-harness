@@ -514,6 +514,7 @@ export function formatExecutePlan({ request, root, main, routes }: ExecutePlan, 
 }
 
 export interface IsolatedSurface {
+	hasPendingResult(sessionId: string): boolean;
 	/** Dry run of execute: validates and resolves without durable state or Herdr calls. */
 	plan(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof formatExecutePlan>>;
 	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
@@ -547,7 +548,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	let savedRevision = 0;
 	const stateListeners = new Set<(state: RunState) => void>();
 	const activeJobs = new Set<AbortController>();
-	const jobOwners = new Map<string, () => boolean>();
+	const jobOwners = new Map<string, { canDeliver(): boolean; pendingResult(): boolean }>();
 	let sessionEpoch = 0;
 	let sessionClosed = false;
 
@@ -570,7 +571,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			savedRevision += 1;
 			for (const listener of stateListeners) listener(state);
 			const owner = jobOwners.get(`${state.root}\0${state.request.id}`);
-			if (!sessionClosed && (owner === undefined || owner())) {
+			if (!sessionClosed && (owner === undefined || owner.canDeliver())) {
 				updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest);
 			}
 		},
@@ -632,21 +633,22 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			: undefined;
 		const canDeliver = () => deliverySuppression() === undefined;
 		const controller = new AbortController();
+		let durableAcknowledged = false;
 		activeJobs.add(controller);
-		jobOwners.set(key, canDeliver);
+		const owner = { canDeliver, pendingResult: () => durableAcknowledged && !controller.signal.aborted && canDeliver() };
+		jobOwners.set(key, owner);
 		const notified = new Set<string>();
 		const attentionNotified = new Set<string>();
 		let candidateListener: ((state: RunState) => void) | undefined;
 		const finish = () => {
 			activeJobs.delete(controller);
 			if (candidateListener) stateListeners.delete(candidateListener);
-			if (jobOwners.get(key) === canDeliver) jobOwners.delete(key);
+			if (jobOwners.get(key) === owner) jobOwners.delete(key);
 		};
 		const abortBeforeAck = () => controller.abort(signal?.reason);
 		if (signal?.aborted) abortBeforeAck();
 		else signal?.addEventListener("abort", abortBeforeAck, { once: true });
 		let latestState: RunState | undefined;
-		let durableAcknowledged = false;
 		let accept!: (state: RunState) => void;
 		let reject!: (error: unknown) => void;
 		const durable = new Promise<RunState>((resolve, fail) => { accept = resolve; reject = fail; });
@@ -828,6 +830,8 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		},
 	});
 	return {
+		hasPendingResult: (sessionId) => latestCtx?.sessionManager?.getSessionId() === sessionId
+			&& [...jobOwners.values()].some((owner) => owner.pendingResult()),
 		async inventory(cwd, current) {
 			const root = await lookupRoot(cwd);
 			const revision = savedRevision;

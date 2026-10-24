@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { Compile } from "typebox/compile";
-import { createReadTool, DEFAULT_MAX_BYTES, type ExtensionAPI, type ExtensionContext, type ReadToolDetails } from "@earendil-works/pi-coding-agent";
+import { createEventBus, createReadTool, DEFAULT_MAX_BYTES, type ExtensionAPI, type ExtensionContext, type ReadToolDetails } from "@earendil-works/pi-coding-agent";
 import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-subagent";
 import { registerCheckoutAdmission } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
@@ -353,7 +353,7 @@ function harness(options: {
 	const tui = { requestRender: () => { renders++; } };
 	const theme = { fg: (_color: string, value: string) => value };
 	const api = {
-		events: { on: () => () => {}, emit() {} },
+		events: createEventBus(),
 		on(event: string, handler: (...args: any[]) => any) {
 			const previous = handlers.get(event);
 			handlers.set(event, (...args) => {
@@ -428,6 +428,11 @@ function harness(options: {
 		},
 	} as unknown as ExtensionContext;
 	return {
+		pendingResult(sessionId = ctx.sessionManager.getSessionId()) {
+			const query = { sessionId, pending: false };
+			api.events.emit("pi-subagent:pending-result", query);
+			return query.pending;
+		},
 		get tool() { return tool!; },
 		tools,
 		get widget() { return widget; },
@@ -606,7 +611,14 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			app.handlers.get("session_start")?.({}, app.ctx);
 			const result = await app.tool.execute("call", { role: "worker", name: "Check", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			assert.match(result.content[0].text, /Herdr tab: w-test:t2/);
+			assert.equal(app.pendingResult(), true);
+			assert.equal(app.pendingResult("foreign"), false);
+			const getSessionId = app.ctx.sessionManager.getSessionId;
+			app.ctx.sessionManager.getSessionId = () => "replacement";
+			assert.equal(app.pendingResult(), false, "a changed session cannot inherit a live result");
+			app.ctx.sessionManager.getSessionId = getSessionId;
 			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(app.pendingResult(), false, "retained tab records own no future result");
 			const message = app.sentMessages[0]!.message;
 			assert.match(message.content.slice(message.content.indexOf("\n") + 1), /^Delegation completed · 1 completed\n✓ \[1\/1\] Check · worker · test\/text-model · thinking low · 1\.2k tok · \d+s — exact answer\nResults:\n- \[1\/1\] Check · worker · result:\nexact answer\nRecovery \(also available via \/subagent\):\n/);
 			assert.match(message.content, /tab w-test:t2 · pane w-test:p2/);
@@ -620,6 +632,22 @@ test("direct returns verified nonfocused tab and sends exact result once as foll
 			assert.ok(startArgs.every((arg) => !/[\r\n]/.test(arg)), "Herdr launch arguments must be shell-safe");
 			await assert.rejects(stat(startArgs[startArgs.indexOf("--append-system-prompt") + 1]!), { code: "ENOENT" });
 			assert.ok(fake.calls.some((args) => args.includes("--no-focus") && args.includes(cwd)));
+		});
+	});
+});
+
+test("failed direct result delivery leaves no pending wake", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd, () => "exact answer");
+			const app = harness({ cwd, ui: true, herdr: fake.exec, sendMessageError: new Error("delivery failed") });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			await app.tool.execute("call", { role: "worker", name: "Check", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
+			assert.equal(app.pendingResult(), true);
+			await waitFor(() => app.notifications.some(({ message }) => /result delivery failed/.test(message)));
+			assert.equal(app.pendingResult(), false);
+			assert.equal(app.sentMessages.length, 0);
 		});
 	});
 });
@@ -883,8 +911,10 @@ test("failed direct termination retains admission and exact Close retries withou
 				const params = { mode: "direct", role: "worker", name: "Fail", task: "authorized commit", access: "write" };
 				await app.handlers.get("tool_call")!({ toolCallId: failure, toolName: "delegate_task", input: params }, app.ctx);
 				await app.tool.execute(failure, params, undefined, undefined, app.ctx);
+				assert.equal(app.pendingResult(), true);
 				app.handlers.get("tool_result")!({ toolCallId: failure });
 				await waitFor(() => app.sentMessages.length === 1);
+				assert.equal(app.pendingResult(), false, "retained admission after failure owns no future result");
 				const sessionFile = app.sessionEntries[0].data.sessionFile;
 				assert.match(app.sentMessages[0]!.message.content, /ownership retained \(write requests also keep checkout admission\):.*Close\/cancel-and-release/s);
 				const write = () => app.handlers.get("tool_call")!({ toolCallId: "main-write", toolName: "add_directory", input: {} }, app.ctx);
@@ -1578,6 +1608,7 @@ test("switch during tab creation retains exact identity before cancellation; unk
 					return /Direct launch|Launching session changed|unverified/.test(error.message);
 				});
 				await reached;
+				assert.equal(app.pendingResult(), false, "an unacknowledged launch owns no follow-up yet");
 				const originalBranch = app.sessionEntries;
 				app.switchBranch();
 				app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
@@ -1604,6 +1635,7 @@ test("switch during tab creation retains exact identity before cancellation; unk
 				assert.equal(record.data.display.title, "Check");
 				assert.equal(record.customType, stage === "allocation" ? "subagent-direct-allocation" : "subagent-direct-tab");
 				assert.equal(originalBranch.length, stage === "tab" || stage === "allocation" ? 0 : 1);
+				assert.equal(app.pendingResult(), false, "an unknown launch outcome requires recovery, not a wait");
 				assert.equal(fake.calls.filter(([kind, action]) => kind === "agent" && action === "prompt").length, stage === "prompt" ? 1 : 0);
 				await recoverDirect(app, "D2.1");
 				assert.ok(app.notifications.some(({ message }) => /^\*\*. Direct workflow D2\.1 · worker · Check/.test(message)));
@@ -1654,7 +1686,9 @@ test("session shutdown cancels the exact direct agent and suppresses a late resu
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("late", { role: "worker", name: "Late", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			await waitFor(() => fake.calls.some(([kind, command]) => kind === "agent" && command === "wait"));
+			assert.equal(app.pendingResult(), true);
 			const shutdown = app.handlers.get("session_shutdown")?.({}, app.ctx);
+			assert.equal(app.pendingResult(), false);
 			await waitFor(() => fake.calls.some(([kind, command]) => kind === "agent" && command === "send-keys"));
 			release();
 			await shutdown;

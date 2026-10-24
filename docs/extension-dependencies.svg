@@ -124,7 +124,7 @@
   <text class="name" data-row="pi-undo" x="48" y="578">Pi Undo</text>
   <text class="empty" x="244" y="577">none</text>
   <text class="note" x="48" y="608">21 extensions · 30 direct edges · 7 dependency packages · 6 rows with no internal dependencies</text>
-  <text class="note" x="48" y="628">Only dependencies and peerDependencies are shown; development and transitive dependencies are excluded.</text>
+  <text class="note" x="48" y="628">Development, transitive, and optional event links are excluded; Pi Goal can query Pi Subagent without a dependency.</text>
   <line x1="48" y1="648" x2="1192" y2="648" stroke="#101828" stroke-opacity=".12"/>
   <rect x="48" y="672" width="12" height="12" rx="2" fill="#101828"/>
   <text class="note" x="72" y="683">Direct runtime or peer dependency</text>

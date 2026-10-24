@@ -25,6 +25,8 @@ Configure the profiles that your Roles use in `/task-models`. Direct writer term
 
 Ask Main: “Have a scout trace sign-in without editing files.” Main calls `delegate_task` and stays available until progress and results arrive.
 
+If Pi Goal is installed, it waits for live direct or isolated results in the current session instead of adding empty continuation turns. Budget and continuation limits still apply. Retained or interrupted work does not cause a wait. The optional `pi-subagent:pending-result` event needs no package dependency; see the [pending-result contract](./CONTEXT.md#pending-result-event-contract).
+
 Commands, prompts, and UI are for you. Tools and the packaged skill are for Main, except `git_read`, which is only for Role-declared children.
 
 | Surface | Type | Purpose |

@@ -256,6 +256,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	let directSequence = 0;
 	const directTasks = new Map<string, {
 		controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[];
+		pendingResult?: (sessionId: string) => boolean;
 		close?: (current: () => boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string;
 		/** Saved sessions this task continues; claimed before any await so a second request cannot reuse them. */
 		continues?: ReadonlySet<string>;
@@ -268,6 +269,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			&& tab.paneId === saved.paneId && tab.sessionFile === saved.sessionFile;
 	});
 	let sessionEpoch = 0;
+	pi.events.on("pi-subagent:pending-result", (data) => {
+		if (!data || typeof data !== "object" || !("sessionId" in data) || typeof data.sessionId !== "string"
+			|| !("pending" in data) || typeof data.pending !== "boolean") return;
+		const { sessionId } = data;
+		if ([...directTasks.values()].some((task) => task.pendingResult?.(sessionId)) || isolatedSurface.hasPendingResult(sessionId)) {
+			data.pending = true;
+		}
+	});
 	// Shutdown still saves outgoing identities; only a session start defers records to its carry loop.
 	let directRecordEpoch = 0;
 	let directWorkflow = 0;
@@ -767,6 +776,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			});
 			const controller = new AbortController();
 			const launchEpoch = sessionEpoch;
+			const launchSessionId = ctx.sessionManager.getSessionId();
 			const recordEpoch = directRecordEpoch;
 			const handles: DirectHandle[] = [];
 			const tabs: DirectTabRecord[] = [];
@@ -887,6 +897,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				resolveSettled();
 				throw boundedError(error);
 			} finally { signal?.removeEventListener("abort", abortLaunch); }
+			local.pendingResult = (sessionId) => !controller.signal.aborted && launchEpoch === sessionEpoch
+				&& sessionId === launchSessionId && ctx.sessionManager.getSessionId() === launchSessionId
+				&& latestCtx?.sessionManager.getSessionId() === launchSessionId;
 			void (async () => {
 				try {
 					await new Promise<void>((resolve) => setImmediate(resolve));
@@ -944,6 +957,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						try { await local.close!(() => directTasks.get(taskId) === local); }
 						catch { /* Retain ownership and admission for an explicit guarded retry. */ }
 					} else directTasks.delete(taskId);
+					local.pendingResult = undefined;
 					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, ref, workflow.mode, [...states.values()], tabs, local.recovery);
 					resolveSettled();
 				}
