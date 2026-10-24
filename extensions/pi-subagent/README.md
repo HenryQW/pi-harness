@@ -73,6 +73,8 @@ Every task requires `access: "read"` or `access: "write"`. Declare `write` for f
 
 Read requests run parallel tasks up to `maxSubagents`. Chains run in order, replace literal `{previous}` with the preceding successful answer, and stop on failure. Any `write` task makes the whole request serial and reserves checkout admission until all owned workers stop.
 
+Checkout admission is shared with managed background commands from `pi-herdr-tools`. An active or unknown background writer blocks direct writes. Main writes and direct writers block new command launches. Status and read tools remain available. This is process-local coordination, not an operating-system sandbox.
+
 Direct writes change Main's checkout immediately, including dirty checkouts, and have no automatic checks or rollback. Preserve unrelated edits. See [Direct contract](./docs/orchestration.md#direct-contract) for write scope and checkout-admission rules.
 
 Tasks in write requests must return one JSON completion object:

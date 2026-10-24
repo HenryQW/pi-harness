@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="commands-title commands-desc" id="commands-flow-root">
+<title id="commands-title">Managed command states</title>
+<desc id="commands-desc">Checkout admission precedes one direct runner launch. The runner records success, failure, limits, or cancellation after group cleanup. Unknown ownership blocks writes and worktree removal. A verified record restores status without another launch.</desc>
+<defs>
+      <style>#commands-flow-root { color: #101828; font-family: 'Geist', system-ui, sans-serif; }
+      #commands-flow-root .diagram { overflow-x: auto; }
+      #commands-flow-root .title { font: 28px 'Instrument Serif', Georgia, serif; fill: #101828; }
+      #commands-flow-root .name { font: 600 12px 'Geist', system-ui, sans-serif; fill: #101828; }
+      #commands-flow-root .detail { font: 8px 'Geist Mono', monospace; fill: #4c5665; }
+      #commands-flow-root .label { font: 500 8px 'Geist Mono', monospace; fill: #4c5665; text-anchor: middle; }
+      #commands-flow-root .node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+      #commands-flow-root .path { fill: none; stroke: #4c5665; stroke-width: 1.5; marker-end: url(#commands-flow-commands-arrow); }</style>
+<style>
+.title { font: 28px 'Instrument Serif', Georgia, serif; fill: #101828; }
+.name { font: 600 12px 'Geist', system-ui, sans-serif; fill: #101828; }
+.detail { font: 8px 'Geist Mono', monospace; fill: #4c5665; }
+.label { font: 500 8px 'Geist Mono', monospace; fill: #4c5665; text-anchor: middle; }
+.node { fill: #ffffff; stroke: #101828; stroke-width: 1; }
+.path { fill: none; stroke: #4c5665; stroke-width: 1.5; marker-end: url(#commands-flow-commands-arrow); }
+</style>
+<marker id="commands-flow-commands-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8" fill="none" stroke="#4c5665"/></marker>
+</defs>
+<rect width="1280" height="720" fill="#f0eee9"/>
+<text x="80" y="60" class="title">One launch. Durable ownership.</text>
+<text x="80" y="88" class="detail">Pi shutdown and conversation rewind do not stop the runner.</text>
+<!-- Connections precede states. -->
+<path class="path" d="M320 248 H460"/>
+<path class="path" d="M740 248 H900"/>
+<path class="path" d="M600 200 V148 Q600 140 608 140 H900"/>
+<path class="path" d="M600 300 V460"/>
+<path class="path" d="M740 508 H900"/>
+<path class="path" d="M200 300 V460" stroke-dasharray="5 4"/>
+<path class="path" d="M360 540 H400 Q408 540 408 532 V288 Q408 280 416 280 H460" stroke-dasharray="5 4"/>
+<!-- Label masks have a gap from their connection. -->
+<rect x="340" y="224" width="100" height="16" fill="#f0eee9"/><text x="390" y="235" class="label">ONE-TIME CLAIM</text>
+<rect x="776" y="224" width="88" height="16" fill="#f0eee9"/><text x="820" y="235" class="label">EXIT ZERO</text>
+<rect x="716" y="116" width="128" height="16" fill="#f0eee9"/><text x="780" y="127" class="label">EXIT / LIMIT</text>
+<rect x="616" y="368" width="96" height="16" fill="#f0eee9"/><text x="664" y="379" class="label">CANCEL REQUEST</text>
+<rect x="768" y="484" width="104" height="16" fill="#f0eee9"/><text x="820" y="495" class="label">GROUP STOPPED</text>
+<rect x="216" y="348" width="96" height="16" fill="#f0eee9"/><text x="264" y="359" class="label">UNPROVED</text>
+<rect x="288" y="396" width="104" height="16" fill="#f0eee9"/><text x="340" y="407" class="label">LIVE RECORD</text>
+<!-- State nodes. -->
+<rect x="80" y="200" width="240" height="100" rx="8" class="node"/>
+<text x="104" y="232" class="name">Starting</text><text x="104" y="256" class="detail">Checkout admitted; specification saved</text><text x="104" y="276" class="detail">layout.apply sends the runner arguments</text>
+<rect x="460" y="200" width="280" height="100" rx="8" fill="#e0e5e8" stroke="#1d4ed8"/>
+<text x="484" y="232" class="name">Running</text><text x="484" y="256" class="detail">Private log, finite runtime and output</text><text x="484" y="276" class="detail">Writer owns the checkout</text>
+<rect x="900" y="200" width="300" height="100" rx="8" class="node"/>
+<text x="924" y="232" class="name">Succeeded</text><text x="924" y="256" class="detail">Exit zero; owned group stopped</text><text x="924" y="276" class="detail">Atomic completion releases ownership</text>
+<rect x="900" y="100" width="300" height="80" rx="8" class="node"/>
+<text x="924" y="132" class="name">Failed or limit reached</text><text x="924" y="156" class="detail">Never success; cleanup precedes release</text>
+<rect x="460" y="460" width="280" height="100" rx="8" class="node"/>
+<text x="484" y="492" class="name">Cancelling</text><text x="484" y="516" class="detail">Private control reaches the owned runner</text><text x="484" y="536" class="detail">Ownership remains held during cleanup</text>
+<rect x="900" y="460" width="300" height="100" rx="8" class="node"/>
+<text x="924" y="492" class="name">Cancelled</text><text x="924" y="516" class="detail">Runner proves ordinary group termination</text><text x="924" y="536" class="detail">Output and completion remain available</text>
+<rect x="80" y="460" width="280" height="140" rx="8" fill="#e0e5e8" stroke="#1d4ed8"/>
+<text x="104" y="492" class="name">Unknown</text><text x="104" y="516" class="detail">Any unproved ownership remains held</text><text x="104" y="540" class="detail">No retry and no saved-process signalling</text><text x="104" y="564" class="detail">Status and cancellation stay available</text><text x="104" y="584" class="detail">A verified record can restore status</text>
+<path d="M80 640 H1200" stroke="#4c5665" stroke-opacity="0.25"/>
+<text x="80" y="672" class="name">Safety boundary</text><text x="240" y="672" class="detail">Unknown jobs block forced worktree removal. Detached or escaped descendants are not supported. No operating-system sandbox.</text>
+</svg>

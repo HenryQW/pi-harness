@@ -23,7 +23,7 @@ test("package loading registers all Herdr commands through one extension", async
 	assert.equal(loaded.extensions.length, 1);
 	assert.deepEqual(
 		loaded.extensions.flatMap((extension) => [...extension.commands.keys()]).sort(),
-		["btw", "clone-tab", "clone-worktree", "done", "rename"],
+		["btw", "clone-tab", "clone-worktree", "commands", "done", "rename"],
 	);
 });
 

@@ -4,6 +4,23 @@ Pi Herdr Tools connects human-directed Pi conversations to Herdr tabs, panes, an
 
 ## Language
 
+### Managed commands
+
+**Managed command**:
+An already authorized, bounded, noninteractive local shell command in a dedicated Herdr terminal, separate from named Pi agents.
+
+**Command runner**:
+The packaged standalone Node process that owns one command's ordinary child process group, bounded output, private cancellation control, and atomic completion.
+
+**Command claim**:
+The private one-time record that binds an immutable job specification to one runner and exact Herdr terminal identities. It prevents another execution after uncertain dispatch or a crash.
+
+**Unknown command ownership**:
+An unproved launch or termination outcome. Writer admission and worktree-removal protection remain held; saved process numbers and screen text cannot release them.
+
+**Command completion delivery**:
+A notice saved for the original launching session until it is idle and its current branch contains the launch entry. Command state stays outside transcripts, independent of conversation rewind.
+
 ### Clones and handoffs
 
 **Active-path clone**:
@@ -27,7 +44,7 @@ A launch whose response cannot prove whether Herdr created or started the target
 _Avoid_: failed clone, cleanup failure
 
 **Worktree completion**:
-The explicit end of a task that removes its linked checkout and closes its Herdr workspace tabs. Forced completion permits loss of uncommitted work and removal while other workspaces still use the checkout.
+The explicit end of a task that removes its linked checkout and closes its Herdr workspace tabs. Forced completion permits loss of uncommitted work and removal while other workspaces still use the checkout. It never bypasses managed-command ownership or active checkout admission.
 _Avoid_: Pi exit, implicit forced cleanup
 
 ### Side questions
