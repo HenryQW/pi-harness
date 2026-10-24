@@ -1,4 +1,6 @@
 import { lock } from "proper-lockfile";
+export { requestHerdr, HerdrRequestError } from "./socket.js";
+export { checkoutAdmission, checkoutKey, registerCheckoutAdmission, type CheckoutAdmission } from "./admission.js";
 
 export interface HerdrExecResult {
 	code: number;
