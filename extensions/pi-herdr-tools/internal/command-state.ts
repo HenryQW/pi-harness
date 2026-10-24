@@ -119,7 +119,9 @@ export async function readJob(dir: string): Promise<Job> {
 export async function listJobs(root: string): Promise<Job[]> {
 	await privateDirectory(root, true);
 	const entries = await readdir(root);
-	return await Promise.all(entries.map((id) => readJob(join(root, jobId(id)))));
+	const jobs: Job[] = [];
+	for (const id of entries) jobs.push(await readJob(join(root, jobId(id))));
+	return jobs;
 }
 export async function cancelJob(job: Job): Promise<void> {
 	if (terminal(job.state)) return;

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,14 +127,73 @@ function host(cwd: string, bus = new EventEmitter()) {
 	};
 }
 async function environment(t: TestContext) {
-	const old = { HERDR_ENV: process.env.HERDR_ENV, HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID, HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH };
+	const old = { HERDR_ENV: process.env.HERDR_ENV, HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID, HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
+		PI_SUBAGENT_PROCESS_LEASE: process.env.PI_SUBAGENT_PROCESS_LEASE, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR };
+	const argv = process.argv;
+	process.argv = argv.slice(0, 2);
+	delete process.env.PI_SUBAGENT_PROCESS_LEASE;
+	t.after(() => { process.argv = argv; });
 	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace", HERDR_SOCKET_PATH: "/tmp/test-herdr.sock" });
 	t.after(() => { for (const [key, value] of Object.entries(old)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
 	const root = await realpath(await mkdtemp(join(tmpdir(), "herdr-manager-")));
+	process.env.PI_CODING_AGENT_DIR = root;
 	t.after(() => rm(root, { recursive: true, force: true }));
 	return root;
 }
 function input(root: string) { return { command: "printf once", access: "write" as const, callId: "call", callEntryId: "launch", sessionId: "session", sessionFile: null, cwd: root, checkout: root }; }
+
+test("delegated launches fail before dispatch, state, or admission; list, status, and cancel remain available", async (t) => {
+	for (const marker of ["role flag", "role flag equals", "process lease", "empty process lease"]) await t.test(marker, async (t) => {
+		const root = await environment(t);
+		if (marker === "role flag") process.argv.push("--pi-subagent-role-tools", "[]");
+		else if (marker === "role flag equals") process.argv.push("--pi-subagent-role-tools=[]");
+		else process.env.PI_SUBAGENT_PROCESS_LEASE = marker === "process lease" ? join(root, "worker.lease") : "";
+		const h = host(root);
+		let tool: any;
+		const manager = registerCommands({ ...h.pi, registerTool(value: any) { tool = value; }, registerCommand() {} } as unknown as ExtensionAPI);
+		const dispatch = t.mock.method(manager, "request", async () => { throw new Error("must not dispatch"); });
+		const reserve = t.mock.method(h.admission, "reserve");
+		await assert.rejects(manager.launch(input(root), policy), /Main-only/);
+		// No session context: refusal must precede config and branch work at the tool boundary.
+		await assert.rejects(tool.execute("call", { action: "launch", command: "true", access: "read" }, undefined, undefined, {}), /Main-only/);
+		assert.equal(dispatch.mock.callCount(), 0);
+		assert.equal(reserve.mock.callCount(), 0);
+		assert.deepEqual(await readdir(root), []);
+
+		const f = await fixture(t, "true", { createdAt: Date.now() - 30_000 });
+		await mkdir(manager.root, { recursive: true, mode: 0o700 });
+		const dir = join(manager.root, f.spec.id);
+		await cp(f.dir, dir, { recursive: true });
+		const execute = (action: string) => tool.execute("inspect", { action, ...(action === "list" ? {} : { id: f.spec.id }) }, undefined, undefined, {});
+		assert.equal((await execute("list")).structuredContent.totalJobs, 1);
+		assert.equal((await execute("status")).structuredContent.jobs[0].state, "unknown");
+		await execute("cancel");
+		assert.deepEqual(await readPrivate(join(dir, "cancel.json")), { id: f.spec.id, token: f.spec.token });
+	});
+});
+
+test("retained history reads 100 completed records with a 64-descriptor limit", async (t) => {
+	const f = await fixture(t, "true");
+	for (let index = 0; index < 100; index++) {
+		const spec = index === 0 ? f.spec : { ...f.spec, id: randomUUID(), token: randomUUID() };
+		const dir = join(f.root, spec.id);
+		if (index > 0) {
+			await mkdir(dir, { mode: 0o700 });
+			await writePrivate(join(dir, "spec.json"), spec);
+		}
+		const claim = { id: spec.id, token: spec.token, runnerId: randomUUID(), workspaceId: spec.workspaceId, tabId: "tab", paneId: "pane" };
+		await writePrivate(join(dir, "claim.json"), claim);
+		await atomicState(dir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+	}
+	const script = `import assert from "node:assert/strict";
+		import { listJobs } from ${JSON.stringify(new URL("../internal/command-state.ts", import.meta.url).href)};
+		const jobs = await listJobs(process.argv[1]);
+		assert.equal(jobs.length, 100);
+		assert.ok(jobs.every(job => job.state === "succeeded"));`;
+	const result = spawnSync("/bin/sh", ["-c", 'ulimit -n 64 && exec "$@"', "history-test", process.execPath, "--input-type=module", "-e", script, f.root], { encoding: "utf8", timeout: 10_000 });
+	assert.equal(result.error, undefined);
+	assert.equal(result.status, 0, result.stderr);
+});
 
 test("uncertain dispatch survives restart and rewind, retains admission, and never relaunches duplicate delivery", async (t) => {
 	const root = await environment(t);
@@ -229,9 +288,6 @@ test("runner death cannot authorize a replacement runner or release its checkout
 
 test("first completion waits for its launch branch, survives reload, and is not repeated after rewind", async (t) => {
 	const root = await environment(t);
-	const previousHome = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = root;
-	t.after(() => { if (previousHome === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousHome; });
 	const sessionManager = SessionManager.inMemory(root);
 	const firstEntry = sessionManager.appendMessage({ role: "user", content: "run a command", timestamp: Date.now() });
 	const launchInput = { action: "launch", command: "printf once", access: "write" };

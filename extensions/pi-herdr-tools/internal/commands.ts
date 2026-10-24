@@ -37,6 +37,13 @@ export function createCommandConfig(agentDir?: string) {
 	} });
 }
 
+function assertMainLaunch(): void {
+	// Pi Subagent sets the Role tool flag for all workers and the lease for Herdr workers.
+	if (process.env.PI_SUBAGENT_PROCESS_LEASE !== undefined || process.argv.some((arg) => arg === "--pi-subagent-role-tools" || arg.startsWith("--pi-subagent-role-tools="))) {
+		throw new Error("Managed background command launches are Main-only. Delegated workers must use commands within their assigned runtime.");
+	}
+}
+
 export class CommandManager {
 	readonly root: string;
 	readonly admission: CheckoutAdmission;
@@ -57,6 +64,7 @@ export class CommandManager {
 		return jobs;
 	}
 	async launch(input: { command: string; access: "read" | "write"; callId: string; callEntryId: string; sessionId: string; sessionFile: string | null; cwd: string; checkout: string }, policy: CommandPolicy, signal?: AbortSignal): Promise<Job> {
+		assertMainLaunch();
 		const workspaceId = process.env.HERDR_WORKSPACE_ID;
 		const socketPath = process.env.HERDR_SOCKET_PATH;
 		if (process.env.HERDR_ENV !== "1" || !workspaceId || !socketPath?.startsWith("/")) throw new Error("Background commands require a local Herdr pane and HERDR_SOCKET_PATH.");
@@ -128,13 +136,14 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	const reporter = registerConfigReporting(pi, [store]);
 	pi.registerTool({
 		name: "background_command", label: "Background command", parameters: commandParameters,
-		description: "Launch an already authorized, bounded noninteractive local shell command in its own Herdr terminal; list, inspect output, or cancel it. Declare write access if it can change files, Git state, or external resources. Read access is not enforced; no sandbox. Do not detach processes or use remote or interactive jobs. Unknown launch or ownership is not permission to retry. Status and cancel remain available while checkout writes are blocked.",
+		description: "Main-only launch of an already authorized, bounded noninteractive local shell command in its own Herdr terminal; list, inspect output, or cancel it. Declare write access if it can change files, Git state, or external resources. Read access is not enforced; no sandbox. Do not detach processes or use remote or interactive jobs. Unknown launch or ownership is not permission to retry. Status and cancel remain available while checkout writes are blocked.",
 		outputSchema: Type.Object({ jobs: Type.Array(summarySchema), totalJobs: Type.Number(), output: Type.Optional(Type.String()) }),
 		async execute(callId, input, signal, _update, ctx) {
 			validateRequest(input);
 			let jobs: Job[];
 			let output: string | undefined;
 			if (input.action === "launch") {
+				assertMainLaunch();
 				const loaded = store.loadSync(); reporter.report(ctx, store, loaded);
 				if (loaded.status !== "ok") throw new Error("Background command config is disabled; repair it before launch.");
 				const sessionId = ctx.sessionManager.getSessionId();

@@ -51,6 +51,8 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 
 ### Background commands
 
+Only Main, the parent Pi session, can launch managed commands. Delegated workers cannot launch commands in separate terminals outside their process lease. They can still list, inspect, and cancel commands.
+
 Use `background_command` for an already authorized, noninteractive local command. No further approval is required. Declare `access: "write"` if it can change files, Git state, or external resources. `read` is a declaration, not an enforced restriction. There is no operating-system sandbox.
 
 ```json
@@ -180,6 +182,8 @@ Side threads select the first authenticated viable route before launch. Titles u
 Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically. Archive only verified terminal records when the record limit is reached; never delete active, unknown, or malformed state to permit another launch.
 
 Malformed state is preserved and blocks writes. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership. The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
+
+On Linux, use an init process that reaps exited child processes. A zombie is an exited process whose parent has not collected its status. Without child reaping, zombie process groups can remain `unknown` and keep writer admission held. A process-table snapshot is not proof of termination and cannot release ownership.
 
 Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
 
