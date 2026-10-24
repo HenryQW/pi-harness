@@ -23,7 +23,7 @@ after(async () => {
 	await rm(mainCheckoutDir, { recursive: true, force: true });
 });
 
-function harness(executor: Executor = () => ok()) {
+function harness(executor: Executor = () => ok(), guardRemoval: (checkout: string) => Promise<() => void> = async () => () => {}) {
 	let command: Command | undefined;
 	const calls: ExecCall[] = [];
 	const api = {
@@ -36,7 +36,7 @@ function harness(executor: Executor = () => ok()) {
 			return executor(call);
 		},
 	} as unknown as ExtensionAPI;
-	herdrDoneExtension(api);
+	herdrDoneExtension(api, guardRemoval);
 	assert.ok(command);
 	return { command, calls };
 }
@@ -304,5 +304,16 @@ test("/done fails safely before any execution and preserves removal errors", asy
 			await assert.rejects(app.command("", context()), /killed/);
 			assert.equal(app.calls.length, 5);
 		});
+	});
+});
+
+test("forced completion cannot bypass managed-command ownership", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const app = harness(snapshotExecutor(), async (path) => {
+			assert.equal(path, checkout);
+			throw new Error("Active or unknown background commands block worktree removal");
+		});
+		await assert.rejects(app.command("--force", context()), /Active or unknown/);
+		assert.equal(app.calls.some((call) => call.args.includes("remove") || call.args.includes("close")), false);
 	});
 });

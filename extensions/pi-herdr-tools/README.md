@@ -1,6 +1,6 @@
 # `@henryqw/pi-herdr-tools`
 
-Clone conversations, hand off tasks, and ask side questions in Herdr. Name conversations, see where idle conversations stopped, and finish worktrees with explicit safety checks.
+Run bounded background commands, clone conversations, hand off tasks, and ask side questions in Herdr. Name conversations, see where idle conversations stopped, and finish worktrees with explicit safety checks.
 
 ## Install
 
@@ -27,6 +27,8 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
+| `background_command` | tool | Launch, list, inspect, or cancel a managed command. |
+| `/commands` | command | Inspect command status and output, or request cancellation. |
 | `/clone-tab` | command | Clone into a new tab in the current workspace. |
 | `/clone-worktree` | command | Clone into a new Git worktree workspace. |
 | `/handoff-worktree <issue>` | prompt | Prepare a task for `herdr_handoff`. |
@@ -46,6 +48,22 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | `pi-herdr-tools/recap` | model task | Idle recap model profile. |
 | `pi-herdr-btw/btw` | model task | Side-thread model profile. |
 | Dialog blocked status | ui | Show `Input required` in Herdr during interactive TUI dialogs. |
+
+### Background commands
+
+Use `background_command` for an already authorized, noninteractive local command. No further approval is required. Declare `access: "write"` if it can change files, Git state, or external resources. `read` is a declaration, not an enforced restriction. There is no operating-system sandbox.
+
+```json
+{"action":"launch","command":"pnpm test","access":"write"}
+```
+
+Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
+
+Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged Node runner executes `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment. Named Pi-agent launches do not change.
+
+Launch needs a free checkout. A writer keeps checkout admission until its runner proves termination. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
+
+Do not use interactive commands, remote jobs, detached processes, or commands that escape their process group. The runner controls ordinary descendants in its own group. Cancellation first requests termination, then uses a forced kill if necessary. It never signals a process from a saved process number. A disappeared pane or screen text cannot prove completion.
 
 ### Clones
 
@@ -104,11 +122,21 @@ Status clears on answer, cancellation, failure, `/reload`, session switch, or ex
 
 ## Flow
 
+### Managed command lifecycle
+
+![Managed command states, durable ownership, and recovery without another launch.](./docs/commands-flow.svg)
+
+The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown. Only an exact runner record can restore status or prove completion.
+
+The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending for the launching session until that session is idle. Delivery does not start a model turn. A saved delivery record and the session history prevent duplicate notices, including after rewind.
+
 ### Worktree completion
 
 ![Worktree removal and primary-checkout update.](./docs/done-flow.svg)
 
 `/done` requires `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID`. Commit or discard changes, then confirm removal; declining changes nothing. Normal and forced completion wait for idle Pi.
+
+Active or unknown managed commands block both normal and forced removal, including read jobs. Cancel the job and wait for verified completion. Other admitted writers also block removal.
 
 Normal removal rejects dirty worktrees and checkout use by other workspaces. Close listed tabs and retry; labels identify them, or IDs without labels. Primary-checkout tabs do not block removal or updates.
 
@@ -128,6 +156,19 @@ Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
 
 File and fields are optional. Launch reports unknown keys and invalid values, using field defaults; malformed files use all defaults. `/btw` continues without changing the file. `/btw config show` prints effective values. Updates fail until you correct issues or run `/btw config reset`. Reset reports issues, then replaces the file with defaults.
 
+### Command policy
+
+Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home.
+
+| Name | Description | Values | Default |
+| --- | --- | --- | --- |
+| `runtimeMs` | Maximum command runtime in milliseconds. | Integer, 100 to 86400000. | `600000` |
+| `outputBytes` | Maximum combined standard output and error bytes per job. | Integer, 1024 to 104857600. | `10485760` |
+| `concurrency` | Maximum active or unknown jobs in the command store. | Integer, 1 to 16. | `4` |
+| `retainedJobs` | Maximum saved job records before launch is refused. | Integer, 1 to 10000. | `1000` |
+
+Missing fields use defaults. Invalid fields and malformed files produce config warnings and use finite defaults. The extension preserves the file. Edit the file to change policy; each launch loads it again. Existing jobs keep their saved limits. No automatic job queue or retry is provided.
+
 ### Model profiles
 
 See [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for profile defaults, assignments, and config errors.
@@ -136,12 +177,18 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 ## State and storage
 
+Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically. Archive only verified terminal records when the record limit is reached; never delete active, unknown, or malformed state to permit another launch.
+
+Malformed state is preserved and blocks writes. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership. A runner that cannot prove group termination records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
+
 Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
 
 ## Limits and recovery
 
 | Failure | Recovery |
 | --- | --- |
+| Unknown command ownership | Inspect `/commands` and the private state directory. Cancellation is a request, not proof of termination. Do not retry the command or delete its state. |
+| Command runtime or output limit | Inspect the bounded log and error status. Any later launch is a new explicit decision. |
 | Definite clone-tab creation failure | The clone file is removed. Cleanup errors name any remaining file. |
 | Worktree creation or pre-launch extra-tab failure | No clone session exists yet. |
 | Killed or incomplete worktree creation | Partial workspace state can remain. Inspect returned IDs with `herdr workspace list`. |

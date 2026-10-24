@@ -25,7 +25,7 @@ A display and continuation reference for one recorded direct worker, such as `D7
 A new direct worker that resumes a finished worker's saved Pi conversation in a new tab with a new Direct reference.
 
 **Checkout admission**:
-The exclusive permission held by a direct write request that prevents Main and other direct writers from writing to the shared checkout. It remains held until worker termination is proven; read classification is not a sandbox.
+The exclusive permission held by a direct write request or managed background writer that prevents Main and other direct writers from writing to the shared checkout. Pi Herdr supplies the shared process-local coordinator. Each owner keeps admission until termination is proven; read classification is not a sandbox.
 
 **Isolated request**:
 A durable goal and dependency graph of text and changeset tasks, with checked results and recovery state.

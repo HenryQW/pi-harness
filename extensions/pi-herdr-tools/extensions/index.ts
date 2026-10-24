@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import registerBtwExtension, { BTW_TASK } from "../internal/btw.ts";
 import herdrCloneExtension from "../internal/clone-tab.ts";
 import herdrDoneExtension from "../internal/done.ts";
+import { registerCommands } from "../internal/commands.ts";
 import herdrHandoffExtension from "../internal/handoff.ts";
 import idleRecapExtension, { RECAP_TASK } from "../internal/recap.ts";
 import herdrRenameExtension, { RENAME_TASK } from "../internal/rename.ts";
@@ -13,7 +14,8 @@ export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<voi
 	idleRecapExtension(pi);
 	await registerBtwExtension(pi);
 	herdrCloneExtension(pi);
-	herdrDoneExtension(pi);
+	const commands = registerCommands(pi);
+	herdrDoneExtension(pi, (checkout) => commands.guardRemoval(checkout));
 	herdrHandoffExtension(pi);
 	registerDialogStatus(pi);
 }

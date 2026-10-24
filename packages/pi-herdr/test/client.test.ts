@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHerdrClient, startPiAgent, type HerdrExecResult } from "../src/index.ts";
+import { createHerdrClient, startPiAgent, type HerdrExecResult } from "../dist/index.js";
 
 test("createHerdrClient copies caller args and forwards to executor", async () => {
 	const args = Object.freeze(["agent", "list"]);
