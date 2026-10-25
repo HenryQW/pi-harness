@@ -13,12 +13,21 @@ const plainLines = (component: Box, width: number) => component.render(width).ma
 const WORKING = "Current subagent work";
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
 type Picker = { component: Component; terminal: { rows: number }; render: (width?: number) => string[] };
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
 function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
 	const pickers: Array<((picker: Picker) => void) | undefined> = [];
 	const notices: { message: string; level: string }[] = [];
+	const statuses: Array<string | undefined> = [];
+	const events = new Map<string, () => void | Promise<void>>();
 	const queues = new Map<string, string[]>([["task", ["first", "first", "third"]], ["other", ["untouched"]]]);
 	const sent: string[] = [];
 	let epoch = 0;
@@ -85,6 +94,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 			getEntries: () => entries.map((id) => ({ id })),
 		},
 		ui: {
+			setStatus: (key: string, value: string | undefined) => { assert.equal(key, "subagent-prune"); statuses.push(value); },
 			custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) => {
 				const terminal = { rows: 10_000 };
 				let result: unknown;
@@ -131,7 +141,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 	const appended: { customType: string; data: unknown }[] = [];
 	let renderEntry!: (entry: { data: unknown }, options: object, theme: typeof TAGGED) => Box | undefined;
 	let renderMessage!: (message: { content: string }, options: object, theme: typeof TAGGED) => Box | undefined;
-	registerSubagentCommand({ registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
+	const settlePrune = registerSubagentCommand({ on: (event: string, handler: () => void | Promise<void>) => { events.set(event, handler); }, registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
 		sendMessage: (message: { content: string }) => { messages.push(message.content); },
 		appendEntry: (customType: string, data: unknown) => { appended.push({ customType, data }); },
 		registerEntryRenderer: (type: string, renderer: typeof renderEntry) => { assert.equal(type, "pi-subagent-report"); renderEntry = renderer; },
@@ -141,7 +151,13 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), appended, responses, pickers,
+	return { run: (args = "") => handler(args, ctx), appended, responses, pickers, adapter, statuses,
+		event: (name: string) => {
+			assert.ok(events.has(name));
+			const result = events.get(name)!();
+			return name === "session_shutdown" ? Promise.resolve(result).then(settlePrune) : result;
+		},
+		reviewPrune: async () => { await handler("prune", ctx); await settle(); await handler("prune", ctx); await settle(); },
 		renderEntry: (data: unknown) => renderEntry({ data }, {}, TAGGED)!,
 		renderMessage: (content: string) => renderMessage({ content }, { outputPad: 2 }, TAGGED)!,
 		/** Every appended report except the working report, as the Markdown that RPC and no-UI modes receive. */
@@ -233,7 +249,7 @@ test("long prune menus keep Select all and Clear reachable; cancellation removes
 		assert.match(screen(picker, 10), /→ Select all[\s\S]*Continue \(40 selected\)/);
 		picker.component.handleInput!("\x1b");
 	});
-	await h.run("prune");
+	await h.reviewPrune();
 	assert.deepEqual(h.pruned, []);
 	assert.ok(h.dialogs.every(({ kind }) => kind === "select"));
 });
@@ -602,13 +618,13 @@ test("prune without UI reports readable names and legacy identity suffixes", asy
 test("prune preselects prunable items; Continue removes them and ignored content needs a confirmation", async () => {
 	const cancelled = harness({ prune: prunePlan });
 	cancelled.responses.push(cancelled.pick("Cancel"));
-	await cancelled.run("prune");
+	await cancelled.reviewPrune();
 	assert.deepEqual(cancelled.pruned, []);
 
 	const keepIgnored = harness({ prune: prunePlan });
 	keepIgnored.responses.push(keepIgnored.pick("Continue (2 selected)"));
 	keepIgnored.confirms.push(false);
-	await keepIgnored.run("prune");
+	await keepIgnored.reviewPrune();
 	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["Prune subagent worktrees · prunable items are selected", "Delete ignored content"]);
 	assert.deepEqual(keepIgnored.dialogs[0]!.options, [
 		"[x] a · merged into Main HEAD; clean checkout", "[x] b · merged into origin/main; clean checkout",
@@ -621,7 +637,7 @@ test("prune preselects prunable items; Continue removes them and ignored content
 	const all = harness({ prune: prunePlan });
 	all.responses.push(all.pick("Continue"));
 	all.confirms.push(true);
-	await all.run("prune");
+	await all.reviewPrune();
 	assert.deepEqual(all.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
 	assert.equal(all.reports.at(-1), "**✓ Pi Subagent prune in /git: removed**");
 	// Retained resources never read as a normal completion.
@@ -629,7 +645,7 @@ test("prune preselects prunable items; Continue removes them and ignored content
 		const partial = harness({ prune: prunePlan, cleanup });
 		partial.responses.push(partial.pick("Continue"));
 		partial.confirms.push(true);
-		await partial.run("prune");
+		await partial.reviewPrune();
 		assert.equal(partial.reports.at(-1), `**${glyph} Pi Subagent prune in /git: removed**`);
 	}
 });
@@ -644,7 +660,7 @@ test("prune approval names every ignored entry and leaves out a checkout whose l
 	const h = harness({ prune: plan });
 	h.responses.push(h.pick("Continue"));
 	h.confirms.push(true);
-	await h.run("prune");
+	await h.reviewPrune();
 	const dialog = h.dialogs[1]!.options![0]!;
 	assert.ok(many.every((entry) => dialog.includes(entry)), "every ignored entry is named");
 	assert.doesNotMatch(dialog, /\+\d+ more\)/);
@@ -663,7 +679,7 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	const h = harness({ prune: plan });
 	h.responses.push(h.pick("Continue"));
 	h.confirms.push(true);
-	await h.run("prune");
+	await h.reviewPrune();
 	const review = h.reports[0]!;
 	const ids = new Set(review.split(/[\s,`]+/));
 	const shown = plan.items.filter(({ branch }) => ids.has(branch.slice(-24, -16)));
@@ -688,7 +704,7 @@ test("prune toggles blocked items; force removal needs its own confirmation nami
 		return forced.pick("Continue (1 selected)")(dialog);
 	});
 	forced.confirms.push(true);
-	await forced.run("prune");
+	await forced.reviewPrune();
 	assert.deepEqual(forced.dialogs.filter(({ kind }) => kind === "confirm").map(({ title }) => title), ["Force remove blocked worktrees"]);
 	assert.match(forced.dialogs.at(-1)!.options![0]!, /^Force remove 1 blocked item\(s\)\? This permanently deletes their unique commits[\s\S]*\ne: branch has commits not in Main HEAD$/);
 	assert.deepEqual(forced.pruned, [{ branches: ["pi-subagent/subagent-e"], allowIgnored: false, force: true }]);
@@ -696,7 +712,7 @@ test("prune toggles blocked items; force removal needs its own confirmation nami
 	const declined = harness({ prune: prunePlan });
 	declined.responses.push(declined.pick("[ ] e ·"), declined.pick("Continue (3 selected)"));
 	declined.confirms.push(false, true);
-	await declined.run("prune");
+	await declined.reviewPrune();
 	assert.ok(declined.notices.some(({ message }) => message === "Kept 1 blocked item(s); force removal was not approved."));
 	assert.deepEqual(declined.pruned, [{ branches: ["pi-subagent/subagent-a", "pi-subagent/subagent-b"], allowIgnored: true }]);
 });
@@ -712,7 +728,7 @@ test("prune routes selected request-owned items to one discard of each whole own
 		return h.pick("Select all")(dialog);
 	}, h.pick("Continue (2 selected)"));
 	h.confirms.push(true);
-	await h.run("prune");
+	await h.reviewPrune();
 	assert.deepEqual([h.discarded, h.pruned], [["orphan-req"], []]);
 	const confirms = h.dialogs.filter(({ kind }) => kind === "confirm");
 	assert.equal(confirms.length, 1);
@@ -814,4 +830,223 @@ test("discard deletes only fully shown groups, including their full ignored-entr
 	await h.run();
 	assert.deepEqual(h.discardedKeys, ["shown"]);
 	assert.match(h.reports[0]!, /\n\* ⚠ \+1 more not shown; they are not removed/);
+});
+
+test("prune returns during scan, repeats show progress, and only a later command opens review", async () => {
+	const h = harness();
+	const scan = deferred<PrunePlan>();
+	let scans = 0;
+	h.adapter.prunePlan = async (_cwd, current, progress) => {
+		scans++;
+		assert.equal(current!(), true);
+		progress!(1, 2);
+		return scan.promise;
+	};
+	await h.run("prune");
+	assert.equal(h.dialogs.length, 0);
+	assert.equal(h.statuses.at(-1), "● Prune scan 1/2");
+	await h.run("prune");
+	assert.equal(scans, 1);
+	assert.match(h.notices.at(-1)!.message, /Prune scan 1\/2/);
+	scan.resolve({ root: "/git", items: [prunePlan.items[1]!] });
+	await settle();
+	assert.equal(h.dialogs.length, 0, "completion must not open a delayed dialog");
+	assert.match(h.notices.at(-1)!.message, /scan ready/);
+	h.append(); // Normal session growth must not invalidate the scan.
+	h.responses.push(h.pick("Continue"));
+	await h.run("prune");
+	await settle();
+	assert.equal(scans, 1, "the ready plan is reviewed without another scan");
+	assert.equal(h.pruned.length, 1);
+	assert.equal(h.statuses.at(-1), undefined);
+});
+
+test("prune cancel stops pending scans, holds the slot until settlement, and clears ready plans", async () => {
+	const h = harness();
+	const scan = deferred<PrunePlan>();
+	let scans = 0;
+	let allowed!: () => boolean;
+	h.adapter.prunePlan = async (_cwd, current) => { scans++; allowed = current!; return scan.promise; };
+	await h.run("prune");
+	await h.run("prune cancel");
+	assert.equal(allowed(), false);
+	assert.equal(h.statuses.at(-1), undefined);
+	await h.run("prune");
+	assert.equal(scans, 1);
+	assert.match(h.notices.at(-1)!.message, /stopping/);
+	scan.resolve(prunePlan);
+	await settle();
+	assert.equal(h.reports.length, 0);
+	assert.equal(h.notices.some(({ message }) => message.includes("scan ready")), false);
+	await h.run("prune");
+	await settle();
+	assert.equal(scans, 2);
+	await h.run("prune cancel");
+	await h.run("prune");
+	await settle();
+	assert.equal(scans, 3, "cancelling a ready plan requires a fresh scan");
+	assert.equal(h.dialogs.length, 0);
+});
+
+test("confirmed prune returns during removal, cancellation keeps partial reports, and busy commands cannot overlap", async () => {
+	const h = harness({ prune: { root: "/git", items: [prunePlan.items[1]!] } });
+	const removal = deferred<{ text: string; failed: number; skipped: number }>();
+	let allowed!: () => boolean, calls = 0;
+	h.adapter.prune = async (_cwd, _items, _ignored, _force, current, progress) => {
+		calls++; allowed = current;
+		progress!(0, 1);
+		return removal.promise;
+	};
+	await h.run("prune");
+	h.responses.push(h.pick("Continue"));
+	await h.run("prune");
+	assert.equal(calls, 1, "command returns while cleanup is pending");
+	assert.equal(allowed(), true);
+	await h.run("prune");
+	assert.equal(calls, 1);
+	assert.match(h.notices.at(-1)!.message, /cleanup 0\/1/);
+	await h.run("prune cancel");
+	assert.equal(allowed(), false);
+	assert.equal(h.statuses.at(-1), undefined);
+	removal.resolve({ text: "checkout removed; branch kept", failed: 0, skipped: 1 });
+	await settle();
+	assert.match(h.reports.at(-1)!, /checkout removed; branch kept/);
+	assert.match(h.notices.at(-1)!.message, /Prune stopped/);
+	assert.equal(h.dialogs.length, 1);
+});
+
+test("prune binds scans, ready plans, and cleanup reports to the launching generation", async () => {
+	for (const event of ["session_start", "session_shutdown", "session_tree"]) {
+		for (const phase of ["scan", "ready", "cleanup"]) {
+			const h = harness({ prune: { root: "/git", items: [prunePlan.items[1]!] } });
+			const scan = deferred<PrunePlan>();
+			const removal = deferred<{ text: string; failed: number; skipped: number }>();
+			let allowed!: () => boolean;
+			if (phase === "scan") h.adapter.prunePlan = async (_cwd, current) => { allowed = current!; return scan.promise; };
+			h.adapter.prune = async (_cwd, _items, _ignored, _force, current) => { allowed = current; return removal.promise; };
+			await h.run("prune");
+			if (phase === "cleanup") { h.responses.push(h.pick("Continue")); await h.run("prune"); }
+			let lifecycleSettled = false;
+			const lifecycle = Promise.resolve(h.event(event)).then(() => { lifecycleSettled = true; });
+			if (event === "session_shutdown" && phase !== "ready") {
+				await settle();
+				assert.equal(lifecycleSettled, false, "replacement must wait for the old runtime's active operation");
+			}
+			if (phase !== "ready") assert.equal(allowed(), false);
+			assert.equal(h.statuses.at(-1), undefined);
+			const reports = h.reports.length, notices = h.notices.length, dialogs = h.dialogs.length, statuses = h.statuses.length;
+			scan.resolve(prunePlan);
+			removal.resolve({ text: "stale result", failed: 0, skipped: 0 });
+			await lifecycle;
+			await settle();
+			assert.deepEqual([h.reports.length, h.notices.length, h.dialogs.length, h.statuses.length], [reports, notices, dialogs, statuses], `${event}: stale ${phase} cannot change reports or clear a new runtime's status`);
+			if (phase === "ready") { await h.run("prune"); assert.equal(h.dialogs.length, 0, "the old ready plan cannot be reviewed"); }
+		}
+	}
+	for (const change of ["changeSession", "changeFile", "changeBranch", "navigateAncestor", "navigateDescendant", "shutdown"] as const) {
+		const h = harness();
+		const scan = deferred<PrunePlan>();
+		h.adapter.prunePlan = () => scan.promise;
+		await h.run("prune");
+		h[change]();
+		scan.resolve(prunePlan);
+		await settle();
+		assert.equal(h.statuses.at(-1), undefined);
+		assert.equal(h.notices.some(({ message }) => message.includes("scan ready")), false, change);
+	}
+});
+
+test("prune failures clear progress and leave the next command free to scan", async () => {
+	for (const phase of ["scan", "cleanup"]) {
+		const h = harness({ prune: { root: "/git", items: [prunePlan.items[1]!] } });
+		let scans = 0;
+		const original = h.adapter.prunePlan;
+		h.adapter.prunePlan = async (...args) => { scans++; if (phase === "scan") throw new Error("inspection unavailable"); return original(...args); };
+		h.adapter.prune = async () => { throw new Error("removal unavailable"); };
+		await h.run("prune");
+		await settle();
+		if (phase === "cleanup") { h.responses.push(h.pick("Continue")); await h.run("prune"); }
+		await settle();
+		assert.match(h.reports.at(-1)!, /unavailable/);
+		assert.equal(h.statuses.at(-1), undefined);
+		await h.run("prune");
+		assert.equal(scans, 2);
+	}
+});
+
+test("prune reviews whole-request discard in the foreground before any background removal", async () => {
+	const owner = { id: "owned", name: "Owned", status: "needs_attention", directory: "/state", root: "/git", orphaned: false };
+	const h = harness({ prune: { root: "/git", items: [prunePlan.items[1]!, { ...prunePlan.items[1]!, branch: "pi-subagent/subagent-owned",
+		prunable: false, override: "discard", owner, blockers: [{ kind: "owner", text: "owned" }] }] } });
+	const plan = deferred<DiscardPlan>();
+	const removal = deferred<void>();
+	const discarded = deferred<void>();
+	const originalPlan = h.adapter.discardPlan, originalPrune = h.adapter.prune, originalDiscard = h.adapter.discard;
+	h.adapter.discardPlan = () => plan.promise;
+	let started = false;
+	h.adapter.prune = async (...args) => { started = true; await removal.promise; return originalPrune(...args); };
+	h.adapter.discard = async (...args) => { await discarded.promise; return originalDiscard(...args); };
+	await h.run("prune");
+	h.responses.push(h.pick("Select all"), h.pick("Continue"));
+	h.confirms.push(true);
+	let returned = false;
+	const review = h.run("prune").then(() => { returned = true; });
+	await settle();
+	assert.deepEqual([started, returned], [false, false], "discard review cannot be orphaned behind background cleanup");
+	plan.resolve(await originalPlan("/cwd", { ...owner, tasks: [] }));
+	await review;
+	assert.equal(started, true);
+	assert.match(h.dialogs.at(-1)!.options![0]!, /whole owning request/);
+	const count = h.dialogs.length;
+	removal.resolve();
+	await settle();
+	assert.equal(h.pruned.length, 1);
+	assert.equal(h.discarded.length, 0);
+	discarded.resolve();
+	await settle();
+	assert.deepEqual(h.discarded, ["owned"]);
+	assert.equal(h.dialogs.length, count, "no dialog opens after the command returns");
+	assert.equal(h.statuses.at(-1), undefined);
+});
+
+test("prune without a user interface awaits inspection and never removes items", async () => {
+	const h = harness({ ui: false });
+	const scan = deferred<PrunePlan>();
+	h.adapter.prunePlan = () => scan.promise;
+	let returned = false;
+	const command = h.run("prune").then(() => { returned = true; });
+	await settle();
+	assert.equal(returned, false);
+	scan.resolve(prunePlan);
+	await command;
+	assert.match(h.messages.at(-1)!, /Report only/);
+	assert.deepEqual([h.pruned, h.discarded, h.dialogs, h.statuses], [[], [], [], []]);
+});
+
+test("prune cancellation during discard reports the active request and does not start the next request", async () => {
+	const h = harness({ prune: { root: "/git", items: ["first", "second"].map((id) => ({ ...prunePlan.items[1]!,
+		branch: `pi-subagent/subagent-${id}`, prunable: false, override: "discard",
+		owner: { id, name: id, status: "needs_attention", directory: "/state", root: "/git", orphaned: false },
+		blockers: [{ kind: "owner", text: id }],
+	})) } });
+	const finish = deferred<void>();
+	const requests: string[] = [];
+	let allowed!: () => boolean;
+	h.adapter.discard = async (_cwd, plan, current) => {
+		requests.push(plan.requestId); allowed = current;
+		await finish.promise;
+		return { text: "first: checkout removed; branch kept", failed: 0, skipped: 1 };
+	};
+	await h.run("prune");
+	h.responses.push(h.pick("Select all"), h.pick("Continue"));
+	h.confirms.push(true);
+	await h.run("prune");
+	assert.deepEqual(requests, ["first"]);
+	await h.run("prune cancel");
+	assert.equal(allowed(), false);
+	finish.resolve();
+	await settle();
+	assert.deepEqual(requests, ["first"]);
+	assert.match(h.reports.at(-1)!, /first: checkout removed; branch kept/);
+	assert.equal(h.statuses.at(-1), undefined);
 });

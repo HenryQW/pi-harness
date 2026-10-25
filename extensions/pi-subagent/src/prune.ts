@@ -6,6 +6,8 @@ import { runProcess } from "./process.ts";
 import { inspectWorktreeDirty, OWNED_BRANCH_PATTERN, WORKTREES_DIRNAME } from "./worktree.ts";
 
 const HERDR_TIMEOUT_MS = 30_000;
+const INSPECTION_CONCURRENCY = 4;
+export type PruneProgress = (completed: number, total: number) => void;
 const IN_PROGRESS_MARKERS = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD", "BISECT_LOG", "rebase-merge", "rebase-apply", "sequencer"];
 
 /** Blockers that a separately confirmed force removal of an unowned item may override; every other kind is hard. */
@@ -47,8 +49,9 @@ export interface PruneGuards {
 	ownership(checkouts: readonly string[]): Promise<PruneOwnership>;
 	/** Every Herdr pane; rejects when Herdr cannot be inspected. */
 	panes(): Promise<readonly { paneId: string; cwds: readonly string[] }[]>;
-	/** The confirming session still owns the command; checked immediately before each removal step. */
+	/** The command is not cancelled and its session is current; checked before each candidate and removal step. */
 	current?(): boolean;
+	progress?: PruneProgress;
 }
 
 export type PruneRemoval = { outcome: "removed" | "skipped" | "failed"; item: PruneItem; reason: string };
@@ -105,13 +108,18 @@ async function snapshot(root: string, mainCwd: string, run: GitRunner): Promise<
 	return { primary: checkouts[0].path, checkouts, branches, targets };
 }
 
+function candidateCheckout(snap: Snapshot, branch: string): Checkout | undefined {
+	const ownedPath = join(snap.primary, WORKTREES_DIRNAME, basename(branch));
+	// A detached or switched owned checkout no longer names the branch; find it by its owned path too.
+	return snap.checkouts.find((item) => item.branch === branch) ?? snap.checkouts.find((item) => item.path === ownedPath);
+}
+
 async function classify(snap: Snapshot, branch: string, mainCwd: string, ownership: PruneOwnership,
 	panes: Awaited<ReturnType<PruneGuards["panes"]>> | string, run: GitRunner, root: string): Promise<PruneItem> {
 	const tip = snap.branches.get(branch)!;
 	const name = basename(branch);
 	const ownedPath = join(snap.primary, WORKTREES_DIRNAME, name);
-	// A detached or switched owned checkout no longer names the branch; find it by its owned path too.
-	const checkout = snap.checkouts.find((item) => item.branch === branch) ?? snap.checkouts.find((item) => item.path === ownedPath);
+	const checkout = candidateCheckout(snap, branch);
 	const blockers: PruneBlocker[] = [];
 	const block = (kind: PruneBlockerKind, text: string) => blockers.push({ kind, text });
 	if (checkout && checkout.branch !== branch) block("hard", `owned checkout is ${checkout.branch ? `on branch ${checkout.branch}` : "detached"}; inspect it manually`);
@@ -174,8 +182,34 @@ async function evidence(root: string, mainCwd: string, guards: PruneGuards, run:
 /** Read-only review of every pi-subagent worker or integration branch and its checkout. */
 export async function inspectPruneCandidates(root: string, mainCwd: string, guards: PruneGuards, run: GitRunner = runGit): Promise<PruneItem[]> {
 	const { snap, ownership, panes } = await evidence(root, mainCwd, guards, run);
-	const items: PruneItem[] = [];
-	for (const branch of [...snap.branches.keys()].sort()) items.push(await classify(snap, branch, mainCwd, ownership, panes, run, root));
+	const branches = [...snap.branches.keys()].sort();
+	const groups = new Map<string, number[]>();
+	for (const [index, branch] of branches.entries()) {
+		const checkout = candidateCheckout(snap, branch);
+		// Git inspection refreshes the index. Aliases and owned-path fallbacks must share one worker.
+		const key = checkout && !checkout.missing && existsSync(checkout.path) ? realpathSync.native(checkout.path) : branch;
+		const group = groups.get(key) ?? [];
+		group.push(index);
+		groups.set(key, group);
+	}
+	const pending = [...groups.values()];
+	const items: PruneItem[] = new Array(branches.length);
+	let next = 0, completed = 0, failed = false;
+	guards.progress?.(0, branches.length);
+	const workers = await Promise.allSettled(Array.from({ length: Math.min(INSPECTION_CONCURRENCY, pending.length) }, async () => {
+		try {
+			while (next < pending.length && !failed) {
+				for (const index of pending[next++]!) {
+					if (failed) return;
+					if (guards.current && !guards.current()) throw new Error("Prune scan cancelled or session changed.");
+					items[index] = await classify(snap, branches[index]!, mainCwd, ownership, panes, run, root);
+					guards.progress?.(++completed, branches.length);
+				}
+			}
+		} catch (error) { failed = true; throw error; }
+	}));
+	// Do not release this scan while another worker can still inspect an index.
+	for (const worker of workers) if (worker.status === "rejected") throw worker.reason;
 	return items;
 }
 
@@ -194,30 +228,35 @@ async function removeOne(root: string, mainCwd: string, reviewed: PruneItem, all
 	if (fresh.ignored.some((entry) => !allowIgnored || !reviewed.ignored.includes(entry))) return skip("ignored content was not approved or changed since review");
 	const stale = () => guards.current !== undefined && !guards.current();
 	if (fresh.path) {
-		if (stale()) return skip("session or branch changed before removal; reopen /subagent prune");
+		if (stale()) return skip("prune cancelled or session or branch changed before removal; reopen /subagent prune");
 		// Git removes ignored content without --force; the checks above approved it. Force also deletes reviewed changes.
 		const removed = await run(["worktree", "remove", ...(forced ? ["--force"] : []), fresh.path], root);
 		if (removed.code !== 0) return fail(`git worktree remove failed: ${removed.stderr.trim().slice(0, 200)}`);
 		if (existsSync(fresh.path)) return fail("git worktree remove succeeded but the checkout remains");
 	}
-	if (stale()) return skip(`${fresh.path ? "checkout removed; " : ""}session or branch changed before branch deletion; branch kept`);
-	const deleted = await run(["update-ref", "-d", `refs/heads/${reviewed.branch}`, reviewed.tip], root);
-	if (deleted.code !== 0) return fail(`${fresh.path ? "checkout removed; " : ""}branch kept: ${deleted.stderr.trim().slice(0, 200)}`);
-	return { outcome: "removed", item: reviewed, reason: fresh.reason };
+	if (stale()) return skip(`${fresh.path ? "checkout removed; " : ""}prune cancelled or session or branch changed before branch deletion; branch kept`);
+	try {
+		const deleted = await run(["update-ref", "-d", `refs/heads/${reviewed.branch}`, reviewed.tip], root);
+		if (deleted.code !== 0) return fail(`${fresh.path ? "checkout removed; " : ""}branch kept: ${deleted.stderr.trim().slice(0, 200)}`);
+		return { outcome: "removed", item: reviewed, reason: fresh.reason };
+	} catch (error) { return fail(`${fresh.path ? "checkout removed; " : ""}branch deletion not verified: ${String(error).slice(0, 200)}`); }
 }
 
 /**
  * Re-verify each reviewed prunable item immediately before removing its checkout, then delete its
  * branch only at the reviewed tip. Ignored entries are deleted only when `allowIgnored` and all of
  * them were in the review. With `force`, a reviewed forceable item is removed with `--force` while
- * every fresh blocker is forceable and of a reviewed kind. Returns the repository checkouts that still exist.
+ * every fresh blocker is forceable and of a reviewed kind. Cancellation keeps completed outcomes.
  */
 export async function removePruneCandidates(root: string, mainCwd: string, reviewed: readonly PruneItem[], allowIgnored: boolean,
-	force: boolean, guards: PruneGuards, run: GitRunner = runGit): Promise<{ removals: PruneRemoval[]; checkouts: string[] }> {
+	force: boolean, guards: PruneGuards, run: GitRunner = runGit): Promise<{ removals: PruneRemoval[] }> {
 	const removals: PruneRemoval[] = [];
+	guards.progress?.(0, reviewed.length);
 	for (const item of reviewed) {
-		try { removals.push(await removeOne(root, mainCwd, item, allowIgnored, force, guards, run)); }
+		if (guards.current && !guards.current()) removals.push({ outcome: "skipped", item, reason: "prune cancelled or session changed before removal; reopen /subagent prune" });
+		else try { removals.push(await removeOne(root, mainCwd, item, allowIgnored, force, guards, run)); }
 		catch (error) { removals.push({ outcome: "failed", item, reason: (error instanceof Error ? error.message : String(error)).slice(0, 300) }); }
+		guards.progress?.(removals.length, reviewed.length);
 	}
-	return { removals, checkouts: existing(await snapshot(root, mainCwd, run)) };
+	return { removals };
 }

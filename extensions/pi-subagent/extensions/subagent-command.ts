@@ -1,7 +1,7 @@
 import { getMarkdownTheme, getSelectListTheme, keyHint, keyText, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
-import type { PruneItem } from "../dist/prune.js";
+import type { PruneItem, PruneProgress } from "../dist/prune.js";
 import { TERMINAL_RUN_STATUSES } from "../dist/schema.js";
 import { compactCost } from "./result-transport.ts";
 
@@ -78,11 +78,11 @@ export interface SubagentCommandAdapter {
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
 	/** Read-only review of pi-subagent worktrees and branches in the canonical repository. */
-	prunePlan(cwd: string): Promise<PrunePlan>;
+	prunePlan(cwd: string, current?: () => boolean, progress?: PruneProgress): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
 	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<CleanupReport>;
 	/** Re-verify and remove reviewed prunable items, and with `force` reviewed forceable items; returns a bounded report. */
-	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, force: boolean, current: () => boolean): Promise<CleanupReport>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, force: boolean, current: () => boolean, progress?: PruneProgress): Promise<CleanupReport>;
 	/** Read-only Role catalog report with routes and per-file load errors. */
 	roles(ctx: ExtensionContext): RolesReport;
 	inspectInTab(root: string, requestId: string, ctx: ExtensionContext, current: () => boolean): Promise<{ ref: string; tabId: string; name: string; sessionFile: string }>;
@@ -396,7 +396,8 @@ const pruneLabel = (item: PruneItem) => item.override === "discard"
 	? [`${shortId(item)} · delete whole request ${item.owner!.id} (${item.owner!.status})`, ...item.blockers.filter(({ kind }) => kind !== "owner").map(({ text }) => text)].join(" · ")
 	: `${shortId(item)} · ${item.prunable ? "" : "force · "}${item.reason}`;
 
-export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): void {
+/** Returns the shutdown wait; call it after the runtime has invalidated its other task owners. */
+export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentCommandAdapter): () => Promise<void> | undefined {
 	pi.registerEntryRenderer<Report>(REPORT_ENTRY, (entry, _options, theme) => entry.data && reportComponent(entry.data, theme, 1));
 	pi.registerMessageRenderer(RECOVERY_MESSAGE, (message, { outputPad }, theme) => reportComponent(textReport("info", typeof message.content === "string"
 		? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n"), "Recovery report"), theme, outputPad));
@@ -407,11 +408,43 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 		if (ctx.hasUI) ctx.ui.notify(text, LEVEL[report.tone]);
 		else pi.sendMessage({ customType, content: text, display: true });
 	};
+	type PruneJob = {
+		ctx: ExtensionContext; current: () => boolean; cancelled: boolean; status: string; indicator: boolean;
+		settled?: Promise<void>;
+		state: { kind: "scanning" | "reviewing" | "removing" } | { kind: "ready"; plan: PrunePlan };
+	};
+	let pruneJob: PruneJob | undefined;
+	let generation = 0;
+	const clearPruneStatus = (job: PruneJob) => {
+		if (job.indicator) job.ctx.ui.setStatus("subagent-prune", undefined);
+		job.indicator = false;
+	};
+	const clearPrune = (job: PruneJob) => {
+		if (pruneJob !== job) return;
+		clearPruneStatus(job);
+		pruneJob = undefined;
+	};
+	const pruneStatus = (job: PruneJob, status: string) => {
+		job.status = status;
+		if (job.current() && !job.cancelled && job.ctx.hasUI) {
+			job.indicator = true;
+			job.ctx.ui.setStatus("subagent-prune", `● ${status}`);
+		}
+	};
+	const cancelPrune = (job: PruneJob) => {
+		job.cancelled = true;
+		clearPruneStatus(job);
+		if (job.state.kind === "ready") clearPrune(job);
+	};
+	const invalidatePrune = () => { generation++; if (pruneJob) cancelPrune(pruneJob); };
+	pi.on("session_start", invalidatePrune);
+	pi.on("session_shutdown", invalidatePrune);
+	pi.on("session_tree", invalidatePrune);
 	pi.registerCommand("subagent", {
-		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover orphaned isolated requests with /subagent recover, or remove merged leftover worktrees with /subagent prune",
+		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover with /subagent recover, or scan/review leftovers with /subagent prune (stop with /subagent prune cancel)",
 		handler: async (args, ctx) => {
 			const command = args.trim();
-			if (command && !["prune", "recover", "roles"].includes(command)) throw new Error("Usage: /subagent [prune|recover|roles]");
+			if (command && !["prune", "prune cancel", "recover", "roles"].includes(command)) throw new Error("Usage: /subagent [prune [cancel]|recover|roles]");
 			if (command === "roles") {
 				deliver(ctx, rolesReport(adapter.roles(ctx)), "pi-subagent-roles");
 				return;
@@ -425,8 +458,9 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			// already existed when it opened must not retarget its pending actions.
 			const existing = new Set(manager.getEntries().map((entry) => entry.id));
 			const epoch = adapter.epoch();
-			const current = () => {
-				if (adapter.epoch() !== epoch || manager.getSessionId() !== session || manager.getSessionFile() !== file) return false;
+			const launched = generation;
+			let current = () => {
+				if (generation !== launched || adapter.epoch() !== epoch || manager.getSessionId() !== session || manager.getSessionFile() !== file) return false;
 				const now = manager.getBranch();
 				return now.length >= branch.length && branch.every((id, index) => now[index]?.id === id)
 					&& now.slice(branch.length).every((entry) => !existing.has(entry.id));
@@ -438,36 +472,82 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					{ triggerTurn: true, deliverAs: "followUp" });
 				return;
 			}
+			if (command === "prune" || command === "prune cancel") {
+				const notify = (message: string) => ctx.hasUI ? ctx.ui.notify(message, "info") : deliver(ctx, textReport("info", message));
+				if (pruneJob && !pruneJob.current()) cancelPrune(pruneJob);
+				if (command === "prune cancel") {
+					const job = pruneJob;
+					if (job) cancelPrune(job);
+					notify(job ? "Prune cancelled. An active step can finish; completed removals are not undone." : "No prune operation is active.");
+					return;
+				}
+				if (pruneJob && pruneJob.state.kind !== "ready") {
+					notify(pruneJob.cancelled ? "Prune is stopping; wait for the active step." : `${pruneJob.status}. Use /subagent prune cancel to stop.`);
+					return;
+				}
+				if (!pruneJob) {
+					const job: PruneJob = { ctx, current, cancelled: false, indicator: false, status: "Prune scan starting", state: { kind: "scanning" } };
+					pruneJob = job;
+					pruneStatus(job, job.status);
+					const scan = async () => {
+						try {
+							const plan = await adapter.prunePlan(ctx.cwd, () => job.current() && !job.cancelled,
+								(done, total) => pruneStatus(job, `Prune scan ${done}/${total}`));
+							if (!job.current() || job.cancelled) return;
+							if (!ctx.hasUI) {
+								const reviewed = pruneReview(plan);
+								deliver(ctx, { ...reviewed.report, sections: [...reviewed.report.sections, { rows: [{ text: "Report only: removal requires interactive confirmation." }] }] }, "pi-subagent-prune");
+							} else {
+								job.state = { kind: "ready", plan };
+								pruneStatus(job, "Prune ready · /subagent prune");
+								ctx.ui.notify("Prune scan ready. Run /subagent prune to review it. No items were removed.", "info");
+							}
+						} catch (error) {
+							if (job.current() && !job.cancelled) deliver(ctx, textReport("error", `Prune scan failed: ${errorText(error)}`));
+						} finally { if (job.state.kind !== "ready") clearPrune(job); }
+					};
+					job.settled = scan();
+					if (ctx.hasUI) ctx.ui.notify("Prune scan started. Use /subagent prune cancel to stop.", "info");
+					else await job.settled;
+					return;
+				}
+				const job = pruneJob;
+				current = () => job.current() && !job.cancelled;
+			}
 			const valid = () => {
 				if (current()) return true;
-				ctx.ui.notify("Session or branch changed; reopen /subagent in the current context.", "warning");
+				ctx.ui.notify("Cancelled or session or branch changed; reopen /subagent in the current context.", "warning");
 				return false;
 			};
 			/** Review each request's discard plan, then one confirmation covers every shown unblocked group.
-			 * `whole` states that a request is deleted although only some of its resources were selected. Returns false when stale. */
-			const discardRequests = async (requests: readonly IsolatedRequest[], whole = false): Promise<boolean> => {
+			 * `whole` states that a request is deleted although only some of its resources were selected. Returns undefined when stale. */
+			const reviewDiscardRequests = async (requests: readonly IsolatedRequest[], whole = false): Promise<DiscardPlan[] | undefined> => {
 				const plans: DiscardPlan[] = [];
 				for (const request of requests) {
 					try {
 						const plan = await adapter.discardPlan(ctx.cwd, request);
 						const reviewed = discardReview(plan);
-						if (!valid()) return false;
+						if (!valid()) return;
 						deliver(ctx, reviewed.report);
 						const items = reviewed.shown.filter((item) => !item.blockers.length);
 						if (items.length) plans.push({ ...plan, items });
 					} catch (error) {
-						if (!valid()) return false;
+						if (!valid()) return;
 						ctx.ui.notify(`Close and delete failed for ${request.id}: ${errorText(error)}`, "error");
 					}
 				}
-				if (!plans.length) return true;
+				if (!plans.length) return plans;
 				const groups = plans.reduce((sum, plan) => sum + plan.items.length, 0);
 				const confirmed = await ctx.ui.confirm("Close and delete worktrees (discard work)", clean(`${whole
 					? `This closes and deletes each whole owning request (${plans.map(({ requestId }) => requestId).join(", ")}), not only the selected worktrees. ` : ""}`
 					+ `Stop the listed workers and delete the ${groups} unblocked resource group(s) shown above${plans.length > 1 ? ` across ${plans.length} requests` : ""}? Committed, uncommitted, and ignored content in the listed checkouts is permanently deleted. Their listed branches, Herdr tabs, and workspaces are removed. Items not shown or blocked are kept.`,
 				PRUNE_IGNORED_CONFIRM_CODE_POINTS));
-				if (!valid()) return false;
-				if (!confirmed) return true;
+				if (!valid()) return;
+				return confirmed ? plans : [];
+			};
+			const discardRequests = async (requests: readonly IsolatedRequest[], whole = false): Promise<boolean> => {
+				const plans = await reviewDiscardRequests(requests, whole);
+				if (!plans) return false;
 				for (const plan of plans) {
 					try {
 						const report = await adapter.discard(ctx.cwd, plan, current);
@@ -480,55 +560,68 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				}
 				return true;
 			};
-			if (command === "prune") {
-				const plan = await adapter.prunePlan(ctx.cwd);
-				const reviewed = pruneReview(plan);
-				if (!ctx.hasUI) {
-					deliver(ctx, { ...reviewed.report, sections: [...reviewed.report.sections, { rows: [{ text: "Report only: removal requires interactive confirmation." }] }] }, "pi-subagent-prune");
+			if (command === "prune" && pruneJob?.state.kind === "ready") {
+				const job = pruneJob;
+				const reviewed = pruneReview(pruneJob.state.plan);
+				job.state = { kind: "reviewing" };
+				pruneStatus(job, "Prune review");
+				try {
+					if (!valid()) return;
+					deliver(ctx, reviewed.report);
+					const options = reviewed.shown.filter((item) => item.prunable || item.override);
+					if (!options.length) return;
+					// Continue confirms prunable items; each is re-verified first. Blocked items need their own confirmation below.
+					const picked = await chooseMany(ctx, "Prune subagent worktrees · prunable items are selected", options.map((item) => ({ label: pruneLabel(item), value: item })),
+						options.filter((item) => item.prunable), valid);
+					if (!picked?.length) return;
+					const forceable = picked.filter((item) => item.override === "force");
+					const forceList = fitItems(`Force remove ${forceable.length} blocked item(s)? This permanently deletes their unique commits, tracked and untracked changes, in-progress Git operations, and initialized submodules, as listed. Each is re-verified first and kept if a new kind of blocker appears:`,
+						forceable, (item) => `${shortId(item)}: ${item.reason}`, PRUNE_IGNORED_CONFIRM_CODE_POINTS);
+					const force = forceList.shown.length > 0 && await ctx.ui.confirm("Force remove blocked worktrees",
+						clean(forceList.text.replace(`Force remove ${forceable.length} blocked`, `Force remove ${forceList.shown.length} blocked`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));
+					if (!valid()) return;
+					if (forceable.length && !force) ctx.ui.notify(`Kept ${forceable.length} blocked item(s); force removal was not approved.`, "info");
+					const prunable = [...picked.filter((item) => item.prunable), ...force ? forceList.shown : []];
+					const ignored = prunable.filter((item) => item.ignored.length);
+					// The header uses the full count's width so the shown count always fits.
+					const ignoredList = fitItems(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes these ignored entries and everything inside them:`,
+						// Approval names every ignored entry; a checkout whose full list does not fit is left out of this run.
+						ignored, (item) => clean(`${item.path}: ${item.ignored.join(", ")}`, Number.MAX_SAFE_INTEGER), PRUNE_IGNORED_CONFIRM_CODE_POINTS);
+					const approvable = ignoredList.shown;
+					const allowIgnored = approvable.length > 0 && await ctx.ui.confirm("Delete ignored content",
+						clean(ignoredList.text.replace(`Also remove ${ignored.length} checkout(s)`, `Also remove ${approvable.length} checkout(s)`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));
+					if (!valid()) return;
+					const kept = ignored.length - (allowIgnored ? approvable.length : 0);
+					if (kept) ctx.ui.notify(`Kept ${kept} checkout(s) with ignored content; their deletion was not approved.`, "info");
+					const selected = prunable.filter((item) => !item.ignored.length || (allowIgnored && approvable.includes(item)));
+					// Finish every dialog in the foreground, including whole-request discard review.
+					const owners = new Map(picked.flatMap((item) => item.override === "discard" ? [[`${item.owner!.directory}\0${item.owner!.id}`, item.owner!] as const] : []));
+					const plans = await reviewDiscardRequests([...owners.values()].map((owner) => ({ ...owner, tasks: [] })), true);
+					if (!plans || !valid() || (!selected.length && !plans.length)) return;
+					job.state = { kind: "removing" };
+					pruneStatus(job, "Prune cleanup starting");
+					const cleanup = async () => {
+						try {
+							if (selected.length && current()) {
+								const report = await adapter.prune(ctx.cwd, selected, allowIgnored, force, current,
+									(done, total) => pruneStatus(job, `Prune cleanup ${done}/${total}`));
+								if (job.current()) deliver(ctx, cleanupReport(report));
+							}
+							for (const [index, plan] of plans.entries()) {
+								if (!current()) break;
+								pruneStatus(job, `Prune discard ${index + 1}/${plans.length}`);
+								const report = await adapter.discard(ctx.cwd, plan, current);
+								if (job.current()) deliver(ctx, cleanupReport(report));
+							}
+							if (job.current()) ctx.ui.notify(job.cancelled ? "Prune stopped. See cleanup reports for completed steps; unstarted items were kept."
+								: "Prune cleanup finished. See cleanup reports for removed, skipped, and failed items.", "info");
+						} catch (error) {
+							if (job.current()) deliver(ctx, textReport("error", `Prune cleanup failed: ${errorText(error)}. The active step can have changed resources. Earlier reports still apply; inspect /subagent before retrying.`));
+						} finally { clearPrune(job); }
+					};
+					job.settled = cleanup();
 					return;
-				}
-				if (!valid()) return;
-				deliver(ctx, reviewed.report);
-				const options = reviewed.shown.filter((item) => item.prunable || item.override);
-				if (!options.length) return;
-				// Continue confirms prunable items; each is re-verified first. Blocked items need their own confirmation below.
-				const picked = await chooseMany(ctx, "Prune subagent worktrees · prunable items are selected", options.map((item) => ({ label: pruneLabel(item), value: item })),
-					options.filter((item) => item.prunable), valid);
-				if (!picked?.length) return;
-				const forceable = picked.filter((item) => item.override === "force");
-				const forceList = fitItems(`Force remove ${forceable.length} blocked item(s)? This permanently deletes their unique commits, tracked and untracked changes, in-progress Git operations, and initialized submodules, as listed. Each is re-verified first and kept if a new kind of blocker appears:`,
-					forceable, (item) => `${shortId(item)}: ${item.reason}`, PRUNE_IGNORED_CONFIRM_CODE_POINTS);
-				const force = forceList.shown.length > 0 && await ctx.ui.confirm("Force remove blocked worktrees",
-					clean(forceList.text.replace(`Force remove ${forceable.length} blocked`, `Force remove ${forceList.shown.length} blocked`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));
-				if (!valid()) return;
-				if (forceable.length && !force) ctx.ui.notify(`Kept ${forceable.length} blocked item(s); force removal was not approved.`, "info");
-				const prunable = [...picked.filter((item) => item.prunable), ...force ? forceList.shown : []];
-				const ignored = prunable.filter((item) => item.ignored.length);
-				// The header uses the full count's width so the shown count always fits.
-				const ignoredList = fitItems(`Also remove ${ignored.length} checkout(s) with ignored files? This permanently deletes these ignored entries and everything inside them:`,
-					// Approval names every ignored entry; a checkout whose full list does not fit is left out of this run.
-					ignored, (item) => clean(`${item.path}: ${item.ignored.join(", ")}`, Number.MAX_SAFE_INTEGER), PRUNE_IGNORED_CONFIRM_CODE_POINTS);
-				const approvable = ignoredList.shown;
-				const allowIgnored = approvable.length > 0 && await ctx.ui.confirm("Delete ignored content",
-					clean(ignoredList.text.replace(`Also remove ${ignored.length} checkout(s)`, `Also remove ${approvable.length} checkout(s)`), PRUNE_IGNORED_CONFIRM_CODE_POINTS, true));
-				if (!valid()) return;
-				const kept = ignored.length - (allowIgnored ? approvable.length : 0);
-				if (kept) ctx.ui.notify(`Kept ${kept} checkout(s) with ignored content; their deletion was not approved.`, "info");
-				const selected = prunable.filter((item) => !item.ignored.length || (allowIgnored && approvable.includes(item)));
-				if (selected.length) {
-					try {
-						const report = await adapter.prune(ctx.cwd, selected, allowIgnored, force, current);
-						if (!valid()) return;
-						deliver(ctx, cleanupReport(report));
-					} catch (error) {
-						if (!valid()) return;
-						ctx.ui.notify(`Prune failed: ${errorText(error)}`, "error");
-					}
-				}
-				// Discard owns request-owned items: it closes the request's own workers and panes, then removes its resources.
-				const owners = new Map(picked.flatMap((item) => item.override === "discard" ? [[`${item.owner!.directory}\0${item.owner!.id}`, item.owner!] as const] : []));
-				await discardRequests([...owners.values()].map((owner) => ({ ...owner, tasks: [] })), true);
-				return;
+				} finally { if (job.state.kind === "reviewing") clearPrune(job); }
 			}
 			if (!ctx.hasUI) {
 				const inventory = await adapter.isolated(ctx.cwd, current);
@@ -696,4 +789,6 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 			}
 		},
 	});
+	// A replacement runtime must not inspect an index while this runtime still owns it.
+	return () => pruneJob?.settled;
 }
