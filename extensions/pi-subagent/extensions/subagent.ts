@@ -292,7 +292,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	};
 	// The in-memory counter also covers launches that have not saved a record yet.
 	const nextWorkflow = (ctx: ExtensionContext) => (directWorkflow = Math.max(directWorkflow, ...savedWorkflows(ctx).keys()) + 1);
-	registerSubagentCommand(pi, {
+	const settlePrune = registerSubagentCommand(pi, {
 		direct(ctx): DirectTask[] {
 			const grouped = new Map<string, DirectTask & { workers: DirectDisplay[]; tabs: Array<DirectTask["tabs"][number]> }>();
 			// Delivered results carry measured costs; running or undelivered workflows show none.
@@ -355,10 +355,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 		isolated: isolatedSurface.inventory,
 		recover: (cwd) => isolatedSurface.recover(cwd),
-		prunePlan: (cwd) => isolatedSurface.prunePlan(cwd),
+		prunePlan: (cwd, current, progress) => isolatedSurface.prunePlan(cwd, current, progress),
 		discardPlan: (cwd, request) => isolatedSurface.discardPlan(cwd, request),
 		discard: (cwd, plan, current) => isolatedSurface.discard(cwd, plan, current),
-		prune: (cwd, items, allowIgnored, force, current) => isolatedSurface.prune(cwd, items, allowIgnored, force, current),
+		prune: (cwd, items, allowIgnored, force, current, progress) => isolatedSurface.prune(cwd, items, allowIgnored, force, current, progress),
 		async inspectInTab(root, id, ctx, current) {
 			const notices = await isolatedSurface.inspect(root, id);
 			if (!current()) throw new Error("Session or branch changed before status inspection.");
@@ -584,6 +584,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			await Promise.allSettled(handles.map((handle) => handle.cancel()));
 		}
 		await Promise.allSettled(tasks.map(({ settled }) => settled));
+		await settlePrune();
 		// Unproved workers keep their local ownership and admission across a session switch.
 	});
 	// btw-style context refresh: model_select carries the new model on the event,

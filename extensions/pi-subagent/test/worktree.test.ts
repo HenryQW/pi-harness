@@ -1,14 +1,20 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import test from "node:test";
 import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type WorktreeInfo, type WorktreePayload } from "../src/worktree.ts";
-import type { GitRunner } from "../src/git-process.ts";
+import { runGit, type GitRunner } from "../src/git-process.ts";
 import { inspectPruneCandidates, removePruneCandidates, type PruneGuards } from "../src/prune.ts";
 import { loadRoleCatalog } from "../src/index.ts";
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
 const fail = (stderr = "") => ({ code: 1, stdout: "", stderr });
@@ -815,13 +821,12 @@ test("prune removes only a merged clean worktree and names each blocker", async 
 	assert.equal(reason(owned.branch), "owned by running request r");
 	assert.equal(reason(paned.branch), "Herdr pane w1:p2 works inside the checkout");
 
-	const { removals, checkouts } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, false, guards);
+	const { removals } = await removePruneCandidates(repo, repo, items.filter((item) => item.prunable), false, false, guards);
 	assert.deepEqual(removals.map(({ outcome, item }) => [outcome, item.branch]).sort(), [["removed", merged.branch], ["removed", legacyBranch]].sort());
 	assert.equal(existsSync(legacyPath), false);
 	assert.equal(git(repo, "branch", "--list", legacyBranch), "");
 	assert.equal(existsSync(merged.path), false);
 	assert.equal(git(repo, "branch", "--list", merged.branch), "");
-	assert.deepEqual([...checkouts].sort(), [repo, unique.path, dirty.path, owned.path, paned.path].sort());
 	for (const kept of [unique, dirty, owned, paned]) assert.equal(existsSync(kept.path), true);
 
 	const unavailable = await inspectPruneCandidates(repo, repo, pruneGuards({ panes: new Error("herdr pane list failed: server not running") }));
@@ -914,7 +919,7 @@ test("prune blocks initialized submodules until forced and stops when the sessio
 	const item = items.find((entry) => entry.branch === plain.branch)!;
 	assert.equal(item.prunable, true);
 	const { removals } = await removePruneCandidates(repo, repo, [item], false, false, { ...pruneGuards(), current: () => false });
-	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "session or branch changed before removal; reopen /subagent prune"]]);
+	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "prune cancelled or session changed before removal; reopen /subagent prune"]]);
 	assert.equal(existsSync(plain.path), true);
 	assert.notEqual(git(repo, "branch", "--list", plain.branch), "");
 });
@@ -947,4 +952,135 @@ test("prune skips a branch whose ref moved after review", async (t) => {
 	const { removals } = await removePruneCandidates(repo, repo, [item!], false, false, pruneGuards());
 	assert.deepEqual(removals.map(({ outcome, reason }) => [outcome, reason]), [["skipped", "branch was deleted or moved since review"]]);
 	assert.equal(git(repo, "rev-parse", `refs/heads/${worktree.branch}`), git(repo, "rev-parse", "HEAD"));
+});
+
+test("prune scans at most four candidates and serializes canonical checkout aliases and owned-path fallbacks", async (t) => {
+	const repo = await realpath(await tempDir(t));
+	const letters = [..."12345678"];
+	const branch = (id: string) => `pi-subagent/subagent-${id.repeat(24)}`;
+	const path = (id: string) => join(repo, ".worktrees", basename(branch(id)));
+	for (const id of ["1", ...letters.slice(3)]) await mkdir(path(id), { recursive: true });
+	await symlink(path("1"), path("3"));
+	// 1 falls back to its owned path, 2 names that same checkout, and 3 is a canonical-path alias.
+	const registered = [{ path: path("1"), branch: branch("2") }, { path: path("3"), branch: branch("3") },
+		...letters.slice(3).map((id) => ({ path: path(id), branch: branch(id) }))];
+	const entered = new Set<string>();
+	const pending: Array<() => void> = [];
+	const firstFour = deferred<void>();
+	let active = 0, peak = 0, started = 0;
+	const progress: number[] = [];
+	const run: GitRunner = async (args, cwd) => {
+		if (args[0] === "worktree") return ok(`worktree ${repo}\0\0${registered.map((item) => `worktree ${item.path}\0branch refs/heads/${item.branch}\0\0`).join("")}`);
+		if (args[0] === "for-each-ref") return ok([...letters].reverse().map((id) => `${branch(id)} ${id}`).join("\n"));
+		if (args[0] === "symbolic-ref") return fail();
+		if (args[0] === "merge-base") { started++; active++; peak = Math.max(peak, active); return ok(); }
+		if (args[0] === "rev-parse" && args[1] === "--absolute-git-dir") {
+			const canonical = realpathSync.native(cwd);
+			assert.equal(entered.has(canonical), false, "no second inspection may touch the same index");
+			entered.add(canonical);
+			return ok(join(cwd, ".git"));
+		}
+		if (args[0] === "status" && args.includes("--ignored=matching")) {
+			await new Promise<void>((resolve) => { pending.push(resolve); if (pending.length === 4) firstFour.resolve(); });
+			entered.delete(realpathSync.native(cwd));
+			active--;
+		}
+		return ok();
+	};
+	const scan = inspectPruneCandidates(repo, repo, { ...pruneGuards(), progress: (done) => progress.push(done) }, run);
+	await firstFour.promise;
+	assert.deepEqual([started, active, peak], [4, 4, 4], "four inspections start before any is released");
+	// Drain controlled barriers, not elapsed-time thresholds.
+	for (let round = 0; round < letters.length; round++) {
+		for (const release of pending.splice(0)) release();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	const items = await scan;
+	assert.equal(peak, 4);
+	assert.deepEqual(items.map((item) => item.branch), letters.map(branch));
+	assert.deepEqual(progress, Array.from({ length: 9 }, (_, n) => n));
+	assert.match(items[0]!.reason, /owned checkout is on branch/);
+	assert.match(items[1]!.reason, /checkout is not at its owned/);
+});
+
+test("prune cancellation lets an active deletion settle and keeps later items without further inspection", async (t) => {
+	for (const stopAfter of ["checkout", "branch"]) await t.test(stopAfter, async (t) => {
+		const repo = await realpath(await initializedRepository(t));
+		const first = (await createChildWorktree(repo, "first"))!;
+		const second = (await createChildWorktree(repo, "second"))!;
+		const reviewed = await inspectPruneCandidates(repo, repo, pruneGuards());
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		let current = true, snapshots = 0;
+		const destructive: string[][] = [];
+		const run: GitRunner = async (args, cwd) => {
+			if (args[0] === "worktree" && args[1] === "list") snapshots++;
+			if (args[0] === "update-ref" || (args[0] === "worktree" && args[1] === "remove")) destructive.push(args);
+			const result = await runGit(args, cwd);
+			if (stopAfter === "branch" ? args[0] === "update-ref" : args[0] === "worktree" && args[1] === "remove") { entered.resolve(); await release.promise; }
+			return result;
+		};
+		const removal = removePruneCandidates(repo, repo, reviewed, false, false, { ...pruneGuards(), current: () => current }, run);
+		await entered.promise;
+		current = false;
+		release.resolve();
+		const result = await removal;
+		assert.deepEqual(result.removals.map(({ outcome }) => outcome), [stopAfter === "branch" ? "removed" : "skipped", "skipped"]);
+		assert.equal(snapshots, 1, "cancellation does not inspect more candidates or run a final scan");
+		assert.equal(destructive.length, stopAfter === "branch" ? 2 : 1, "no further destructive step starts after cancellation");
+		if (stopAfter === "checkout") {
+			assert.match(result.removals[0]!.reason, /checkout removed;.*branch kept/);
+			assert.notEqual(git(repo, "branch", "--list", first.branch), "");
+		}
+		assert.equal(existsSync(first.path), false);
+		assert.equal(existsSync(second.path), true);
+		assert.notEqual(git(repo, "branch", "--list", second.branch), "");
+	});
+});
+
+test("a cancelled or failed prune scan drains active inspections without starting queued candidates", async (t) => {
+	const repo = await tempDir(t);
+	for (const mode of ["cancel", "fail"]) {
+		const gates = [..."abcde"].map(() => deferred<void>());
+		const four = deferred<void>();
+		let started = 0, current = true, settled = false;
+		const run: GitRunner = async (args) => {
+			if (args[0] === "worktree") return ok(`worktree ${repo}\0\0`);
+			if (args[0] === "for-each-ref") return ok([..."abcde"].map((id) => `pi-subagent/subagent-${id.repeat(24)} ${id}`).join("\n"));
+			if (args[0] === "symbolic-ref") return fail();
+			if (args[0] === "merge-base") {
+				const index = started++;
+				if (started === 4) four.resolve();
+				await gates[index]!.promise;
+				if (mode === "fail" && index === 0) return { code: 2, stdout: "", stderr: "inspection failed" };
+			}
+			return ok();
+		};
+		const scan = inspectPruneCandidates(repo, repo, { ...pruneGuards(), current: () => current }, run);
+		const result = scan.then(() => { settled = true; return "unexpected success"; }, (error) => { settled = true; return String(error); });
+		await four.promise;
+		if (mode === "cancel") current = false;
+		gates[0]!.resolve();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(settled, false, "the scan still owns its pending inspections");
+		assert.equal(started, 4, "the queued fifth candidate must not start");
+		for (const gate of gates.slice(1)) gate.resolve();
+		assert.match(await result, mode === "cancel" ? /cancelled/ : /inspection failed/);
+	}
+});
+
+test("prune reports completed removals and a removed checkout when later branch deletion throws", async (t) => {
+	const repo = await realpath(await initializedRepository(t));
+	await createChildWorktree(repo, "first");
+	const second = (await createChildWorktree(repo, "second"))!;
+	const items = await inspectPruneCandidates(repo, repo, pruneGuards());
+	const run: GitRunner = async (args, cwd) => {
+		if (args[0] === "update-ref" && args[2] === `refs/heads/${second.branch}`) throw new Error("branch deletion unavailable");
+		return runGit(args, cwd);
+	};
+	const { removals } = await removePruneCandidates(repo, repo, items, false, false, pruneGuards(), run);
+	assert.deepEqual(removals.map(({ outcome }) => outcome), ["removed", "failed"]);
+	assert.match(removals[1]!.reason, /checkout removed; branch deletion not verified:.*branch deletion unavailable/);
+	assert.equal(existsSync(second.path), false);
+	assert.notEqual(git(repo, "branch", "--list", second.branch), "");
 });

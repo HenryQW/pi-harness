@@ -12,7 +12,7 @@ import {
 	type DirectProcessRunner,
 } from "../dist/git-runtime.js";
 import { HerdrHostRuntime } from "../dist/herdr-runtime.js";
-import { inspectPruneCandidates, listHerdrPanes, removePruneCandidates, type PruneGuards, type PruneItem } from "../dist/prune.js";
+import { inspectPruneCandidates, listHerdrPanes, removePruneCandidates, type PruneGuards, type PruneItem, type PruneProgress } from "../dist/prune.js";
 import { runProcess as directRunProcess } from "../dist/process.js";
 import { RoleLaunchRuntime, type LaunchRuntimeOptions } from "../dist/launch-runtime.js";
 import { IsolatedRunner, nextIntegrationAction, type ExecutePlan, type OperationContext, type RunResponse } from "../dist/runner.js";
@@ -520,10 +520,10 @@ export interface IsolatedSurface {
 	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
-	prunePlan(cwd: string): Promise<PrunePlan>;
+	prunePlan(cwd: string, current?: () => boolean, progress?: PruneProgress): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
 	discard(cwd: string, plan: DiscardPlan, current: () => boolean): Promise<CleanupReport>;
-	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, force: boolean, current: () => boolean): Promise<CleanupReport>;
+	prune(cwd: string, items: readonly PruneItem[], allowIgnored: boolean, force: boolean, current: () => boolean, progress?: PruneProgress): Promise<CleanupReport>;
 	inspect(root: string, requestId: string): Promise<readonly string[]>;
 	canFollowup(root: string, requestId: string, taskId: string): boolean;
 	enqueue(root: string, requestId: string, taskId: string, text: string, current: () => boolean): string;
@@ -549,6 +549,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	const stateListeners = new Set<(state: RunState) => void>();
 	const activeJobs = new Set<AbortController>();
 	const jobOwners = new Map<string, { canDeliver(): boolean; pendingResult(): boolean }>();
+	const discardDeliveries = new Map<string, () => boolean>();
 	let sessionEpoch = 0;
 	let sessionClosed = false;
 
@@ -570,8 +571,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		onStateSaved: (state) => {
 			savedRevision += 1;
 			for (const listener of stateListeners) listener(state);
-			const owner = jobOwners.get(`${state.root}\0${state.request.id}`);
-			if (!sessionClosed && (owner === undefined || owner.canDeliver())) {
+			const key = `${state.root}\0${state.request.id}`;
+			const owner = jobOwners.get(key);
+			const discardCurrent = discardDeliveries.get(key);
+			if (!sessionClosed && (owner === undefined || owner.canDeliver()) && (discardCurrent === undefined || discardCurrent())) {
 				updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest);
 			}
 		},
@@ -888,32 +891,39 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		},
 		async discard(cwd, plan, current) {
 			requireCurrent(current);
-			const removals = await getComponents().runner.discard(cwd, plan, {
-				panes: () => listHerdrPanes(cwd), current: () => current() && !sessionClosed,
-				blocked: async () => jobOwners.has(`${plan.root}\0${plan.requestId}`) ? "A local job is active for this request." : undefined,
-			});
-			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
-			return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([`Close and delete ${plan.requestId}:`,
-				...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
-			], "removal report lines omitted; reopen /subagent to inspect retained resources.") };
+			const key = `${plan.root}\0${plan.requestId}`;
+			const epoch = sessionEpoch;
+			const canDeliver = () => current() && !sessionClosed && sessionEpoch === epoch;
+			discardDeliveries.set(key, canDeliver);
+			try {
+				const removals = await getComponents().runner.discard(cwd, plan, {
+					panes: () => listHerdrPanes(cwd), current: canDeliver,
+					blocked: async () => jobOwners.has(key) ? "A local job is active for this request." : undefined,
+				});
+				const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
+				return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([`Close and delete ${plan.requestId}:`,
+					...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
+				], "removal report lines omitted; reopen /subagent to inspect retained resources.") };
+			} finally {
+				if (discardDeliveries.get(key) === canDeliver) discardDeliveries.delete(key);
+			}
 		},
-		async prunePlan(cwd) {
+		async prunePlan(cwd, current, progress) {
 			const root = await lookupRoot(cwd);
-			return { root, items: await inspectPruneCandidates(root, cwd, pruneGuards(root)) };
+			return { root, items: await inspectPruneCandidates(root, cwd, { ...pruneGuards(root), current, progress }) };
 		},
-		async prune(cwd, items, allowIgnored, force, current) {
+		async prune(cwd, items, allowIgnored, force, current, progress) {
 			requireCurrent(current);
 			const root = await lookupRoot(cwd);
-			const { removals, checkouts } = await removePruneCandidates(root, cwd, items, allowIgnored, force,
-				{ ...pruneGuards(root), current: () => current() && !sessionClosed });
+			const { removals } = await removePruneCandidates(root, cwd, items, allowIgnored, force,
+				{ ...pruneGuards(root), current: () => current() && !sessionClosed, progress });
 			const removed = removals.filter(({ outcome }) => outcome === "removed");
-			const reconciled = removed.length
-				? await getComponents().runner.reconcilePrunedAborts(checkouts, removed.map(({ item }) => basename(item.branch))) : [];
 			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
-			return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([
-				`Pi Subagent prune in ${root}: ${removed.length} removed, ${count("skipped")} skipped, ${count("failed")} failed.`,
+			const failed = count("failed");
+			return { failed, skipped: count("skipped"), text: boundedReport([
+				`Pi Subagent prune in ${root}: ${removed.length} removed, ${count("skipped")} skipped, ${failed} failed.`,
 				...removals.map(({ outcome, item, reason }) => `${outcome}: ${item.path ?? "(no checkout)"} · ${item.branch} · ${reason}`),
-				...reconciled,
+				...(removed.length ? ["If an aborted request still shows retained resources, inspect subagent_status and repeat subagent_abort to reconcile cleanup."] : []),
 			], "prune report lines omitted.") };
 		},
 		async inspect(root, requestId) {
