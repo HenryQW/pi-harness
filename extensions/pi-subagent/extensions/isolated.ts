@@ -549,6 +549,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 	const stateListeners = new Set<(state: RunState) => void>();
 	const activeJobs = new Set<AbortController>();
 	const jobOwners = new Map<string, { canDeliver(): boolean; pendingResult(): boolean }>();
+	const discardDeliveries = new Map<string, () => boolean>();
 	let sessionEpoch = 0;
 	let sessionClosed = false;
 
@@ -570,8 +571,10 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		onStateSaved: (state) => {
 			savedRevision += 1;
 			for (const listener of stateListeners) listener(state);
-			const owner = jobOwners.get(`${state.root}\0${state.request.id}`);
-			if (!sessionClosed && (owner === undefined || owner.canDeliver())) {
+			const key = `${state.root}\0${state.request.id}`;
+			const owner = jobOwners.get(key);
+			const discardCurrent = discardDeliveries.get(key);
+			if (!sessionClosed && (owner === undefined || owner.canDeliver()) && (discardCurrent === undefined || discardCurrent())) {
 				updateWorkspaceWidgetSafely(latestContext(), state, workspaceRowsByRequest);
 			}
 		},
@@ -888,14 +891,22 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 		},
 		async discard(cwd, plan, current) {
 			requireCurrent(current);
-			const removals = await getComponents().runner.discard(cwd, plan, {
-				panes: () => listHerdrPanes(cwd), current: () => current() && !sessionClosed,
-				blocked: async () => jobOwners.has(`${plan.root}\0${plan.requestId}`) ? "A local job is active for this request." : undefined,
-			});
-			const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
-			return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([`Close and delete ${plan.requestId}:`,
-				...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
-			], "removal report lines omitted; reopen /subagent to inspect retained resources.") };
+			const key = `${plan.root}\0${plan.requestId}`;
+			const epoch = sessionEpoch;
+			const canDeliver = () => current() && !sessionClosed && sessionEpoch === epoch;
+			discardDeliveries.set(key, canDeliver);
+			try {
+				const removals = await getComponents().runner.discard(cwd, plan, {
+					panes: () => listHerdrPanes(cwd), current: canDeliver,
+					blocked: async () => jobOwners.has(key) ? "A local job is active for this request." : undefined,
+				});
+				const count = (outcome: string) => removals.filter((item) => item.outcome === outcome).length;
+				return { failed: count("failed"), skipped: count("skipped"), text: boundedReport([`Close and delete ${plan.requestId}:`,
+					...removals.map((item) => `${item.outcome}: ${item.key}: ${item.reason}`),
+				], "removal report lines omitted; reopen /subagent to inspect retained resources.") };
+			} finally {
+				if (discardDeliveries.get(key) === canDeliver) discardDeliveries.delete(key);
+			}
 		},
 		async prunePlan(cwd, current, progress) {
 			const root = await lookupRoot(cwd);

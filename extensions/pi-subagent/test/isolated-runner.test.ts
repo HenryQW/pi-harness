@@ -918,7 +918,7 @@ test("abort during agent startup waits for durable ownership and terminates that
 	assertParsed(aborted.state);
 });
 
-test("prune reconciles only aborted requests that recorded a removed resource, through the guarded abort path", async (t) => {
+test("repeat abort reconciles a pruned request without changing other retained requests", async (t) => {
 	const { root, runtime, runner } = await harness(t);
 	const checked = new CheckedGitRuntime();
 	runtime.main = await checked.inspectMain({ root }, { signal: new AbortController().signal });
@@ -941,8 +941,7 @@ test("prune reconciles only aborted requests that recorded a removed resource, t
 	// Simulate /subagent prune removing exactly one recorded checkout and branch.
 	execFileSync("git", ["worktree", "remove", "--force", pruned.path], { cwd: root });
 	execFileSync("git", ["branch", "-D", pruned.branch], { cwd: root });
-	const lines = await runner.reconcilePrunedAborts([root], [basename(pruned.branch)]);
-	assert.deepEqual(lines, ["Reconciled cleanup of aborted request prune-reconciled."]);
+	await runner.abort("prune-reconciled", root);
 	assert.deepEqual([await status("prune-reconciled"), await status("prune-untouched")], ["aborted", "aborted · retained"]);
 });
 
@@ -3258,6 +3257,65 @@ test("confirmed discard removes old and readable owned checkouts with committed,
 	assert.deepEqual(runtime.cleanupCalls, ["worker_tab", "workspace"]);
 	assertParsed(state);
 	assert.deepEqual((await runner.discardPlan(root, "discard-request", undefined, discardGuards)).items, []);
+});
+
+test("discard cancellation stops an unstarted termination and permits retry", async (t) => {
+	for (const phase of ["reconciliation", "intent-save", "termination"] as const) {
+		await t.test(phase, async (t) => {
+			const { root, worker, runner, runtime, store } = await discardFixture(t);
+			const plan = await runner.discardPlan(root, "discard-request", undefined, discardGuards);
+			let start!: () => void;
+			let release!: () => void;
+			const started = new Promise<void>((resolve) => { start = resolve; });
+			const released = new Promise<void>((resolve) => { release = resolve; });
+			let paused = false;
+			const pause = async () => {
+				if (paused) return;
+				paused = true;
+				start();
+				await released;
+			};
+			const reconcile = runtime.reconcileWorkerTermination.bind(runtime);
+			runtime.reconcileWorkerTermination = async (input) => {
+				if (phase === "reconciliation") await pause();
+				return await reconcile(input);
+			};
+			const load = store.loadFromDirectory.bind(store);
+			store.loadFromDirectory = async (directory, id) => {
+				const handle = await load(directory, id);
+				const save = handle.save.bind(handle);
+				handle.save = async () => {
+					await save();
+					if (phase === "intent-save" && changesetState(handle.state, "change").attempts[0]!.termination?.status === "terminating") await pause();
+				};
+				return handle;
+			};
+			const terminate = runtime.terminateWorker.bind(runtime);
+			runtime.terminateWorker = async (input, context) => {
+				const saved = (await store.load(root, "discard-request")).state;
+				assert.equal(changesetState(saved, "change").attempts[0]!.termination?.status, "terminating", "save intent before closing");
+				const result = await terminate(input, context);
+				if (phase === "termination") await pause();
+				return result;
+			};
+			let current = true;
+			const pending = runner.discard(root, plan, { ...discardGuards, current: () => current });
+			await started;
+			current = false;
+			release();
+			const results = await pending;
+			assert.equal(results[0]!.outcome, "failed", JSON.stringify(results));
+			assert.match(results[0]!.reason, /Session changed/);
+			assert.equal(runtime.terminationCalls.length, phase === "termination" ? 1 : 0);
+			const saved = (await store.load(root, "discard-request")).state;
+			assert.equal(changesetState(saved, "change").attempts[0]!.termination?.status,
+				phase === "termination" ? "terminated" : undefined, "retain completed proof, but clear unstarted intent");
+			assert.deepEqual(runtime.cleanupCalls, []);
+			assert.equal(await readFile(join(worker.path, "worker.txt"), "utf8"), "uncommitted work\n");
+			assert.equal((await runner.discard(root, plan, discardGuards))[0]!.outcome, "removed");
+			assert.equal(runtime.terminationCalls.length, 1, "retry closes only an unstarted termination");
+		});
+	}
 });
 
 test("discard keeps a branch that moved after review and does not close its host resources", async (t) => {

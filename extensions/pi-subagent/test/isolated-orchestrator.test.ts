@@ -905,6 +905,10 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 				save(recovering);
 				return await resumeDone.promise;
 			},
+			async discard(...[, , guards]: Parameters<IsolatedExtensionComponents["runner"]["discard"]>) {
+				assert.equal(await guards.blocked(), "A local job is active for this request.");
+				return [];
+			},
 		} as never,
 	});
 	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
@@ -915,6 +919,9 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	assert.equal(harness.sent.length, 0);
 	assert.equal(harness.surface.hasPendingResult("origin"), true);
 	assert.equal(harness.surface.hasPendingResult("foreign"), false);
+	await harness.surface.discard(CANONICAL_ROOT,
+		{ root: CANONICAL_ROOT, directory: "/saved", requestId: "request-one", items: [] }, () => true);
+	assert.equal(harness.surface.hasPendingResult("origin"), true, "discard must not replace the productive owner");
 	await assert.rejects(executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx), /already active/);
 	turn.abort(); // The tool's turn no longer owns the productive run.
 	assert.equal(harness.surface.hasPendingResult("origin"), true);
@@ -1223,6 +1230,50 @@ test("resume saved before session replacement cannot acknowledge or paint the ne
 	done.resolve(response("resume", true));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 0);
+});
+
+test("discard saves cannot update widgets after cancellation or session replacement", async (t) => {
+	for (const invalidation of ["current", "session", "shutdown"] as const) {
+		await t.test(invalidation, async () => {
+			const done = deferred<void>();
+			const started = deferred<void>();
+			const widgets: Array<string[] | undefined> = [];
+			const ctx = {
+				...context(CANONICAL_ROOT), hasUI: true,
+				ui: { setWidget: (_key: string, content: WidgetContent) => widgets.push(renderWidget(content)) },
+				sessionManager: { getSessionId: () => "origin" },
+			} as unknown as ExtensionContext;
+			const state = structuredClone(PRIVATE_STATE);
+			addWorkspace(state);
+			let save!: (state: RunState) => void;
+			let saved = 0;
+			const harness = createHarness({
+				onCreate(options) { save = options.onStateSaved; },
+				runner: { async discard(...[, , guards]: Parameters<IsolatedExtensionComponents["runner"]["discard"]>) {
+					assert.equal(await guards.blocked(), undefined, "discard must not block itself");
+					save(state);
+					started.resolve();
+					await done.promise;
+					assert.equal(guards.current(), false);
+					for (let i = 0; i < 2; i++) { save({ ...state, status: "aborted" }); saved++; }
+					return [];
+				} } as never,
+			});
+			harness.handlers.get("session_start")!({}, ctx);
+			let current = true;
+			const pending = harness.surface.discard(CANONICAL_ROOT,
+				{ root: CANONICAL_ROOT, directory: "/saved", requestId: "request-one", items: [] }, () => current);
+			await started.promise;
+			assert.deepEqual(widgets.at(-1), workspaceWidgetLines(state));
+			if (invalidation === "current") current = false;
+			else harness.handlers.get(invalidation === "session" ? "session_start" : "session_shutdown")!({}, ctx);
+			const before = widgets.length;
+			done.resolve();
+			await pending;
+			assert.equal(saved, 2, "durable saves continue after cancellation");
+			assert.equal(widgets.length, before, "stale discard saves must not paint the current widget");
+		});
+	}
 });
 
 test("an isolated dry run returns the bounded resolved plan without execute, saved state, or follow-up", async () => {

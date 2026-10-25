@@ -1045,29 +1045,6 @@ export class IsolatedRunner {
 			.map(({ label, request }) => ({ label, ...(request ? { request } : {}) })) };
 	}
 
-	/** After pruning, reconcile aborted requests that recorded a removed resource through the guarded abort path. */
-	async reconcilePrunedAborts(checkouts: readonly string[], names: readonly string[]): Promise<string[]> {
-		const lines: string[] = [];
-		for (const checkout of checkouts) {
-			const root = realpathSync.native(checkout);
-			const { requests, states } = await this.listRequests(root);
-			for (const [index, state] of states.entries()) {
-				const id = state.request.id;
-				const text = JSON.stringify(state);
-				if (requests[index]!.status !== "aborted · retained" || !names.some((name) => text.includes(name))) continue;
-				try {
-					await this.abort(id, root);
-					const after = (await this.listRequests(root)).requests.find((request) => request.id === id);
-					lines.push(after?.status === "aborted" ? `Reconciled cleanup of aborted request ${id}.`
-						: `Aborted request ${id} still has pending cleanup; inspect subagent_status.`);
-				} catch (error) {
-					lines.push(`Aborted request ${id} could not be reconciled: ${errorText(error)}`);
-				}
-			}
-		}
-		return lines;
-	}
-
 	canFollowup(root: string, requestId: string, taskId: string): boolean {
 		const active = this.activeControl(realpathSync.native(root), requestId, taskId);
 		return active !== undefined && active.task.status === "working" && !active.control.isSealed;
@@ -2127,7 +2104,7 @@ export class IsolatedRunner {
 					delete generation.review;
 				}
 				await handle.save();
-				await this.closeDiscardResource(handle, resource, verify);
+				await this.closeDiscardResource(handle, resource, verify, checked.current);
 			});
 			for (const candidate of state.integration.candidates) {
 				const task = changesetTaskState(state, candidate.taskId);
@@ -2143,10 +2120,11 @@ export class IsolatedRunner {
 	}
 
 	private async terminateAbortedAttempt(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
-		signal?: AbortSignal, deadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS): Promise<void> {
+		signal?: AbortSignal, deadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS,
+		current?: () => boolean): Promise<void> {
 		if (!allocationByKind(attempt, "agent")?.agentName || attempt.termination?.status === "terminated") return;
 		await this.proveTermination(handle, task, attempt, this.terminationCandidate(attempt),
-			async () => await handle.save(), signal, deadline);
+			async () => await handle.save(), signal, deadline, current);
 	}
 
 	private async cleanupAbortedHost(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
@@ -2158,11 +2136,11 @@ export class IsolatedRunner {
 	}
 
 	private async closeDiscardResource(handle: RunStateHandle, resource: DiscardResource,
-		verify: () => Promise<void>): Promise<void> {
+		verify: () => Promise<void>, current: () => boolean): Promise<void> {
 		const { task, attempt } = resource;
 		if (!task || !attempt) return;
 		await verify();
-		await this.terminateAbortedAttempt(handle, task, attempt);
+		await this.terminateAbortedAttempt(handle, task, attempt, undefined, undefined, current);
 		if (allocationByKind(attempt, "agent") && attempt.termination?.status !== "terminated") throw new Error("Worker termination remains unproved.");
 		const scope = new DeadlineScope(this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS, () => this.coordinatorRuntime.now());
 		try {
@@ -2996,7 +2974,7 @@ export class IsolatedRunner {
 	 */
 	private async proveTermination(handle: RunStateHandle, task: ChangesetTaskState, attempt: TaskAttempt,
 		candidate: WorkspaceIdentity, save: () => Promise<void>, signal?: AbortSignal,
-		deadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS): Promise<void> {
+		deadline = this.coordinatorRuntime.now() + TERMINATION_SAFETY_BUDGET_MS, current?: () => boolean): Promise<void> {
 		if (attempt.termination?.status === "terminated") return;
 		const workerId = attempt.termination?.workerId ?? allocationByKind(attempt, "agent")?.agentName;
 		if (!workerId) throw new Error("Worker termination requires an exact durably owned agent ID.");
@@ -3006,8 +2984,14 @@ export class IsolatedRunner {
 		try {
 			let result = await safety.call((context) => this.hostRuntime.reconcileWorkerTermination(input, context));
 			if (result.outcome === "active" && !attempt.termination) {
+				if (current && !current()) throw new Error("Session changed; reopen /subagent.");
 				attempt.termination = { status: "terminating", workerId, candidate: input.candidate };
 				await save(); // Intent before the exact pane close.
+				if (current && !current()) {
+					// No close started. Clear this intent so a later discard can try again.
+					delete attempt.termination;
+					throw new Error("Session changed; reopen /subagent.");
+				}
 				result = await safety.call((context) => this.hostRuntime.terminateWorker(input, context));
 			}
 			if (result.outcome !== "terminated") {
