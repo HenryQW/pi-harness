@@ -418,7 +418,15 @@ The report lists removed, skipped, and failed resources. After complete cleanup,
 
 ### Prune leftover worktrees
 
-Run `/subagent prune` to clean up leftover worker and integration checkouts under `.worktrees/`. Their branches have the name `pi-subagent/subagent-<name>-<24hex>`, or the saved legacy name `pi-subagent/subagent-<24hex>`. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it shows the readable name, if present, and the first 8 characters of the identity suffix. The command can remove an item only when all of these conditions are true:
+Run `/subagent prune` to scan leftover worker and integration checkouts under `.worktrees/`. In interactive mode, the command starts a background scan, shows progress, and returns without waiting. It inspects at most four candidates at once. Candidates that share one checkout, including path aliases, are inspected one at a time. The results stay sorted and include every blocker.
+
+When the scan is ready, the command sends a notification. It does not open a dialog. Run `/subagent prune` again to review that plan. Repeated commands during a scan, review, or cleanup show its status; they do not start another operation. All selection and confirmation dialogs stay in the foreground, including the review of whole owning requests. After confirmation, cleanup runs in the background. It removes items one at a time and reports removed, skipped, and failed items.
+
+Use `/subagent prune cancel` to cancel a scan, ready plan, or cleanup. Cancellation stops new removal steps. An active step can finish; completed removals are not undone. The final cleanup report includes completed steps and partial removal, such as a removed checkout whose branch was kept. Wait for the active step to finish before starting another scan.
+
+Each operation belongs to its launching session and branch generation. A session or branch change, reload, or shutdown cancels it and clears progress. Old plans, notifications, and reports are not delivered to the new context. Runtime shutdown waits for active background steps to finish, so a replacement runtime cannot inspect the same index at the same time. Plans are not saved across reloads.
+
+Candidate branches have the name `pi-subagent/subagent-<name>-<24hex>`, or the saved legacy name `pi-subagent/subagent-<24hex>`. The command also cleans up such branches that have no checkout. The review starts with the number of removable and blocked items. It groups the items by the exact reason that the command can remove them, or by their exact blockers, and shows each reason once. Under each reason, it shows the readable name, if present, and the first 8 characters of the identity suffix. The command can remove an item only when all of these conditions are true:
 
 - Its branch tip is already in Main's HEAD or in the local `origin` default-branch ref. The command does not fetch.
 - Its checkout has no tracked or untracked changes. No merge, rebase, cherry-pick, revert, or bisect is in progress.
@@ -441,9 +449,9 @@ If a top-level ignored entry is new or changed, the command skips the checkout. 
 
 The list shows removable items first. The command never cuts a long list silently. The list ends with `+N more not shown`, where `N` counts items, and the command does not remove the items that it did not show in that run. Run `/subagent prune` again to review them.
 
-The command checks each item again immediately before removal and skips an item that changed. If the session or branch changes during removal, the command skips the remaining steps. The command deletes a branch only if the branch still points at the reviewed tip. Then the command reconciles each aborted request that recorded a removed resource. It uses the same guarded path as a repeated `subagent_abort`, so the cleanup of that request no longer shows as pending.
+The command checks each item again immediately before removal and skips an item that changed. It checks ownership, the productive lease, Herdr panes, checkout state, the branch tip, ignored entries, and the launching session. The command deletes a branch only if it still points at the reviewed tip. It does not run automatic request-abort cleanup, because that separate workflow can remove other resources. If an aborted request still shows retained resources, inspect `subagent_status` and repeat `subagent_abort` to reconcile its saved cleanup state.
 
-The report lists removed, skipped, and failed items, and each request that the command could not reconcile. Without interactive UI, the command only reports.
+Without interactive UI, the command waits for the scan and only reports. It never removes items in this mode.
 
 A non-regular or unreadable state entry can block every item because its resource ownership is unknown. State files never change directly.
 
