@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	AgentSession, ExtensionRunner, SessionManager,
+	AgentSession, ExtensionRunner, SessionManager, createEventBus,
 	type AgentBeforeSettleEvent, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext,
 	type SessionBoundaryDraft, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -22,6 +22,7 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: (session:
 	let tool!: ToolDefinition;
 	let command!: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 	const notifications: string[] = [];
+	const events = createEventBus();
 	const status: { value?: string } = {};
 	const host = {
 		cwd: "/repo", hasUI: options.hasUI ?? true, sessionManager: manager,
@@ -29,6 +30,7 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: (session:
 	};
 	const ctx = host as unknown as ExtensionContext;
 	goalExtension({
+		events,
 		on(name: string, handler: Function) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		registerTool(registered: ToolDefinition) { tool = registered; },
 		registerCommand(_name: string, registered: { handler: typeof command }) { command = registered.handler; },
@@ -57,7 +59,7 @@ function harness(options: { hasUI?: boolean; before?: Handler; after?: (session:
 		usage: usage(input, output, cacheRead, cacheWrite), timestamp: Date.now(),
 	} as never);
 	return {
-		manager, host, ctx, tool, notifications, status, handlers, assistant,
+		manager, host, ctx, tool, notifications, status, handlers, assistant, events,
 		command: (args: string) => command(args, ctx as ExtensionCommandContext),
 		emit: (type: string, event: object = {}) => runner.emit({ type, ...event }),
 		/** Run the tool as the model would, recording the call and its successful result on the branch. */
@@ -211,8 +213,9 @@ test("settle stops without UI, after abort or error, and when compaction aborts 
 	assert.equal(await compacting.settle(), false);
 });
 
-test("budget exhaustion stops continuation once and leaves the goal active", async () => {
+test("budget exhaustion stops continuation once and leaves the goal active even with a pending result", async () => {
 	const h = harness();
+	h.events.on("pi-subagent:pending-result", (data) => { (data as { pending: boolean }).pending = true; });
 	await h.call({ action: "create", objective: "Ship", token_budget: 100 });
 	h.assistant([{ type: "text", text: "Working." }], 60, 40);
 	assert.equal(await h.settle(), false);
@@ -229,8 +232,10 @@ test("continuation stops at the maximum count until the next user prompt", async
 		assert.equal(await h.settle(), true);
 		h.work(step);
 	}
+	const unsubscribe = h.events.on("pi-subagent:pending-result", (data) => { (data as { pending: boolean }).pending = true; });
 	assert.equal(await h.settle(), false);
 	assert.match(h.notifications.join("\n"), new RegExp(`after ${MAX_CONTINUATIONS} automatic turns`));
+	unsubscribe();
 	h.manager.appendMessage({ role: "user", content: [{ type: "text", text: "Keep going." }], timestamp: Date.now() });
 	h.work(MAX_CONTINUATIONS);
 	assert.equal(await h.settle(), true);
@@ -258,6 +263,32 @@ test("continuation stops when two consecutive segments have identical tool activ
 	assert.equal(await h.settle(), false);
 	assert.match(h.notifications.join("\n"), /made no new tool progress/);
 	assert.equal(h.continuations().length, 2);
+});
+
+test("a pending result waits without continuation or a stall warning; delivery restores ordinary guards", async () => {
+	const h = harness();
+	let pending = true;
+	h.events.on("pi-subagent:pending-result", (data) => {
+		const query = data as { sessionId: string; pending: boolean };
+		assert.equal(query.sessionId, h.manager.getSessionId());
+		query.pending = pending;
+	});
+	await h.call({ action: "create", objective: "Ship" });
+	assert.equal(await h.settle(), false);
+	assert.equal(h.continuations().length, 0);
+	assert.deepEqual(h.notifications, []);
+	pending = false;
+	assert.equal(await h.settle(), true);
+	h.assistant([{ type: "text", text: "Thinking." }]);
+	assert.equal(await h.settle(), true);
+	pending = true;
+	h.assistant([{ type: "text", text: "Waiting." }]);
+	assert.equal(await h.settle(), false);
+	assert.equal(h.continuations().length, 2);
+	assert.deepEqual(h.notifications, []);
+	pending = false;
+	assert.equal(await h.settle(), false);
+	assert.match(h.notifications.join("\n"), /made no new tool progress/);
 });
 
 test("goal state follows the active branch through navigation, fork, rewind, and /goal drop", async () => {

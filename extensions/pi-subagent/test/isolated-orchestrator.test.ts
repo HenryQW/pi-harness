@@ -719,6 +719,7 @@ test("registers six strict tools without constructing runtime components", () =>
 		"subagent_abort",
 	]);
 	assert.deepEqual([...harness.commands.keys()], []);
+	assert.equal(harness.surface.hasPendingResult("origin"), false);
 	assert.equal(harness.getComponentCreations(), 0);
 
 	const [execute, status, resume, stage, integrate, abort] = harness.tools;
@@ -736,10 +737,12 @@ test("registers six strict tools without constructing runtime components", () =>
 test("inventory and status remain read-only; synchronous mutations reject stale UI context", async () => {
 	const harness = createHarness();
 	const surface = harness.surface;
+	harness.handlers.get("session_start")!({}, { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext);
 	assert.deepEqual((await surface.inventory("/repo/subdir")).invalidIds, ["damaged"]);
 	assert.equal(harness.runnerCalls.filter(({ method }) => method === "listRequests").length, 1);
 	assert.match((await surface.inspect(CANONICAL_ROOT, "request-one")).join("\n"), /\/tmp\/pi-task/);
 	assert.equal(surface.canFollowup(CANONICAL_ROOT, "request-one", "unit-one"), true);
+	assert.equal(surface.hasPendingResult("origin"), false, "saved and unknown requests own no live delivery");
 	assert.throws(() => surface.drain(CANONICAL_ROOT, "request-one", "unit-one", () => false), /Session or branch changed/);
 	assert.deepEqual(harness.runnerCalls.filter(({ method }) => method === "drainFollowups"), []);
 	assert.deepEqual(surface.drain(CANONICAL_ROOT, "request-one", "unit-one", () => true), ["first", "second"]);
@@ -910,8 +913,11 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	const handle = await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, turn.signal, ctx);
 	assert.match(handle.content[0]!.text, /durable request accepted/);
 	assert.equal(harness.sent.length, 0);
+	assert.equal(harness.surface.hasPendingResult("origin"), true);
+	assert.equal(harness.surface.hasPendingResult("foreign"), false);
 	await assert.rejects(executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx), /already active/);
 	turn.abort(); // The tool's turn no longer owns the productive run.
+	assert.equal(harness.surface.hasPendingResult("origin"), true);
 	// Real runners save running and terminal states after the durable acknowledgement.
 	const terminal = structuredClone(PRIVATE_STATE);
 	save({ ...terminal, status: "running", tasks: terminal.tasks.map((task) => ({ ...task, status: "working", failure: undefined })) } as RunState);
@@ -921,9 +927,11 @@ test("delegate_task and resume acknowledge only saved state, then deliver one fo
 	assert.equal(harness.sent.length, 1);
 	assert.deepEqual(harness.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
 	assert.equal((harness.sent[0]!.message.details as { state: { status: string } }).state.status, "needs_attention");
+	assert.equal(harness.surface.hasPendingResult("origin"), false, "retained state owns no future result");
 	assert.doesNotMatch(JSON.stringify(harness.sent[0]), /PRIVATE|SECRET_TOKEN|command-line/);
 	const resumed = await executeTool(namedTool(harness, "subagent_resume"), { id: "request-one", action: "finalize" }, undefined, ctx);
 	assert.match(resumed.content[0]!.text, /durable request accepted/);
+	assert.equal(harness.surface.hasPendingResult("origin"), true);
 	resumeDone.resolve(response("resume", true));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 2);
@@ -1112,7 +1120,9 @@ test("preflight errors reject before acknowledgement; post-save failures report 
 	const failedPreflight = createHarness({ runner: { async execute() { throw new Error("host preflight failed"); } } as never });
 	await assert.rejects(executeTool(namedTool(failedPreflight, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT)), /host preflight failed/);
 	assert.equal(failedPreflight.sent.length, 0);
+	assert.equal(failedPreflight.surface.hasPendingResult("origin"), false);
 
+	const finish = deferred<void>();
 	let save!: (state: RunState) => void;
 	const failedRun = createHarness({
 		onCreate(options) { save = options.onStateSaved; },
@@ -1125,11 +1135,16 @@ test("preflight errors reject before acknowledgement; post-save failures report 
 			save(pending);
 			save({ ...structuredClone(PRIVATE_STATE), status: "running", tasks: [{ ...PRIVATE_STATE.tasks[0]!, status: "working", failure: undefined }] } as RunState);
 			save(structuredClone(PRIVATE_STATE));
+			await finish.promise;
 			throw new Error("worker launch failed");
 		} } as never,
 	});
-	await executeTool(namedTool(failedRun, "delegate_task"), EXECUTE_REQUEST, undefined, context(CANONICAL_ROOT));
+	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
+	await executeTool(namedTool(failedRun, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	assert.equal(failedRun.surface.hasPendingResult("origin"), true);
+	finish.resolve();
 	await new Promise(setImmediate);
+	assert.equal(failedRun.surface.hasPendingResult("origin"), false);
 	assert.equal(failedRun.sent.length, 1);
 	assert.match(failedRun.sent[0]!.message.content, /worker launch failed.*subagent_status/);
 });
@@ -1155,9 +1170,13 @@ test("session replacement and shutdown abort old work and suppress stale isolate
 	const ctx = { ...context(CANONICAL_ROOT), sessionManager: { getSessionId: () => "origin" } } as ExtensionContext;
 	harness.handlers.get("session_start")!({}, ctx);
 	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	assert.equal(harness.surface.hasPendingResult("origin"), true);
 	harness.handlers.get("session_shutdown")!({}, ctx);
+	assert.equal(harness.surface.hasPendingResult("origin"), false);
 	assert.equal(runSignal?.aborted, true);
 	harness.handlers.get("session_start")!({}, { ...ctx, sessionManager: { getSessionId: () => "other" } } as ExtensionContext);
+	assert.equal(harness.surface.hasPendingResult("other"), false);
+	assert.equal(harness.surface.hasPendingResult("origin"), false);
 	done.resolve(response("execute", true));
 	await new Promise(setImmediate);
 	assert.equal(harness.sent.length, 0);

@@ -67,3 +67,24 @@ Repository-scoped ownership that excludes concurrent execution or resumption whi
 
 **Safety budget**:
 A finite limit for child execution or a safety operation, not a deadline for the whole isolated request.
+
+## Pending-result event contract
+
+`pi-subagent:pending-result` is an optional synchronous query through `pi.events`.
+The caller emits a mutable `{ sessionId: string, pending: false }` object, then reads
+`pending` when `emit` returns. Pi Subagent changes only `pending`, and only to `true`.
+No listener means no pending result. Listeners must not wait for asynchronous work.
+
+A positive answer means that this process owns live direct or isolated work for
+that exact current Pi session, with a future result message that triggers a turn.
+Direct ownership starts after a verified launch. Isolated ownership starts after
+durable acknowledgement. Ownership ends on completion or failure, before result
+delivery. Cancellation, shutdown, and session replacement cannot grant ownership.
+Retained tabs, checkout admission, saved requests, interrupted or unknown work,
+and results whose delivery failed do not grant ownership.
+
+Pi Goal checks this query after its budget and continuation limits, before its
+no-progress check. A positive answer lets Pi settle without another continuation
+or a no-progress warning. The result message starts ordinary goal handling again.
+No package dependency is required. Background-command notices do not trigger a
+turn and do not participate in this contract.

@@ -261,6 +261,10 @@ export default function goalExtension(pi: ExtensionAPI): void {
 			stop(ctx, `max:${branch[userIndex]?.id}`, `Goal continuation stopped after ${MAX_CONTINUATIONS} automatic turns. Send a prompt to continue.`);
 			return;
 		}
+		// Optional synchronous owner query: only a live result delivery may replace our next turn.
+		const pendingResult = { sessionId: ctx.sessionManager.getSessionId(), pending: false };
+		pi.events.emit("pi-subagent:pending-result", pendingResult);
+		if (pendingResult.pending) return;
 		const latest = continuations.at(-1);
 		const current = activity(branch.slice((latest ?? userIndex) + 1));
 		if (latest !== undefined && (branch[latest] as { details?: ContinuationDetails }).details?.activity === current) {
