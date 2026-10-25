@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createConfigStore, extensionConfigDir, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
+import { extensionConfigDir, registerConfigReporting } from "@henryqw/pi-config-store";
+import { createHerdrToolsConfigStore } from "./config.ts";
 import { checkoutAdmission, checkoutKey, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
 import { cancelJob, jobId, listJobs, outputTail, privateDirectory, readJob, readPrivate, terminal, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
@@ -28,14 +29,6 @@ export function validateRequest(input: Request): void {
 	} else throw new Error("Unknown background command action.");
 }
 export interface CommandPolicy { runtimeMs: number; outputBytes: number; concurrency: number; retainedJobs: number }
-export function createCommandConfig(agentDir?: string) {
-	return createConfigStore({ extensionId: "pi-herdr-tools", agentDir, fields: {
-		runtimeMs: field(parsers.integer({ min: 100, max: 86_400_000 }), 600_000),
-		outputBytes: field(parsers.integer({ min: 1024, max: 104_857_600 }), 10_485_760),
-		concurrency: field(parsers.integer({ min: 1, max: 16 }), 4),
-		retainedJobs: field(parsers.integer({ min: 1, max: 10_000 }), 1000),
-	} });
-}
 
 function assertMainLaunch(): void {
 	// Pi Subagent sets the Role tool flag for all workers and the lease for Herdr workers.
@@ -132,7 +125,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	const admission = checkoutAdmission(pi);
 	admission.install(pi);
 	const manager = new CommandManager(join(extensionConfigDir("pi-herdr-tools"), "commands"), admission);
-	const store = createCommandConfig();
+	const store = createHerdrToolsConfigStore();
 	const reporter = registerConfigReporting(pi, [store]);
 	pi.registerTool({
 		name: "background_command", label: "Background command", parameters: commandParameters,

@@ -148,19 +148,39 @@ Cleanup runs `git worktree remove <checkout>`, closes other tabs in the current 
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-herdr-btw/config.json`
+Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home. Side-thread settings are under `btw`; command limits remain at the root.
+
+```json
+{
+  "runtimeMs": 600000,
+  "outputBytes": 10485760,
+  "concurrency": 4,
+  "retainedJobs": 1000,
+  "btw": {
+    "autoSubmit": false,
+    "tools": "inherit",
+    "split": "right"
+  }
+}
+```
+
+### Side-thread settings
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `autoSubmit` | Submit the draft automatically; otherwise, keep it editable. | Boolean. | `false` |
-| `tools` | Tools available in the side pane. | `inherit` (Main's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
-| `split` | Side-pane placement. | `right` or `down`. | `right` |
+| `btw.autoSubmit` | Submit the draft automatically; otherwise, keep it editable. | Boolean. | `false` |
+| `btw.tools` | Tools available in the side pane. | `inherit` (Main's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
+| `btw.split` | Side-pane placement. | `right` or `down`. | `right` |
 
-File and fields are optional. Launch reports unknown keys and invalid values, using field defaults; malformed files use all defaults. `/btw` continues without changing the file. `/btw config show` prints effective values. Updates fail until you correct issues or run `/btw config reset`. Reset reports issues, then replaces the file with defaults.
+File and fields are optional. Launch reports unknown keys and invalid values, using field defaults; malformed files use all defaults. `/btw` continues without changing the file. `/btw config show` prints effective side-thread values. Updates preserve command limits but fail while any config issue remains.
+
+`/btw config reset` replaces only `btw` with defaults and preserves command limits. It can correct invalid settings under `btw`. Reset refuses malformed files and issues outside `btw`; correct those manually first. If the file changes during a repair, reset refuses the write. Read the file and retry.
+
+### Move existing side-thread settings
+
+There is no automatic move or legacy fallback. The old `~/.pi/agent/config/pi-herdr-btw/config.json` is not read. Back up both files before you edit them. Move the old `autoSubmit`, `tools`, and `split` values into the `btw` object in `pi-herdr-tools/config.json`. Preserve existing command limits and check any existing `btw` values before you replace them. Run `/btw config show` to check the values, then remove the old file when you no longer need it.
 
 ### Command policy
-
-Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home.
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |

@@ -336,8 +336,12 @@ test("runner death cannot authorize a replacement runner or release its checkout
 	assert.doesNotThrow(() => process.kill(pid, 0));
 });
 
-test("first completion waits for its launch branch, survives reload, and is not repeated after rewind", async (t) => {
+test("shared nested config loads without warnings; completion waits for its branch and survives reload and rewind", async (t) => {
 	const root = await environment(t);
+	const configDir = join(root, "config", "pi-herdr-tools");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(join(configDir, "config.json"), JSON.stringify({ ...policy, btw: { autoSubmit: true, tools: "none", split: "down" } }));
+	const notifications: string[] = [];
 	const sessionManager = SessionManager.inMemory(root);
 	const firstEntry = sessionManager.appendMessage({ role: "user", content: "run a command", timestamp: Date.now() });
 	const launchInput = { action: "launch", command: "printf once", access: "write" };
@@ -351,7 +355,7 @@ test("first completion waits for its launch branch, survives reload, and is not 
 		content: [{ type: "text", text: "sibling result" }], isError: false, timestamp: Date.now() });
 	let sent = 0;
 	let idle = false;
-	const ctx = { cwd: root, sessionManager, hasUI: false, isIdle: () => idle } as unknown as ExtensionContext;
+	const ctx = { cwd: root, sessionManager, hasUI: true, ui: { notify: (message: string) => notifications.push(message) }, isIdle: () => idle } as unknown as ExtensionContext;
 	const load = () => {
 		const h = host(root);
 		let tool: any;
@@ -367,6 +371,9 @@ test("first completion waits for its launch branch, survives reload, and is not 
 	const result = await first.tool.execute("call", launchInput, undefined, undefined, ctx);
 	const job = await first.manager.get(result.structuredContent.jobs[0].id);
 	assert.equal(job.spec.callEntryId, launchEntry);
+	assert.equal(job.spec.runtimeMs, policy.runtimeMs);
+	assert.equal(job.spec.outputBytes, policy.outputBytes);
+	assert.deepEqual(notifications, []);
 	await start(job.dir, job.spec).done;
 	await first.h.event("session_start", {}, ctx);
 	await first.h.event("session_shutdown", {}, ctx);
