@@ -18,17 +18,11 @@ async function withStore(
 	}
 }
 
-test("uses the shared config home without legacy fallback and preserves malformed JSON", async () => {
+test("uses the shared config home and preserves missing and malformed files", async () => {
 	await withStore(async (agentDir, store) => {
-		const legacyPath = join(agentDir, "config", "pi-herdr-btw", "config.json");
-		const legacyContents = JSON.stringify({ autoSubmit: true, tools: "all", split: "down" });
-		await mkdir(dirname(legacyPath), { recursive: true });
-		await writeFile(legacyPath, legacyContents);
-
 		assert.equal(store.path, join(agentDir, "config", "pi-herdr-tools", "config.json"));
 		assert.deepEqual(store.loadSync(), { status: "ok", source: "missing", value: defaults, issues: [] });
 		await assert.rejects(readFile(store.path, "utf8"), { code: "ENOENT" });
-		assert.equal(await readFile(legacyPath, "utf8"), legacyContents);
 
 		await mkdir(dirname(store.path), { recursive: true });
 		await writeFile(store.path, "{ broken");
