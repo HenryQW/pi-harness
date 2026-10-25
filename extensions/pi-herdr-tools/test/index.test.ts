@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { ConfigIssue, ConfigLoad } from "@henryqw/pi-config-store";
-import { DEFAULT_CONFIG, type BtwConfig } from "../internal/config.ts";
+import { createHerdrToolsConfigStore, DEFAULT_CONFIG } from "../internal/config.ts";
 import { isBtwPayload, type BtwPayload } from "../internal/core.ts";
 import {
 	MERGE_CUSTOM_TYPE,
@@ -123,34 +123,26 @@ class FakeStore implements ContextStorePort {
 	}
 }
 
+type HerdrToolsConfig = Awaited<ReturnType<ConfigStorePort["update"]>>;
+
 class FakeConfigStore implements ConfigStorePort {
-	readonly extensionId = "pi-herdr-btw";
-	readonly path = "/agent/config/pi-herdr-btw/config.json";
-	config: BtwConfig = { ...DEFAULT_CONFIG };
-	readonly saved: BtwConfig[] = [];
-	saveRuns = 0;
-	updateRuns = 0;
-	source: "file" | "missing" = "file";
+	readonly extensionId = "pi-herdr-tools";
+	readonly path = "/agent/config/pi-herdr-tools/config.json";
+	config: HerdrToolsConfig = { runtimeMs: 600_000, outputBytes: 10_485_760, concurrency: 4, retainedJobs: 1000, btw: { ...DEFAULT_CONFIG } };
 	issues: ConfigIssue[] = [];
 
-	loadSync(): ConfigLoad<BtwConfig> {
-		return { status: "ok", source: this.source, value: { ...this.config }, issues: [...this.issues] };
+	loadSync(): ConfigLoad<HerdrToolsConfig> {
+		return { status: "ok", source: "file", value: structuredClone(this.config), issues: [...this.issues] };
 	}
 
-	async save(config: BtwConfig): Promise<void> {
-		this.config = { ...config };
+	async replaceIfUnchanged(_snapshot: ConfigLoad<unknown>, config: HerdrToolsConfig): Promise<void> {
+		this.config = structuredClone(config);
 		this.issues = [];
-		this.source = "file";
-		this.saved.push({ ...this.config });
-		this.saveRuns += 1;
 	}
 
-	async update(mutator: (config: BtwConfig) => BtwConfig): Promise<BtwConfig> {
-		this.config = mutator({ ...this.config });
-		this.source = "file";
-		this.saved.push({ ...this.config });
-		this.updateRuns += 1;
-		return { ...this.config };
+	async update(mutator: (config: HerdrToolsConfig) => HerdrToolsConfig): Promise<HerdrToolsConfig> {
+		this.config = mutator(structuredClone(this.config));
+		return structuredClone(this.config);
 	}
 }
 
@@ -213,7 +205,7 @@ function createCommandContext() {
 async function createHarness(
 	store: FakeStore,
 	execImpl: (command: string, args: string[]) => Promise<ExecResult>,
-	configStore = new FakeConfigStore(),
+	configStore: ConfigStorePort = new FakeConfigStore(),
 ) {
 	const commands = new Map<string, Command>();
 	const handlers = new Map<string, EventHandler[]>();
@@ -433,13 +425,14 @@ test("config routes before Herdr and model launch checks", async () => {
 	delete process.env.HERDR_ENV; // not inside Herdr at all
 	try {
 		const store = new FakeStore();
-		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+		const configStore = new FakeConfigStore();
+		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }), configStore);
 		const ctx = createCommandContext();
 		ctx.model = undefined; // and no model either
 		await harness.commands.get("btw")?.handler("config auto-submit on", ctx);
 		harness.cleanup();
 
-		assert.equal(harness.configStore.config.autoSubmit, true);
+		assert.equal(configStore.config.btw.autoSubmit, true);
 		assert.equal(ctx.notifications.at(-1)?.type, "info");
 		assert.equal(harness.execCalls.length, 0);
 	} finally {
@@ -447,28 +440,82 @@ test("config routes before Herdr and model launch checks", async () => {
 	}
 });
 
-test("config subcommand updates and resets launch defaults, including malformed-config recovery", async () => {
-	await withParentEnvironment(async () => {
-		const store = new FakeStore();
-		const harness = await createHarness(store, async () => ({ code: 0, stdout: "", stderr: "" }));
+test("config show, updates, and reset use nested btw and preserve command policy", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		const configStore = createHerdrToolsConfigStore(agentDir);
+		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10 };
+		await configStore.save({ ...policy, btw: { autoSubmit: true, tools: "none", split: "down" } });
+		const harness = await createHarness(new FakeStore(), herdrExec(), configStore);
 		const ctx = createCommandContext();
-		const command = harness.commands.get("btw");
+		const command = harness.commands.get("btw")!;
+		try {
+			await command.handler("config show", ctx);
+			assert.match(ctx.notifications.at(-1).message, /auto-submit: on · tools: none · split: down/);
+			await Promise.all([
+				command.handler("config auto-submit off", ctx),
+				command.handler("config tools read-only", ctx),
+			]);
+			assert.deepEqual(JSON.parse(await readFile(configStore.path, "utf8")), {
+				...policy, btw: { autoSubmit: false, tools: "read-only", split: "down" },
+			});
+			await command.handler("config reset", ctx);
+			assert.deepEqual(JSON.parse(await readFile(configStore.path, "utf8")), { ...policy, btw: DEFAULT_CONFIG });
+			assert.equal(ctx.notifications.every(({ type }: { type: string }) => type === "info"), true);
+		} finally { harness.cleanup(); }
+	});
+});
 
-		await command?.handler("config auto-submit on", ctx);
-		await command?.handler("config tools read-only", ctx);
-		harness.cleanup();
+test("config reset repairs only btw issues and refuses malformed files or sibling issues", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		const configStore = createHerdrToolsConfigStore(agentDir);
+		await mkdir(dirname(configStore.path), { recursive: true });
+		const harness = await createHarness(new FakeStore(), herdrExec(), configStore);
+		const command = harness.commands.get("btw")!;
+		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10 };
+		try {
+			for (const btw of [null, { autoSubmit: true, split: "left", "extra-key": 3 }]) {
+				const before = JSON.stringify({ ...policy, btw });
+				await writeFile(configStore.path, before);
+				const ctx = createCommandContext();
+				await command.handler("config tools none", ctx);
+				assert.equal(ctx.notifications.at(-1).type, "error");
+				assert.equal(await readFile(configStore.path, "utf8"), before);
+				await command.handler("config reset", ctx);
+				assert.equal(ctx.notifications.at(-1).type, "info");
+				assert.deepEqual(JSON.parse(await readFile(configStore.path, "utf8")), { ...policy, btw: DEFAULT_CONFIG });
+			}
+			for (const before of ["{ broken", "null", JSON.stringify({ ...policy, concurrency: 0, btw: { split: "left" } }), JSON.stringify({ ...policy, extra: 1 })]) {
+				await writeFile(configStore.path, before);
+				const ctx = createCommandContext();
+				await command.handler("config reset", ctx);
+				assert.equal(ctx.notifications.at(-1).type, "error");
+				assert.match(ctx.notifications.at(-1).message, /repair file or non-btw issues first/);
+				assert.equal(await readFile(configStore.path, "utf8"), before);
+				assert.ok(ctx.notifications.some(({ type }: { type: string }) => type === "warning"));
+			}
+		} finally { harness.cleanup(); }
+	});
+});
 
-		assert.equal(harness.configStore.config.autoSubmit, true);
-		assert.equal(harness.configStore.config.tools, "read-only");
-		assert.equal(harness.configStore.updateRuns, 2);
-
-		harness.configStore.issues = [{ kind: "invalid-json", key: "", message: "invalid JSON before reset" }];
-		await command?.handler("config reset", ctx);
-		assert.deepEqual(harness.configStore.config, DEFAULT_CONFIG);
-		assert.equal(harness.configStore.saveRuns, 1);
-		assert.deepEqual(ctx.notifications.at(-2), {
-			message: `pi-herdr-btw config issues (${harness.configStore.path}): invalid JSON before reset; defaults replace invalid settings.`, type: "warning",
-		});
+test("config reset refuses a repair when another writer changes command policy", async () => {
+	await withParentEnvironment(async (agentDir) => {
+		const configStore = createHerdrToolsConfigStore(agentDir);
+		await mkdir(dirname(configStore.path), { recursive: true });
+		await writeFile(configStore.path, JSON.stringify({ concurrency: 1, btw: { split: "left" } }));
+		const replacement = JSON.stringify({ concurrency: 2, btw: { split: "left" } });
+		const replace = configStore.replaceIfUnchanged.bind(configStore);
+		configStore.replaceIfUnchanged = async (snapshot, value) => {
+			await writeFile(configStore.path, replacement);
+			await replace(snapshot, value);
+		};
+		const harness = await createHarness(new FakeStore(), herdrExec(), configStore);
+		const ctx = createCommandContext();
+		try {
+			await harness.commands.get("btw")!.handler("config reset", ctx);
+			assert.equal(ctx.notifications.at(-1).type, "error");
+			assert.match(ctx.notifications.at(-1).message, /changed since it was read/);
+			assert.equal(await readFile(configStore.path, "utf8"), replacement);
+		} finally { harness.cleanup(); }
 	});
 });
 
@@ -991,12 +1038,12 @@ test("parent command applies configured tools, split, and auto-submit", async ()
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const configStore = new FakeConfigStore();
-		configStore.config = { autoSubmit: true, tools: "none", split: "down" };
+		configStore.config.btw = { autoSubmit: true, tools: "none", split: "down" };
 		const harness = await createHarness(store, herdrExec(), configStore);
 		await harness.commands.get("btw")?.handler("question", createCommandContext());
 		harness.cleanup();
 
-		assert.deepEqual(store.created[0]?.config, configStore.config);
+		assert.deepEqual(store.created[0]?.config, configStore.config.btw);
 		const splitArgs = harness.execCalls[0]?.args ?? [];
 		const args = harness.execCalls[4]?.args ?? [];
 		assert.deepEqual(
@@ -1035,7 +1082,7 @@ test("parent launches with defaults and warns once when config has issues", asyn
 	await withParentEnvironment(async () => {
 		const store = new FakeStore();
 		const configStore = new FakeConfigStore();
-		configStore.issues = [{ kind: "invalid-value", key: "split", message: "must be one of right, down" }];
+		configStore.issues = [{ kind: "invalid-value", key: "btw.split", message: "must be one of right, down" }];
 		const harness = await createHarness(store, herdrExec(), configStore);
 		const ctx = createCommandContext();
 		await harness.commands.get("btw")?.handler("question", ctx);
@@ -1044,7 +1091,7 @@ test("parent launches with defaults and warns once when config has issues", asyn
 
 		assert.equal(store.created.length, 1);
 		assert.deepEqual(ctx.notifications.filter(({ type }: { type: string }) => type === "warning"), [{
-			message: "pi-herdr-btw config issues (/agent/config/pi-herdr-btw/config.json): split: must be one of right, down; defaults replace invalid settings.",
+			message: "pi-herdr-tools config issues (/agent/config/pi-herdr-tools/config.json): btw.split: must be one of right, down; defaults replace invalid settings.",
 			type: "warning",
 		}]);
 	});
@@ -1065,7 +1112,7 @@ test("parent omits the launch-draft sentinel when auto-submit is off or there is
 		);
 
 		// auto-submit on but no draft question -> no sentinel
-		configStore.config = { ...DEFAULT_CONFIG, autoSubmit: true };
+		configStore.config.btw = { ...DEFAULT_CONFIG, autoSubmit: true };
 		await command?.handler("", createCommandContext());
 		harness.cleanup();
 		assert.equal(

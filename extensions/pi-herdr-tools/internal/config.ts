@@ -54,14 +54,20 @@ export function applyConfigCommand(current: BtwConfig, input: string): BtwConfig
 	return config;
 }
 
-export function createBtwConfigStore(agentDir?: string) {
+export function createHerdrToolsConfigStore(agentDir?: string) {
 	return createConfigStore({
-		extensionId: "pi-herdr-btw",
+		extensionId: "pi-herdr-tools",
 		agentDir,
 		fields: {
-			autoSubmit: field(parsers.boolean(), DEFAULT_CONFIG.autoSubmit),
-			tools: field(parsers.oneOf(TOOL_MODES), DEFAULT_CONFIG.tools),
-			split: field(parsers.oneOf(["right", "down"] as const), DEFAULT_CONFIG.split),
+			runtimeMs: field(parsers.integer({ min: 100, max: 86_400_000 }), 600_000),
+			outputBytes: field(parsers.integer({ min: 1024, max: 104_857_600 }), 10_485_760),
+			concurrency: field(parsers.integer({ min: 1, max: 16 }), 4),
+			retainedJobs: field(parsers.integer({ min: 1, max: 10_000 }), 1000),
+			btw: field(parsers.object({
+				autoSubmit: field(parsers.boolean(), DEFAULT_CONFIG.autoSubmit),
+				tools: field(parsers.oneOf(TOOL_MODES), DEFAULT_CONFIG.tools),
+				split: field(parsers.oneOf(["right", "down"] as const), DEFAULT_CONFIG.split),
+			}), { ...DEFAULT_CONFIG }),
 		},
 	});
 }

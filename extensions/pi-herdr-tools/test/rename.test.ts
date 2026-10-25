@@ -85,7 +85,7 @@ function harness(options: {
 				result: async () => {
 					const call = { model, context, options: completionOptions };
 					completionCalls.push(call);
-					return options.complete ? options.complete(call) : response("feat: generated title");
+					return options.complete ? options.complete(call) : response('{"kind":"feat","subject":"generated title"}');
 				},
 			}),
 		},
@@ -184,7 +184,7 @@ test("automatic rename ignores non-user text, starts once without blocking, and 
 		assert.equal(app.completionCalls[0].context.messages[0].content.length, 1_000);
 		assert.equal(app.completionCalls[0].options.maxRetries, 0);
 
-		resolveCompletion(response("  Refactor:\nUpdate Task Logic  "));
+		resolveCompletion(response('{"kind":"  Refactor  ","subject":"  Update\\nTask Logic  "}'));
 		await eventually(() => app.names.length === 1);
 		assert.deepEqual(app.names, ["Update task logic"]);
 		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Update task logic", branch: "refactor/update-task-logic" } }]);
@@ -197,8 +197,8 @@ test("automatic rename uses expanded first prompt instead of raw input shorthand
 		const app = harness({
 			complete: async (call) => response(
 				call.context.messages[0].content === "/fix-login"
-					? "chore: unclear input"
-					: "fix: login redirect loop",
+					? '{"kind":"chore","subject":"unclear input"}'
+					: '{"kind":"fix","subject":"login redirect loop"}',
 			),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -303,7 +303,7 @@ test("manual rename updates generated and custom workspace titles", async () => 
 					{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
 					{ type: "message", message: { role: "user", content: "update task logic" } },
 				],
-				complete: async () => response("refactor: update task logic"),
+				complete: async () => response('{"kind":"refactor","subject":"update task logic"}'),
 				exec: async (args) => {
 					if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
 					if (args[0] === "pane" && args[1] === "get") {
@@ -448,9 +448,9 @@ test("manual rename warns without text and the latest overlapping request wins",
 		const second = app.commands.get("rename")!("", app.ctx);
 		await eventually(() => resolvers.length === 2);
 		assert.equal(signals[0].aborted, true);
-		resolvers[1](response("feat: second title"));
+		resolvers[1](response('{"kind":"feat","subject":"second title"}'));
 		await second;
-		resolvers[0](response("fix: first title"));
+		resolvers[0](response('{"kind":"fix","subject":"first title"}'));
 		await first;
 		assert.deepEqual(app.names, ["Second title"]);
 	});
@@ -568,7 +568,7 @@ test("rename defaults to fast and uses its fallback after an invalid title", asy
 			currentModel,
 			complete: async (call) => call.model === primary
 				? response("plain title")
-				: response("fix: fallback title"),
+				: response('{"kind":"fix","subject":"fallback title"}'),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
 		assert.equal(app.commands.has("rename-model"), false);
@@ -617,9 +617,9 @@ test("shutdown aborts automatic generation and invalid titles make no change", a
 test("display title limits apply to subject without counting semantic type", async () => {
 	await withAgentDir(async () => {
 		const rejected = [
-			"extraordinary: update task logic",
-			"feat: one two three four five",
-			"fix: abcdefghijklmnopqrstu",
+			'{"kind":"extraordinary","subject":"update task logic"}',
+			'{"kind":"feat","subject":"one two three four five"}',
+			'{"kind":"fix","subject":"abcdefghijklmnopqrstu"}',
 		];
 		let calls = 0;
 		const app = harness({
@@ -628,7 +628,7 @@ test("display title limits apply to subject without counting semantic type", asy
 			complete: async () => {
 				const index = Math.floor(calls / 2);
 				calls++;
-				return index < rejected.length ? response(rejected[index]) : response("refactor: update task logic");
+				return index < rejected.length ? response(rejected[index]) : response('{"kind":"refactor","subject":"update task logic"}');
 			},
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -642,13 +642,13 @@ test("display title limits apply to subject without counting semantic type", asy
 	});
 });
 
-test("a rejected first reply is retried once with the rejection before the route falls back", async () => {
+test("a colon-form reply is rejected and repaired once before the route falls back", async () => {
 	await withAgentDir(async () => {
 		const app = harness({
 			sessionName: "saved",
 			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
 			complete: async (call) => call.context.messages.length === 1
-				? response("type: debug subject: sentry not recording")
+				? response("debug: sentry missing")
 				: response('{"kind":"debug","subject":"sentry recording"}'),
 		});
 		await app.handlers.get("session_start")?.({}, app.ctx);
@@ -658,7 +658,7 @@ test("a rejected first reply is retried once with the rejection before the route
 		const repair = app.completionCalls[1].context.messages;
 		assert.equal(repair.length, 2);
 		assert.match(repair[1].content, /Your previous reply was rejected/);
-		assert.match(repair[1].content, /sentry not recording/);
+		assert.match(repair[1].content, /debug: sentry missing/);
 		assert.doesNotMatch(app.notifications.join("\n"), /invalid title/);
 		assert.deepEqual(app.names, ["Sentry recording"]);
 		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Sentry recording", branch: "debug/sentry-recording" } }]);
@@ -693,22 +693,6 @@ test("a malformed candidate is skipped for a later well-formed object", async ()
 
 		assert.equal(app.completionCalls.length, 1);
 		assert.deepEqual(app.names, ["Sentry recording"]);
-	});
-});
-
-test("a legacy colon reply still parses when the route answers in the old shape", async () => {
-	await withAgentDir(async () => {
-		const app = harness({
-			sessionName: "saved",
-			branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
-			complete: async () => response("  Refactor:\nUpdate Task Logic  "),
-		});
-		await app.handlers.get("session_start")?.({}, app.ctx);
-		await app.commands.get("rename")?.("", app.ctx);
-
-		assert.equal(app.completionCalls.length, 1);
-		assert.deepEqual(app.names, ["Update task logic"]);
-		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Update task logic", branch: "refactor/update-task-logic" } }]);
 	});
 });
 

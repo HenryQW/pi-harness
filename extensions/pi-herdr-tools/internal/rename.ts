@@ -69,8 +69,6 @@ function parseGeneratedTitle(response: string): GeneratedTitle | undefined {
 		const parsed = shapedTitle(kind, subject);
 		if (parsed) return parsed;
 	}
-	const legacy = /^([a-z][a-z0-9-]*): (.+)$/.exec(response.trim().toLowerCase().replace(/\s+/g, " "));
-	return legacy ? shapedTitle(legacy[1], legacy[2]) : undefined;
 }
 
 function savedTitle(ctx: ExtensionContext): GeneratedTitle | undefined {

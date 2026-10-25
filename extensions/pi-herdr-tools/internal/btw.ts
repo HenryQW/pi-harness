@@ -11,10 +11,9 @@ import {
 import {
 	applyConfigCommand,
 	CONFIG_COMMAND_USAGE,
-	createBtwConfigStore,
+	createHerdrToolsConfigStore,
 	DEFAULT_CONFIG,
 	formatConfig,
-	type BtwConfig,
 } from "./config.ts";
 import { ContextStore } from "./context-store.ts";
 import {
@@ -78,8 +77,8 @@ export type ContextStorePort = Pick<
 	| "removeIfNoPendingMerge"
 >;
 export type ConfigStorePort = Pick<
-	ReturnType<typeof createBtwConfigStore>,
-	"extensionId" | "path" | "loadSync" | "save" | "update"
+	ReturnType<typeof createHerdrToolsConfigStore>,
+	"extensionId" | "path" | "loadSync" | "replaceIfUnchanged" | "update"
 >;
 
 const SIDE_PANE_INSTRUCTIONS = `You are running in a focused /btw side pane spawned from another Pi session.
@@ -370,14 +369,14 @@ export async function registerBtwExtension(
 		return;
 	}
 
-	const configStore = options.configStore ?? createBtwConfigStore();
+	const configStore = options.configStore ?? createHerdrToolsConfigStore();
 	const configReporter = registerConfigReporting(pi, [configStore]);
 	const reportTaskModels = registerTaskModelsConfigReporting(pi);
-	const loadConfig = (ctx: ExtensionContext): BtwConfig => {
+	const loadConfig = (ctx: ExtensionContext) => {
 		const loaded = configStore.loadSync();
 		configReporter.report(ctx, configStore, loaded);
-		// No field disables this config: invalid keys fall back to their defaults.
-		return loaded.status === "ok" ? loaded.value : { ...DEFAULT_CONFIG };
+		if (loaded.status !== "ok") throw new Error(`Config at ${configStore.path} is disabled; repair it before use.`);
+		return loaded;
 	};
 	const herdr = createHerdrClient<HerdrOptions>(pi.exec.bind(pi));
 
@@ -488,21 +487,26 @@ export async function registerBtwExtension(
 			// Config routes before any Herdr/model/conversation launch checks.
 			if (route.kind === "config") {
 				try {
+					const loaded = loadConfig(ctx);
 					if (route.args === "reset") {
-						// Reset does not depend on the file, but first show the problems that it removes.
-						loadConfig(ctx);
+						if (loaded.issues.some(({ key }) => key !== "btw" && !key.startsWith("btw.") && !key.startsWith("btw["))) {
+							throw new Error(`Cannot reset /btw config at ${configStore.path}: repair file or non-btw issues first; nothing was written.`);
+						}
 						const config = { ...DEFAULT_CONFIG };
-						await configStore.save(config);
+						if (loaded.issues.length) {
+							await configStore.replaceIfUnchanged(loaded, { ...loaded.value, btw: config });
+						} else {
+							await configStore.update((latest) => ({ ...latest, btw: config }));
+						}
 						ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
 						return;
 					}
 					if (!route.args || route.args === "show") {
-						const config = loadConfig(ctx);
-						ctx.ui.notify(`BTW config — ${formatConfig(config)}\n${CONFIG_COMMAND_USAGE}`, "info");
+						ctx.ui.notify(`BTW config — ${formatConfig(loaded.value.btw)}\n${CONFIG_COMMAND_USAGE}`, "info");
 						return;
 					}
-					const config = await configStore.update((latest) => applyConfigCommand(latest, route.args));
-					ctx.ui.notify(`BTW config — ${formatConfig(config)}`, "info");
+					const config = await configStore.update((latest) => ({ ...latest, btw: applyConfigCommand(latest.btw, route.args) }));
+					ctx.ui.notify(`BTW config — ${formatConfig(config.btw)}`, "info");
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					ctx.ui.notify(message, "error");
@@ -563,7 +567,7 @@ export async function registerBtwExtension(
 
 			let payloadPath: string | undefined;
 			try {
-				const config = loadConfig(ctx);
+				const config = loadConfig(ctx).value.btw;
 				await store.removeStale();
 				const createdAt = new Date().toISOString();
 				const sessionId = ctx.sessionManager.getSessionId();
