@@ -16,7 +16,6 @@ export interface RunnerIdentity { id: string; token: string; runnerId: string; w
 export interface RunnerState extends RunnerIdentity {
 	state: CommandState; updatedAt: number; exitCode: number | null; signal: string | null; failure?: string;
 }
-export interface Dispatch { id: string; token: string; workspaceId: string; tabId: string; paneId: string }
 export interface Job {
 	spec: JobSpec; dir: string; claim?: RunnerIdentity; result?: RunnerState;
 	state: CommandState; outputPath: string;
