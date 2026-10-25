@@ -77,19 +77,11 @@ export type HerdrLaunchOptions = {
 
 export function createPayload(options: CreatePayloadOptions): BtwPayload {
 	return {
+		...options,
 		version: PAYLOAD_VERSION,
-		createdAt: options.createdAt,
 		launchId: randomUUID(),
 		capability: randomBytes(32).toString("hex"),
-		parentSessionId: options.parentSessionId,
-		parentPaneId: options.parentPaneId,
-		metadata: options.metadata,
-		parentSystemPrompt: options.parentSystemPrompt,
 		parentActiveTools: [...options.parentActiveTools],
-		parentThinkingLevel: options.parentThinkingLevel,
-		messages: options.messages,
-		draftQuestion: options.draftQuestion,
-		config: options.config,
 	};
 }
 
@@ -147,7 +139,7 @@ function isSystemMessage(value: Record<string, unknown>): boolean {
 		(sections === undefined || (isRecord(sections) && Object.values(sections).every((entry) => entry === null || typeof entry === "string"))) &&
 		(toolsAdded === undefined || (Array.isArray(toolsAdded) && toolsAdded.every((tool) =>
 			isRecord(tool) && typeof tool.name === "string" && typeof tool.description === "string" &&
-			isRecord(tool.parameters) && isJsonValue(tool.parameters)))) &&
+			isRecord(tool.parameters)))) &&
 		(toolsRemoved === undefined || (Array.isArray(toolsRemoved) && toolsRemoved.every((tool) =>
 			isRecord(tool) && typeof tool.name === "string")));
 }
