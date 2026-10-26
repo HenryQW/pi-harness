@@ -1916,9 +1916,14 @@ test("does not persist a stale observation after session replacement", async () 
 	await app.shutdown(replacement);
 });
 
-test("stays silent when a worktree becomes inactive after a native refresh", async () => {
-	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery> = [
-		currentPullRequest(),
+for (const [initial, footer] of [
+	[currentPullRequest(), "PR #42 · merge-ready"],
+	[{ kind: "blocked", issue: { kind: "origin-invalid" } }, "PR · discovery blocked"],
+	[new Error("lookup failed"), "PR · status unavailable"],
+] satisfies Array<[CurrentPullRequest | CurrentPullRequestDiscovery | Error, string]>)
+test(`clears ${footer} when a worktree becomes inactive after a native refresh`, async () => {
+	const results: Array<CurrentPullRequest | CurrentPullRequestDiscovery | Error> = [
+		initial,
 		{ kind: "inactive" },
 	];
 	let loads = 0;
@@ -1927,6 +1932,7 @@ test("stays silent when a worktree becomes inactive after a native refresh", asy
 			loads += 1;
 			const result = results.shift();
 			if (!result) throw new Error("Unexpected pull request refresh");
+			if (result instanceof Error) throw result;
 			return result;
 		},
 	});
@@ -1934,6 +1940,7 @@ test("stays silent when a worktree becomes inactive after a native refresh", asy
 
 	await app.start(ctx);
 	assert.equal(loads, 1);
+	assert.equal(plain(app.statuses.at(-1) ?? ""), footer);
 	await app.tool({ toolName: "bash", input: { command: "git push origin HEAD" }, isError: false }, ctx);
 	assert.equal(loads, 2);
 	assert.deepEqual(app.statuses.at(-1), undefined);

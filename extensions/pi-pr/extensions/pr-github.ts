@@ -1413,7 +1413,9 @@ async function readPushTarget(
 	if (worktree.code !== 0) commandFailure("Check Git worktree", worktree);
 	if (worktreeOutput !== "true\n") fail("Check Git worktree", "invalid response");
 	const nonGitHubHosts = await readNonGitHubRemoteHosts(pi, context);
-	if (nonGitHubHosts) return { kind: "inactive", nonGitHubHosts };
+	if (nonGitHubHosts) {
+		return nonGitHubHosts.length === 0 ? { kind: "inactive" } : { kind: "inactive", nonGitHubHosts };
+	}
 
 	const branchResult = context.rebaseBranch === undefined
 		? await execute(pi, context, "Read current branch", "git", ["branch", "--show-current"])
@@ -1956,7 +1958,7 @@ async function searchPullRequests(
 	return { ...selected, pullRequest: parseLoadedPullRequest(loaded.stdout, selected.candidate.url) };
 }
 
-// Returns the remote hosts when no remote points to github.com or to a host that gh has credentials for.
+// Returns the remote hosts, or an empty list without remotes, when no supported GitHub remote exists.
 async function readNonGitHubRemoteHosts(
 	pi: Pick<ExtensionAPI, "exec">,
 	context: PullRequestLoadContext,
@@ -1964,6 +1966,7 @@ async function readNonGitHubRemoteHosts(
 	// Unlike git config, git remote -v applies url.<base>.insteadOf and pushInsteadOf.
 	const result = await invoke(pi, context, "Read remote URLs", "git", ["remote", "-v"]);
 	if (result.code !== 0) return null;
+	if (result.stdout === "") return [];
 	const hosts = new Set<string>();
 	for (const line of result.stdout.replace(/\r\n/g, "\n").split("\n")) {
 		const url = /^[^\t]+\t(.*) \((?:fetch|push)\)$/.exec(line)?.[1];
