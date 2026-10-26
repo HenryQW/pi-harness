@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { formatPrFooter, projectPrDisplay } from "../extensions/pr-ui.ts";
 import {
 	GitHubRateLimitError,
 	linkInferredPullRequest,
@@ -846,6 +847,28 @@ test("stays inactive only after a C-locale safe-directory probe confirms no repo
 
 	assert.deepEqual(await discoverCurrentPullRequest(pi, context), { kind: "inactive" });
 	assert.equal(calls.some(({ args }) => args[0] === "branch"), false);
+});
+
+test("treats a repository without remotes as inactive before and after its first commit", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "pi-pr-no-remotes-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	git(root, "init", "--initial-branch=main");
+	const pi = {
+		async exec(command: string, args: string[]) {
+			assert.equal(command, "git", "no remote means no GitHub lookup");
+			return runGit(root, args);
+		},
+	};
+	await t.test("unborn branch", async () => {
+		assert.deepEqual(await discoverCurrentPullRequest(pi, { cwd: root }), { kind: "inactive" });
+	});
+	git(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false",
+		"commit", "--allow-empty", "-m", "initial");
+	await t.test("committed branch", async () => {
+		const discovery = await discoverCurrentPullRequest(pi, { cwd: root });
+		assert.equal(formatPrFooter(projectPrDisplay(discovery), { fg: (_color, text) => text }), undefined);
+		assert.deepEqual(discovery, { kind: "inactive" });
+	});
 });
 
 test("treats a repository with no GitHub-hosted remote as inactive", async () => {
