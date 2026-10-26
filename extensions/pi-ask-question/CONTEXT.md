@@ -1,6 +1,6 @@
 # Pi Ask Question
 
-Pi Ask Question collects one explicit user answer while agent work waits.
+Pi Ask Question collects explicit user answers while agent work waits.
 
 ## Language
 
