@@ -132,6 +132,8 @@ The specification is saved before dispatch. A one-time claim prevents duplicate 
 
 The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice. Delivery requests one model turn after success or failure, so the agent can continue with the result. A saved delivery record and the session history prevent duplicate notices and turn requests, including after rewind.
 
+Pi sends the notice asynchronously. The delivery record is saved only after the notice appears in session history. If dispatch fails before that point, inspect `/commands` and the session history. Reload to retry only after the earlier dispatch cannot still complete; otherwise, a duplicate notice is possible. The extension cannot detect an asynchronous dispatch failure or retry it during the same load.
+
 ### Worktree completion
 
 ![Worktree removal and primary-checkout update.](./docs/done-flow.svg)
