@@ -355,18 +355,15 @@ test(`shared nested config loads without warnings; ${state} completion requests 
 	sessionManager.appendMessage({ role: "toolResult", toolCallId: "sibling", toolName: "read",
 		content: [{ type: "text", text: "sibling result" }], isError: false, timestamp: Date.now() });
 	const sent: Parameters<ExtensionAPI["sendMessage"]>[0][] = [];
-	const deliveryOptions: Array<{ triggerTurn: boolean; deliverAs: string }> = [];
 	const turnRequests: boolean[] = [];
-	let pendingMessage: any;
 	let idle = false;
 	const ctx = { cwd: root, sessionManager, hasUI: true, ui: { notify: (message: string) => notifications.push(message) }, isIdle: () => idle } as unknown as ExtensionContext;
 	const load = () => {
 		const h = host(root);
 		let tool: any;
 		const api = { ...h.pi, registerTool(value: any) { tool = value; }, registerCommand() {}, sendMessage(message: any, options: any) {
-			deliveryOptions.push(options);
-			turnRequests.push(options?.triggerTurn === true);
-			sent.push(message); pendingMessage = message; idle = false;
+			turnRequests.push(options?.triggerTurn === true && options?.deliverAs === "followUp");
+			sent.push(message);
 		} } as unknown as ExtensionAPI;
 		const manager = registerCommands(api);
 		return { h, manager, tool };
@@ -393,26 +390,40 @@ test(`shared nested config loads without warnings; ${state} completion requests 
 	const reloaded = load();
 	t.after(() => reloaded.h.event("session_shutdown", {}, ctx));
 	await reloaded.h.event("session_start", {}, ctx);
+	const sessionId = sessionManager.getSessionId();
+	const sessionCheck = t.mock.method(sessionManager, "getSessionId", () => "another-session");
 	t.mock.timers.tick(1000);
-	await waitFor(async () => branchReads.mock.callCount() > 0 ? true : undefined);
+	await waitFor(async () => sessionCheck.mock.callCount() > 0 ? true : undefined);
+	assert.equal(sent.length, 0);
+	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
+	sessionCheck.mock.mockImplementation(() => sessionId);
+	await waitFor(async () => { t.mock.timers.tick(1000); return branchReads.mock.callCount() > 0 ? true : undefined; });
 	assert.equal(sent.length, 0);
 	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
 	assert.equal((await reloaded.manager.get(job.spec.id)).state, state);
 	sessionManager.branch(launchEntry);
 	t.mock.timers.tick(1000);
 	await waitFor(async () => sent.length === 1 ? true : undefined);
-	assert.deepEqual(deliveryOptions, [{ triggerTurn: true, deliverAs: "followUp" }]);
-	assert.deepEqual(turnRequests, [true]);
-	assert.equal(sent[0]!.content, `Background command ${job.spec.id}: ${state}. Output: ${job.outputPath}. Inspect the result and continue the user's request if needed.`);
-	assert.equal((sent[0]!.details as { exitCode: number }).exitCode, exitCode);
 	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
-	idle = true;
-	const previousReads = branchReads.mock.callCount();
-	await waitFor(async () => { t.mock.timers.tick(1000); return branchReads.mock.callCount() > previousReads ? true : undefined; });
+	const entryReads = t.mock.method(sessionManager, "getEntries");
+	t.mock.timers.tick(1000);
+	await waitFor(async () => entryReads.mock.callCount() > 0 ? true : undefined);
 	assert.equal(sent.length, 1);
-	sessionManager.appendCustomMessageEntry(pendingMessage.customType, pendingMessage.content, pendingMessage.display, pendingMessage.details);
-	await waitFor(async () => { t.mock.timers.tick(1000); return await readPrivate(join(job.dir, "delivered.json")); });
+	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
+	assert.equal(sent[0]!.content, `Background command ${job.spec.id}: ${state}. Output: ${job.outputPath}. Inspect the result and continue the existing request when appropriate.`);
+	assert.equal((sent[0]!.details as { exitCode: number }).exitCode, exitCode);
+	// An unrecorded dispatch can be retried only after reload.
 	await reloaded.h.event("session_shutdown", {}, ctx);
+	const recovered = load();
+	t.after(() => recovered.h.event("session_shutdown", {}, ctx));
+	await recovered.h.event("session_start", {}, ctx);
+	await waitFor(async () => { t.mock.timers.tick(1000); return sent.length === 2 ? true : undefined; });
+	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
+	const message = sent[1]!;
+	sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+	await waitFor(async () => { t.mock.timers.tick(1000); return await readPrivate(join(job.dir, "delivered.json")); });
+	assert.deepEqual(turnRequests, [true, true]);
+	await recovered.h.event("session_shutdown", {}, ctx);
 	// Simulate loss of the delivery checkpoint after the transcript append.
 	await rm(join(job.dir, "delivered.json"));
 	sessionManager.branch(firstEntry);
@@ -421,6 +432,6 @@ test(`shared nested config loads without warnings; ${state} completion requests 
 	await rewound.h.event("session_start", {}, ctx);
 	t.mock.timers.tick(1000);
 	await waitFor(async () => await readPrivate(join(job.dir, "delivered.json")));
-	assert.equal(sent.length, 1);
-	assert.deepEqual(turnRequests, [true]);
+	assert.equal(sent.length, 2);
+	assert.deepEqual(turnRequests, [true, true]);
 });

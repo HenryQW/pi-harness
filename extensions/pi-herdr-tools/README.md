@@ -143,6 +143,8 @@ The runner survives Pi shutdown, reload, and conversation rewind. Completion sta
 
 After a success or failure, delivery requests one model turn. The agent can inspect the result and continue the request if needed. If Pi cannot start the turn, Pi reports an error. Reload the session to retry a notice that is not in the session history. The delivery record and session history prevent duplicate notices and turn requests after a rewind.
 
+Pi sends the notice asynchronously. The delivery record is saved only after the notice appears in session history. If dispatch fails before that point, inspect `/commands` and the session history. Reload to retry only after the earlier dispatch cannot still complete; otherwise, a duplicate notice is possible. The extension cannot detect an asynchronous dispatch failure or retry it during the same load.
+
 ### Worktree completion
 
 ![Worktree removal and primary-checkout update.](./docs/done-flow.svg)

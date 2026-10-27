@@ -1677,24 +1677,30 @@ test("private inbox diagnostics stay out of startup, reminders, commands, and to
 	}
 });
 
-test("other sessions' inbox writes refresh the count-only widget", { timeout: 5_000 }, async () => {
+test("other sessions' inbox writes refresh the count-only widget", async () => {
 	await withReviewFixture({}, async ({ agentDir, ctx, widgets }) => {
 		const store = reviewInboxStore(validateMutation, agentDir);
 		const group = await reviewGroup(ctx.sessionManager.getCwd());
 		const setWidget = ctx.ui.setWidget;
-		let changed!: () => void;
+		let changed = () => {};
 		ctx.ui.setWidget = ((...args: Parameters<typeof setWidget>) => {
 			(setWidget as (...values: unknown[]) => void)(...args);
 			if (args[0] === "pi-memory-review") changed();
 		}) as typeof setWidget;
-		const displayed = new Promise<void>((resolve) => { changed = resolve; });
-		await store.update(() => ({ items: [{ id: "other-session", group, directory: agentDir, mutation: { target: "memory", action: "add", content: "private content" } }] }));
-		await displayed;
+		const waitForWidget = async (matches: () => boolean, update: () => Promise<unknown>) => {
+			let timer: ReturnType<typeof setTimeout>;
+			const displayed = new Promise<void>((resolve, reject) => {
+				// The watcher is non-persistent, so this timer also keeps the event loop alive.
+				timer = setTimeout(() => reject(new Error("Timed out waiting for the inbox widget")), 5_000);
+				changed = () => { if (matches()) resolve(); };
+			});
+			try { await Promise.all([update(), displayed]); }
+			finally { clearTimeout(timer!); }
+		};
+		await waitForWidget(() => widgets.at(-1)?.join().includes("1 pending") === true, () => store.update(() => ({ items: [{ id: "other-session", group, directory: agentDir, mutation: { target: "memory", action: "add", content: "private content" } }] })));
 		assert.match(widgets.at(-1)!.join(), /1 pending/);
 		assert.doesNotMatch(widgets.at(-1)!.join(), /private content/);
-		const cleared = new Promise<void>((resolve) => { changed = resolve; });
-		await store.update(() => ({ items: [] }));
-		await cleared;
+		await waitForWidget(() => widgets.at(-1) === undefined, () => store.update(() => ({ items: [] })));
 		assert.equal(widgets.at(-1), undefined);
 	});
 });
