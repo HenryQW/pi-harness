@@ -7,7 +7,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import memoryExtensionImpl, { MEMORY_PREPARE_TASK, MEMORY_REVIEW_TASK } from "../extensions/memory.ts";
+import memoryExtensionImpl, { MEMORY_PREPARE_TASK, MEMORY_REVIEW_TASK, validateMutation } from "../extensions/memory.ts";
+import { reviewGroup, reviewInboxStore } from "../src/inbox.ts";
 import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore } from "../src/store.ts";
 
 function memoryExtension(api: object): void {
@@ -19,7 +20,7 @@ function memoryExtension(api: object): void {
 }
 
 const CHILD_PAYLOAD_ARG = "--pi-herdr-btw-payload";
-const SESSION_CONTEXT = { ui: { notify() {} } };
+const SESSION_CONTEXT = { mode: "tui", hasUI: true, sessionManager: { getCwd: () => process.cwd() }, ui: { notify() {}, setWidget() {} } };
 const MEMORY_PROMPT_SECTION = "pi_memory";
 
 initTheme();
@@ -174,11 +175,13 @@ async function withReviewFixture(
 		const commands = new Map<string, CapturedCommand>();
 		let tool: CapturedTool | undefined;
 		memoryExtension({
-			on(event: string, handler: Handler) { handlers.set(event, handler); },
+			on(event: string, handler: Handler) {
+				const previous = handlers.get(event);
+				handlers.set(event, previous ? async (event, ctx) => { await previous(event, ctx); return handler(event, ctx); } : handler);
+			},
 			registerCommand(name: string, command: CapturedCommand) { commands.set(name, command); },
 			registerTool(value: CapturedTool) { tool = value; },
 		} as unknown as ExtensionAPI);
-		await handlers.get("session_start")!({ type: "session_start" }, SESSION_CONTEXT);
 		assert.ok(tool);
 
 		const calls: ReviewCall[] = [];
@@ -191,6 +194,8 @@ async function withReviewFixture(
 		const fallbackReviewModel = { ...FALLBACK_REVIEW_MODEL, contextWindow: options.fallbackContextWindow ?? FALLBACK_REVIEW_MODEL.contextWindow };
 		let nextReply = 0;
 		const ctx = {
+			hasUI: options.mode !== "print",
+			sessionManager: { getCwd: () => root },
 			mode: options.mode ?? "tui",
 			isIdle: () => true,
 			model: SESSION_MODEL,
@@ -227,16 +232,21 @@ async function withReviewFixture(
 					const component = factory(tui, plainTheme, undefined, resolve);
 					const lines = () => component.render(160).map((line) => stripVTControlCharacters(line).trimEnd());
 					questions.push(lines().join("\n"));
+					selections.push(lines());
 					void (async () => {
 						if (options.custom) return options.custom(component, tui);
 						const choice = (await options.select?.(lines()))?.replace(/^\s*→?\s*/, "");
-						for (let step = 0; choice && step < 2 && !lines().find((line) => line.includes("→"))?.includes(choice); step++) component.handleInput("\x1b[B");
+						for (let step = 0; choice && step < 10 && !lines().find((line) => line.includes("→"))?.includes(choice); step++) component.handleInput("\x1b[B");
 						component.handleInput(choice ? "\r" : "\x1b");
 					})().catch(reject);
 				}),
 			},
 		} as unknown as ExtensionContext;
-		await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections, widgets });
+		await handlers.get("session_start")!({ type: "session_start" }, ctx);
+		notifications.length = 0;
+		widgets.length = 0;
+		try { await run({ agentDir, memoryDir, tool, ctx, calls, commands, notifications, settled: handlers.get("agent_settled")!, modelSelect: handlers.get("model_select")!, handlers, questions, selections, widgets }); }
+		finally { await handlers.get("session_shutdown")!({}, ctx); }
 	} finally {
 		widget?.dispose?.();
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -1473,314 +1483,251 @@ test("duplicate-only batches bypass review and storage mutation only for exact s
 	});
 });
 
-test("active-response conflicts return pending and ask only after full settlement", async () => {
-	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "merged", explanation: "Same fact." });
-	await withReviewFixture({ memory: "existing", responses: [conflict, conflict], select: (choices) => choices[0] }, async ({ memoryDir, tool, ctx, calls, settled, questions, notifications }) => {
-		const busy = { ...ctx, isIdle: () => false };
-		const result = await tool.execute("defer", { action: "add", content: "candidate" }, undefined, undefined, busy);
-		const status = JSON.parse(result.content[0]!.text);
-		assert.equal(status.queued, true);
-		assert.equal(status.saved, false);
-		assert.match(status.message, /without retrying or asking the user yourself/);
-		assert.deepEqual(questions, []);
-		const rendered = tool.renderResult(result, { expanded: true }, { fg: (_color, text) => text }, { args: {} }).render(120).join("\n");
-		assert.doesNotMatch(rendered, /✓/);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
-		await settled({ type: "agent_settled", aborted: false }, busy);
-		assert.equal(calls.length, 1);
-		await settled({ type: "agent_settled", aborted: false }, ctx);
-		assert.equal(questions.length, 1);
-		assert.equal(calls.length, 3);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "merged");
-		assert.equal(notifications.at(-1), "Entry replaced.");
-		await settled({ type: "agent_settled", aborted: false }, ctx);
-		assert.equal(calls.length, 3);
-	});
-});
+const overlap = (evidence = "existing", proposedMerge?: string) => JSON.stringify({ verdict: "overlap", source: "memory", evidence, explanation: "Same fact.", ...(proposedMerge ? { proposedMerge } : {}) });
+const pendingItems = (agentDir: string) => {
+	const loaded = reviewInboxStore(validateMutation, agentDir).loadSync();
+	assert.equal(loaded.status, "ok");
+	return loaded.status === "ok" ? loaded.value.items : [];
+};
 
-test("deferred conflicts drain FIFO and re-review live sources before asking", async () => {
-	const conflict = (evidence: string) => JSON.stringify({ verdict: "overlap", source: "memory", evidence, explanation: "Same fact." });
+test("automatic conflicts persist without dialogs; settlement reminds and review uses live sources", async () => {
 	await withReviewFixture({
-		memory: "existing", responses: [conflict("existing"), conflict("existing"), conflict("changed externally"), conflict("changed externally")],
-		select: (choices) => choices.find((choice) => choice.includes("Discard the new entry")),
-	}, async ({ memoryDir, tool, ctx, calls, settled, questions }) => {
-		for (const content of ["first", "second"]) await tool.execute(content, { action: "add", content }, undefined, undefined, { ...ctx, isIdle: () => false });
+		memory: "existing", responses: [overlap(), overlap("changed externally")],
+		select: (choices) => choices.find((choice) => choice.includes("Discard")),
+	}, async ({ agentDir, memoryDir, tool, ctx, calls, settled, questions, notifications, widgets, commands }) => {
+		const result = await tool.execute("defer", { action: "add", content: "private candidate" }, undefined, undefined, { ...ctx, isIdle: () => false });
+		assert.equal(JSON.parse(result.content[0]!.text).saved, false);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.match(widgets.at(-1)!.join(), /1 pending/);
+		assert.doesNotMatch(widgets.flat().join(), /private candidate|existing/);
+		for (let response = 0; response < 2; response++) await settled({ aborted: false }, ctx);
+		assert.equal(notifications.filter((text) => text.includes("1 memory review pending")).length, 2);
+		assert.equal(calls.length, 1);
+		assert.deepEqual(questions, []);
 		await writeFile(join(memoryDir, "MEMORY.md"), "changed externally");
-		await settled({ type: "agent_settled", aborted: false }, ctx);
-		const requests = calls.slice(2).map((call) => JSON.parse(call.context.messages[0]!.content));
-		assert.deepEqual(requests.map((request) => request.mutation.content), ["first", "second"]);
-		assert.ok(requests.every((request) => request.sources.memory[0] === "changed externally"));
-		assert.ok(questions.every((question) => question.includes("changed externally")));
-		assert.equal(questions.length, 2);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.match(questions[0]!, /changed externally/);
+		assert.equal(pendingItems(agentDir).length, 0);
+		assert.equal(widgets.at(-1), undefined);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "changed externally");
 	});
 });
 
-test("aborted settlement without a signal drops both queues and preserves later commands", async () => {
-	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "saved fact", explanation: "Same fact." });
-	await withReviewFixture({
-		responses: [JSON.stringify({ verdict: "distinct", explanation: "New fact." }), conflict,
-			JSON.stringify({ target: "user", content: "later preference" }),
-			JSON.stringify({ verdict: "distinct", explanation: "New preference." })],
-	}, async ({ memoryDir, tool, commands, ctx, calls, settled, questions }) => {
-		await tool.execute("save", { action: "add", content: "saved fact" }, undefined, undefined, ctx);
-		const busy = { ...ctx, isIdle: () => false };
-		await tool.execute("defer", { action: "add", content: "cancelled conflict" }, undefined, undefined, busy);
-		await commands.get("remember")!.handler("cancelled remember", busy);
-		assert.equal(ctx.signal, undefined);
-		await settled({ type: "agent_settled", aborted: true }, ctx);
-		assert.equal(calls.length, 2);
-		assert.deepEqual(questions, []);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "saved fact");
-		await assert.rejects(readFile(join(memoryDir, "USER.md")), /ENOENT/);
-
-		await settled({ type: "agent_settled", aborted: false }, ctx);
-		assert.equal(calls.length, 2);
-		assert.deepEqual(questions, []);
-		await commands.get("remember")!.handler("later preference", ctx);
-		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "later preference");
-		assert.equal(calls.length, 4);
-	});
-});
-
-test("cancelled or replaced sessions drop pending conflicts without opening UI", async () => {
-	for (const boundary of ["abort", "session_shutdown", "session_start"]) {
+test("restart, cancellation, and session switching retain candidates and isolate groups", async () => {
+	await withReviewFixture({ memory: "existing", responses: [overlap()] }, async ({ agentDir, tool, ctx, handlers, settled, widgets, commands, calls }) => {
 		const controller = new AbortController();
-		await withReviewFixture({
-			memory: "existing", responses: [JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", explanation: "Same fact." })],
-		}, async ({ memoryDir, tool, ctx, calls, settled, handlers, questions }) => {
-			await tool.execute("defer", { action: "add", content: "candidate" }, controller.signal, undefined, { ...ctx, isIdle: () => false });
-			if (boundary === "abort") controller.abort();
-			else await handlers.get(boundary)!({ type: boundary }, SESSION_CONTEXT);
-			await settled({ type: "agent_settled", aborted: false }, ctx);
-			assert.equal(calls.length, 1, boundary);
-			assert.deepEqual(questions, [], boundary);
-			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
-		});
-	}
-});
-
-test("a new response during deferred approval invalidates the write without an idle signal", async () => {
-	let start!: Handler;
-	const conflict = JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "merged", explanation: "Same fact." });
-	await withReviewFixture({
-		memory: "existing", responses: [conflict, conflict],
-		select: async (choices) => { await start(promptEvent()); return choices[0]; },
-	}, async ({ memoryDir, tool, ctx, settled, handlers }) => {
-		start = handlers.get("before_agent_start")!;
-		await tool.execute("defer", { action: "add", content: "candidate" }, undefined, undefined, { ...ctx, isIdle: () => false });
-		await settled({ type: "agent_settled", aborted: false }, ctx);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
-	});
-});
-
-test("approved merge and replacement re-review and write the exact existing entry", async () => {
-	await withReviewFixture({
-		memory: "existing preference",
-		responses: [JSON.stringify({
-			verdict: "overlap",
-			source: "memory",
-			evidence: "existing preference",
-			proposedMerge: "one merged preference",
-			explanation: "Both entries cover the same preference.",
-		})],
-		select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx, selections }) => {
-		await tool.execute("overlap", { action: "add", content: "candidate preference" }, undefined, undefined, ctx);
-		assert.match(selections[0]![0]!, /Merge with existing entries \(Recommended\)/);
-		assert.match(selections[0]![1]!, /Discard the new entry, keep current/);
-		assert.match(selections[0]![2]!, /Replace current entry/);
-		assert.match(selections[0]![3]!, /Something else\./);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "one merged preference");
-	});
-
-	await withReviewFixture({
-		user: "outdated preference",
-		responses: [JSON.stringify({
-			verdict: "contradiction",
-			source: "user",
-			evidence: "outdated preference",
-			explanation: "The facts disagree.",
-		})],
-		select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx, selections }) => {
-		await tool.execute("contradiction", { action: "add", target: "user", content: "current preference" }, undefined, undefined, ctx);
-		assert.match(selections[0]![0]!, /Replace current entry \(Recommended\)/);
-		assert.ok(selections[0]!.some((choice) => choice.includes("Merge with existing entries")));
-		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
-		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "current preference");
-	});
-});
-
-test("discard, custom resolution, and SYSTEM choices never write a conflicting add", async () => {
-	const response = JSON.stringify({
-		verdict: "overlap", source: "memory", evidence: "existing fact", explanation: "Overlap found.",
-	});
-	for (const choice of ["Discard the new entry", "Something else."]) {
-		await withReviewFixture({
-			memory: "existing fact", responses: [response], input: "Keep both with context",
-			select: (choices) => choices.find((item) => item.includes(choice)),
-		}, async ({ memoryDir, tool, ctx }) => {
-			if (choice === "Something else.") {
-				await assert.rejects(() => tool.execute("resolve", { action: "add", content: "candidate" }, undefined, undefined, ctx), /custom resolution/);
-			} else {
-				const result = await tool.execute("resolve", { action: "add", content: "candidate" }, undefined, undefined, ctx);
-				assert.match(result.content[0]!.text, /User discarded the candidate/);
-			}
-			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing fact");
-		});
-	}
-	await withReviewFixture({
-		system: "Keep global policy.",
-		responses: [JSON.stringify({ verdict: "contradiction", source: "system", evidence: "Keep global policy.", explanation: "Conflict found." })],
-		select: (choices) => choices.find((item) => item.includes("Replace current entry")),
-	}, async ({ agentDir, memoryDir, tool, ctx, selections }) => {
-		await assert.rejects(
-			() => tool.execute("system", { action: "add", content: "candidate" }, undefined, undefined, ctx),
-			/pi-memory cannot edit SYSTEM.md/,
-		);
-		assert.match(selections[0]![0]!, /Discard the new entry, keep current \(Recommended\)/);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "Keep global policy.");
-		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
-	});
-});
-
-test("conflict resolution fails closed on ambiguous, cross-target, and second-review conflicts", async () => {
-	await withReviewFixture({
-		memory: "shared evidence one\n§\nshared evidence two",
-		responses: [JSON.stringify({ verdict: "overlap", source: "memory", evidence: "shared evidence", proposedMerge: "combined", explanation: "Overlap." })],
-		select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx }) => {
-		await assert.rejects(() => tool.execute("ambiguous", { action: "add", content: "new" }, undefined, undefined, ctx), /does not identify exactly one entry/);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "shared evidence one\n§\nshared evidence two");
-	});
-	await withReviewFixture({
-		user: "existing user fact",
-		responses: [JSON.stringify({ verdict: "overlap", source: "user", evidence: "existing user fact", proposedMerge: "combined", explanation: "Overlap." })],
-		select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx }) => {
-		await assert.rejects(() => tool.execute("cross-target", { action: "add", content: "new" }, undefined, undefined, ctx), /spans targets or a batch/);
-		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "existing user fact");
-	});
-	await withReviewFixture({
-		memory: "existing",
-		responses: [
-			JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "merged", explanation: "Overlap." }),
-			JSON.stringify({ verdict: "contradiction", source: "system", evidence: "policy", explanation: "Conflicts with global policy." }),
-		],
-		system: "policy", select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx }) => {
-		await assert.rejects(() => tool.execute("second-review", { action: "add", content: "new" }, undefined, undefined, ctx), /proposed replacement conflicts/);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
-	});
-});
-
-test("approved conflict write aborts if sources change while the question is open", async () => {
-	let path = "";
-	await withReviewFixture({
-		memory: "existing",
-		responses: [JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", proposedMerge: "combined", explanation: "Overlap." })],
-		select: async (choices) => { await writeFile(path, "changed externally"); return choices[0]; },
-	}, async ({ memoryDir, tool, ctx }) => {
-		path = join(memoryDir, "MEMORY.md");
-		await assert.rejects(() => tool.execute("conflict-drift", { action: "add", content: "new" }, undefined, undefined, ctx), /review sources changed while waiting/);
-		assert.equal(await readFile(path, "utf8"), "changed externally");
-	});
-});
-
-test("escapes reviewer-controlled conflict text for TUI rendering", async () => {
-	const evidence = "existing\u001b[31m fact";
-	await withReviewFixture({
-		memory: evidence,
-		responses: [JSON.stringify({
-			verdict: "overlap",
-			source: "memory",
-			evidence,
-			proposedMerge: "merge\u200d candidate",
-			explanation: "review\u0007 complete",
-		})],
-		select: (choices) => choices[0],
-	}, async ({ memoryDir, tool, ctx, calls, questions, selections }) => {
-		await tool.execute("escaped-conflict", { action: "add", content: "candidate" }, undefined, undefined, ctx);
-		assert.equal(calls.length, 2);
-		assert.equal(JSON.parse(calls[0]!.context.messages[0]!.content).sources.memory[0], evidence);
-		const shown = [questions[0]!, ...selections[0]!].join("\n");
-		assert.doesNotMatch(shown, /[\u001b\u0007\u200d]/u);
-		assert.match(questions[0]!, /\\u001b/);
-		assert.match(questions[0]!, /\\u0007/);
-		assert.ok(selections[0]!.some((choice) => choice.includes("\\u200d")));
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "merge\u200d candidate");
-	});
-});
-
-test("cancellation after review, conflict UI, or at the write boundary never writes", async () => {
-	const reviewController = new AbortController();
-	await withReviewFixture({
-		responses: [async () => {
-			reviewController.abort(new Error("review cancelled"));
-			return JSON.stringify({ verdict: "distinct", explanation: "Distinct durable fact." });
-		}],
-	}, async ({ memoryDir, tool, ctx, calls }) => {
-		await assert.rejects(
-			() => tool.execute("cancel-review", { action: "add", content: "candidate" }, reviewController.signal, undefined, ctx),
-			/review cancelled/,
-		);
+		await tool.execute("queue", { action: "add", content: "candidate" }, controller.signal, undefined, ctx);
+		controller.abort();
+		await settled({ aborted: true }, ctx);
+		await handlers.get("session_shutdown")!({}, ctx);
+		await handlers.get("session_start")!({}, ctx);
+		assert.match(widgets.at(-1)!.join(), /1 pending/);
+		const other = join(agentDir, "other");
+		await mkdir(other);
+		const otherCtx = { ...ctx, sessionManager: { getCwd: () => other } };
+		await handlers.get("session_start")!({}, otherCtx);
+		assert.equal(widgets.at(-1), undefined);
+		await commands.get("memory-review")!.handler("", otherCtx);
 		assert.equal(calls.length, 1);
-		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+		assert.equal(pendingItems(agentDir).length, 1);
+		await handlers.get("session_start")!({}, ctx);
+		assert.match(widgets.at(-1)!.join(), /1 pending/);
 	});
+});
 
-	const resolutionController = new AbortController();
+test("review applies exact merge or replacement only after a second review", async () => {
+	for (const action of ["Merge", "Replace"]) {
+		await withReviewFixture({
+			memory: "existing", responses: [overlap(), overlap("existing", "merged")],
+			select: (choices) => choices.find((choice) => choice.includes(action)),
+		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
+			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+			await commands.get("memory-review")!.handler("", ctx);
+			assert.equal(calls.length, 3);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), action === "Merge" ? "merged" : "candidate");
+			assert.equal(pendingItems(agentDir).length, 0);
+		});
+	}
+});
+
+test("review preserves and applies a complete atomic batch", async () => {
+	const operations = [{ action: "remove", old_text: "existing" }, { action: "add", content: "replacement" }, { action: "add", content: "other" }];
+	await withReviewFixture({ memory: "existing", responses: [overlap(), overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, questions }) => {
+		await tool.execute("batch", { operations }, undefined, undefined, ctx);
+		assert.deepEqual(pendingItems(agentDir)[0]!.mutation.operations, operations);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.match(questions[0]!, /replacement/);
+		assert.match(questions[0]!, /other/);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "replacement\n§\nother");
+		assert.equal(pendingItems(agentDir).length, 0);
+	});
+});
+
+test("long inbox batches scroll fully and cannot approve in a terminal without room for review", async () => {
+	const operations = Array.from({ length: 100 }, (_, index) => ({ action: "add", content: index === 99 ? "FINAL_REVIEW_MARKER" : `durable fact ${index}` }));
 	await withReviewFixture({
-		memory: "existing preference",
-		responses: [JSON.stringify({
-			verdict: "overlap",
-			source: "memory",
-			evidence: "existing preference",
-			explanation: "Overlap found.",
-		})],
-		select: (choices) => {
-			resolutionController.abort(new Error("resolution cancelled"));
-			return choices[0];
+		memory: "existing", responses: [overlap()],
+		custom: (component, tui) => {
+			tui.terminal.rows = 16;
+			assert.ok(component.render(100).length <= 16);
+			component.handleInput("\x1b[B");
+			tui.terminal.rows = 2;
+			assert.match(component.render(100).join(), /Enlarge terminal/);
+			component.handleInput("\r");
+			tui.terminal.rows = 16;
+			component.render(100);
+			component.handleInput("\x1b[F");
+			const bottom = component.render(100).map(stripVTControlCharacters).join("\n");
+			assert.match(bottom, /FINAL_REVIEW_MARKER/);
+			assert.match(bottom, /Save complete mutation/);
+			component.handleInput("\x1b");
 		},
-	}, async ({ memoryDir, tool, ctx }) => {
-		await assert.rejects(
-			() => tool.execute("cancel-resolution", { action: "add", content: "candidate" }, resolutionController.signal, undefined, ctx),
-			/resolution cancelled/,
-		);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing preference");
-	});
-
-	const writeController = new AbortController();
-	writeController.abort(new Error("write cancelled"));
-	await withReviewFixture({ memory: "existing preference" }, async ({ memoryDir, tool, ctx, calls }) => {
-		await assert.rejects(
-			() => tool.execute("cancel-write", { action: "replace", old_text: "existing preference", content: "changed preference" }, writeController.signal, undefined, ctx),
-			/write cancelled/,
-		);
-		assert.equal(calls.length, 0);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing preference");
+	}, async ({ agentDir, memoryDir, tool, ctx, commands }) => {
+		await tool.execute("batch", { operations }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
 	});
 });
 
-test("noninteractive conflicts block and never edit SYSTEM", async () => {
-	await withReviewFixture({
-		system: "Keep global policy.",
-		mode: "print",
-		responses: [JSON.stringify({
-			verdict: "overlap",
-			source: "system",
-			evidence: "Keep global policy.",
-			explanation: "The candidate conflicts with global policy.",
-		})],
-	}, async ({ agentDir, memoryDir, tool, ctx, calls, selections }) => {
-		await assert.rejects(
-			() => tool.execute("noninteractive", { action: "add", content: "candidate" }, undefined, undefined, ctx),
-			/UI not available \(running in non-interactive mode\)/,
-		);
-		assert.equal(calls.length, 1);
-		assert.deepEqual(selections, []);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "Keep global policy.");
-		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+test("cancel, later, custom answers, changed sources, and write failures retain candidates", async () => {
+	for (const failure of ["cancel", "later", "custom", "source", "write", "session", "directory", "second-review"]) {
+		let fixture!: ReviewFixture;
+		await withReviewFixture({
+			memory: "existing", responses: [overlap(), overlap("existing", failure === "later" ? undefined : "merged"), ...(failure === "second-review" ? [JSON.stringify({ verdict: "contradiction", source: "system", evidence: "policy", explanation: "Conflict." })] : [])],
+			system: "policy", input: "custom instruction",
+			select: async (choices) => {
+				if (failure === "cancel") return;
+				if (failure === "later") return choices.find((choice) => choice.includes("Review later"));
+				if (failure === "custom") return choices.find((choice) => choice.includes("Something else"));
+				if (failure === "source") await writeFile(join(fixture.memoryDir, "USER.md"), "changed");
+				if (failure === "session") await fixture.handlers.get("before_agent_start")!(promptEvent());
+				return choices.find((choice) => choice.includes("Merge with existing entries"));
+			},
+		}, async (value) => {
+			fixture = value;
+			const { agentDir, memoryDir, tool, ctx, commands } = value;
+			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+			if (failure === "directory") await reviewInboxStore(validateMutation, agentDir).update(({ items }) => ({ items: items.map((item) => ({ ...item, directory: agentDir })) }));
+			const apply = MemoryStore.prototype.apply;
+			try {
+				if (failure === "write") MemoryStore.prototype.apply = async () => ({ success: false, error: "write failed" });
+				await commands.get("memory-review")!.handler("", ctx);
+			} finally { MemoryStore.prototype.apply = apply; }
+			assert.equal(pendingItems(agentDir).length, 1, failure);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing", failure);
+		});
+	}
+});
+
+test("SYSTEM conflicts offer no write actions; noninteractive review never opens dialogs", async () => {
+	const conflict = JSON.stringify({ verdict: "contradiction", source: "system", evidence: "policy", proposedMerge: "invalid merge", explanation: "Conflict." });
+	for (const mode of ["tui", "print"] as const) {
+		await withReviewFixture({ system: "policy", mode, responses: [conflict, conflict], select: (choices) => choices.find((choice) => choice.includes("Review later")) }, async ({ agentDir, memoryDir, tool, ctx, commands, selections, settled }) => {
+			const result = await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+			assert.equal(JSON.parse(result.content[0]!.text).queued, true);
+			await settled({ aborted: false }, ctx);
+			await commands.get("memory-review")!.handler("", ctx);
+			assert.doesNotMatch(selections.flat().join(), /Merge|Replace|Save complete/);
+			assert.equal(selections.length, mode === "tui" ? 1 : 0);
+			assert.equal(pendingItems(agentDir).length, 1);
+			assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "policy");
+			await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
+		});
+	}
+});
+
+test("inbox failures never claim persistence or change memory", async () => {
+	for (const failure of ["malformed", "write", "full"]) {
+		await withReviewFixture({ memory: "existing", responses: [overlap()], primaryContextWindow: 1_000_000 }, async ({ agentDir, memoryDir, tool, ctx }) => {
+			const path = join(agentDir, "config", "pi-memory", "review-inbox.json");
+			if (failure === "malformed") await writeFile(path, "{");
+			if (failure === "write") await mkdir(path);
+			await assert.rejects(tool.execute("queue", { action: "add", content: failure === "full" ? "x".repeat(70_000) : "candidate" }, undefined, undefined, ctx), /Cannot save candidate to the review inbox; nothing was saved to memory/);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+			if (failure === "malformed") assert.equal(await readFile(path, "utf8"), "{");
+		});
+	}
+});
+
+test("private inbox diagnostics stay out of startup, reminders, commands, and tool errors", async (t) => {
+	for (const mode of ["tui", "print"] as const) {
+		await withReviewFixture({ mode, memory: "existing", responses: [overlap()] }, async ({ agentDir, tool, ctx, handlers, settled, commands, notifications, widgets }) => {
+			const marker = "PRIVATE_CANDIDATE_SENTINEL";
+			const path = join(agentDir, "config", "pi-memory", "review-inbox.json");
+			const raw = `${marker} is not JSON`;
+			await writeFile(path, raw);
+			const stderr: string[] = [];
+			const capture = t.mock.method(process.stderr, "write", (chunk: unknown) => { stderr.push(String(chunk)); return true; });
+			try {
+				await handlers.get("session_start")!({}, ctx);
+				await settled({ aborted: false }, ctx);
+				await commands.get("memory-review")!.handler("", ctx);
+				await assert.rejects(tool.execute("queue", { action: "add", content: "new candidate" }, undefined, undefined, ctx), (error: Error) => {
+					assert.match(error.message, /Cannot save candidate to the review inbox/);
+					assert.ok(!error.message.includes(marker));
+					return true;
+				});
+			} finally { capture.mock.restore(); }
+			assert.ok([...stderr, ...notifications].some((text) => text.includes("invalid-json")));
+			assert.ok(![...stderr, ...notifications, ...widgets.flat()].join("\n").includes(marker));
+			assert.equal(await readFile(path, "utf8"), raw);
+		});
+	}
+});
+
+test("other sessions' inbox writes refresh the count-only widget", { timeout: 5_000 }, async () => {
+	await withReviewFixture({}, async ({ agentDir, ctx, widgets }) => {
+		const store = reviewInboxStore(validateMutation, agentDir);
+		const group = await reviewGroup(ctx.sessionManager.getCwd());
+		const setWidget = ctx.ui.setWidget;
+		let changed!: () => void;
+		ctx.ui.setWidget = ((...args: Parameters<typeof setWidget>) => {
+			(setWidget as (...values: unknown[]) => void)(...args);
+			if (args[0] === "pi-memory-review") changed();
+		}) as typeof setWidget;
+		const displayed = new Promise<void>((resolve) => { changed = resolve; });
+		await store.update(() => ({ items: [{ id: "other-session", group, directory: agentDir, mutation: { target: "memory", action: "add", content: "private content" } }] }));
+		await displayed;
+		assert.match(widgets.at(-1)!.join(), /1 pending/);
+		assert.doesNotMatch(widgets.at(-1)!.join(), /private content/);
+		const cleared = new Promise<void>((resolve) => { changed = resolve; });
+		await store.update(() => ({ items: [] }));
+		await cleared;
+		assert.equal(widgets.at(-1), undefined);
+	});
+});
+
+test("a saved mutation with failed inbox cleanup is reported and retained", async (t) => {
+	await withReviewFixture({ memory: "existing", responses: [overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		const rename = fs.rename;
+		const failure = t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+			if (args[1] === join(agentDir, "config", "pi-memory", "review-inbox.json")) throw new Error("PRIVATE_CLEANUP_SENTINEL");
+			return rename(...args);
+		});
+		syncBuiltinESMExports();
+		try { await commands.get("memory-review")!.handler("", ctx); }
+		finally { failure.mock.restore(); syncBuiltinESMExports(); }
+		assert.doesNotMatch(notifications.join("\n"), /PRIVATE_CLEANUP_SENTINEL/);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate");
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.ok(notifications.some((message) => message.includes("Memory was saved, but inbox removal failed")));
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 0);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate");
+	});
+});
+
+test("explicit /remember still asks about conflicts and escapes untrusted display text", async () => {
+	const evidence = "existing\u001b[31m fact";
+	await withReviewFixture({ memory: evidence, responses: [JSON.stringify({ target: "memory", content: "candidate" }), overlap(evidence, "merged\u200d fact")], select: (choices) => choices[0] }, async ({ agentDir, memoryDir, ctx, commands, questions, selections }) => {
+		await commands.get("remember")!.handler("candidate", ctx);
+		assert.doesNotMatch([questions[0], ...selections[0]!].join(), /[\u001b\u200d]/u);
+		assert.match(questions[0]!, /\\u001b/);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "merged\u200d fact");
+		assert.equal(pendingItems(agentDir).length, 0);
 	});
 });
 
@@ -1987,7 +1934,7 @@ test("invalid config disables memory with a launch error; oversized and capped s
 		const before = handlers.get("before_agent_start")!;
 		const memoryTool = tool!;
 		const launch: Array<[string, string]> = [];
-		await handlers.get("session_start")!({ type: "session_start" }, { hasUI: true, ui: { notify: (message: string, level: string) => launch.push([message, level]) } });
+		await handlers.get("session_start")!({ type: "session_start" }, { ...SESSION_CONTEXT, ui: { ...SESSION_CONTEXT.ui, notify: (message: string, level: string) => launch.push([message, level]) } });
 		assert.equal(launch.length, 1);
 		assert.match(launch[0]![0], /^pi-memory disabled \(.*config\.json\): directory: must be an absolute path/);
 		assert.equal(launch[0]![1], "error");
