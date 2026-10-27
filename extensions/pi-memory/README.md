@@ -75,7 +75,9 @@ An unreadable, oversized, or symlink target stops the command. An invalid `SYSTE
 
 `/dream` shows `Dream running…` in Pi's bordered loading widget, as `/rename` does, before it reads files or requests a model proposal. The status clears when the command ends, is cancelled, or the session or model changes.
 
-`pi-memory/promoteEntries` proposes one exact edit to the selected prompt file and the whole memory entries it represents. The approval screen fits the current terminal size. It names the selected file and shows the reason, exact edit with line numbers, and all entries to remove from each store. Approval states whether it will create or update the prompt file. Use Page Up and Page Down to scroll; Home and End go to the start and end. The approval controls stay visible. If the terminal is too small, enlarge it or press Esc to reject.
+`pi-memory/promoteEntries` proposes one exact edit to the selected prompt file and the whole memory entries it represents. The approval screen fits the current terminal size. It names the selected file and shows the reason, exact edit with line numbers, and all entries to remove from each store. Approval states whether it will create or update the prompt file.
+
+Use Page Up and Page Down to scroll; Home and End go to the start and end. The approval controls stay visible. If the terminal is too small, enlarge it or press Esc to reject.
 
 Use Up and Down to select a control, then Enter to confirm. `Reject` is selected by default. Select `Approve` to proceed; `Reject` or Esc changes nothing.
 

@@ -1,4 +1,4 @@
-import { lstat, mkdir, opendir, realpath } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, opendir, realpath, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { BorderedLoader, DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -885,7 +885,18 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 						throw new MemoryReviewError("Dream sources changed while waiting; nothing was written. Retry.");
 					}
 					signal?.throwIfAborted();
-					if (updated !== prompt.source.raw) await writePrivateTextFileAtomically(prompt.path, updated, { signal });
+					if (prompt.source.state === "absent") {
+						const directory = await mkdtemp(`${prompt.path}.`);
+						try {
+							const prepared = join(directory, "prompt");
+							await writePrivateTextFileAtomically(prepared, updated, { signal });
+							signal?.throwIfAborted();
+							// Publish complete private bytes without replacing a concurrent creation.
+							await link(prepared, prompt.path);
+						} finally {
+							await rm(directory, { recursive: true, force: true });
+						}
+					} else if (updated !== prompt.source.raw) await writePrivateTextFileAtomically(prompt.path, updated, { signal });
 					// Once the prompt changes, finish removals even if cancellation arrives; they can be reconciled on retry.
 					for (const target of ["memory", "user"] as const) {
 						const selected = proposal.remove[target];

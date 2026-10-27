@@ -762,6 +762,30 @@ test("/dream stops when prompt selection, prompt state, or either store changes 
 	}
 });
 
+test("/dream preserves a competing append file created at publication", async (t) => {
+	await withReviewFixture({
+		memory: "entry", user: "preference",
+		responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "New rule." }, remove: { memory: ["entry"], user: ["preference"] } })],
+		select: () => "Approve",
+	}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
+		const path = join(agentDir, "APPEND_SYSTEM.md");
+		const link = fs.link;
+		const competingCreation = t.mock.method(fs, "link", async (...args: Parameters<typeof link>) => {
+			if (args[1] === path) await writeFile(path, "Competing rules.", { flag: "wx" });
+			return link(...args);
+		});
+		syncBuiltinESMExports();
+		try { await commands.get("dream")!.handler("", ctx); }
+		finally { competingCreation.mock.restore(); syncBuiltinESMExports(); }
+		assert.match(notifications.at(-1)!, /APPEND_SYSTEM\.md.*EEXIST/);
+		assert.equal(await readFile(path, "utf8"), "Competing rules.");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "preference");
+		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
+		assert.deepEqual((await readdir(agentDir)).filter((file) => file.startsWith("APPEND_SYSTEM.md.")), []);
+	});
+});
+
 test("/dream retains entries when an approved append write fails", async (t) => {
 	for (const append of [undefined, "Append rules"]) {
 		await withReviewFixture({
@@ -770,10 +794,11 @@ test("/dream retains entries when an approved append write fails", async (t) => 
 			select: () => "Approve",
 		}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
 			const path = join(agentDir, "APPEND_SYSTEM.md");
-			const rename = fs.rename;
-			const failure = t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+			const operation = append === undefined ? "link" : "rename";
+			const publish = fs[operation];
+			const failure = t.mock.method(fs, operation, async (...args: Parameters<typeof publish>) => {
 				if (args[1] === path) throw new Error("simulated prompt write failure");
-				return rename(...args);
+				return publish(args[0], args[1]);
 			});
 			syncBuiltinESMExports();
 			try { await commands.get("dream")!.handler("", ctx); }
