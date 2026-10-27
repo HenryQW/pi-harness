@@ -139,7 +139,9 @@ Status clears on answer, cancellation, failure, `/reload`, session switch, or ex
 
 The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown. Only an exact runner record can restore status or prove completion.
 
-The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice. Delivery does not start a model turn. A saved delivery record and the session history prevent duplicate notices, including after rewind.
+The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice.
+
+Delivery starts a model turn to inspect the result and continue the request if necessary. If the turn cannot start, Pi reports an error; reload the session to retry an unrecorded notice. A saved delivery record and the session history prevent duplicate notices, including after rewind.
 
 ### Worktree completion
 
