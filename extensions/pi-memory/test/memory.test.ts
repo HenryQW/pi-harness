@@ -925,16 +925,19 @@ test("/dream reports a timestamp failure without claiming the approved promotion
 });
 
 test("/dream refuses a full SYSTEM replacement before asking approval", async () => {
-	await withReviewFixture({
-		system: "entire system", memory: "entry",
-		responses: [JSON.stringify({ reason: "Global.", system: { find: "entire system", replace: "short" }, remove: { memory: ["entry"], user: [] } })],
-	}, async ({ agentDir, memoryDir, commands, ctx, questions, notifications }) => {
-		await commands.get("dream")!.handler("", ctx);
-		assert.match(notifications.at(-1)!, /cannot replace the entire SYSTEM.md/);
-		assert.deepEqual(questions, []);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "entire system");
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
-	});
+	for (const system of ["entire system", ""]) {
+		await withReviewFixture({
+			system, memory: "entry",
+			responses: [JSON.stringify({ reason: "Global.", system: { find: system, replace: "short" }, remove: { memory: ["entry"], user: [] } })],
+		}, async ({ agentDir, memoryDir, commands, ctx, questions, notifications }) => {
+			await commands.get("dream")!.handler("", ctx);
+			assert.match(notifications.at(-1)!, /cannot replace the entire SYSTEM.md/);
+			assert.deepEqual(questions, []);
+			assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), system);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+			await assert.rejects(readFile(join(agentDir, "APPEND_SYSTEM.md")), /ENOENT/);
+		});
+	}
 });
 
 test("/dream keeps entries and leaves its timestamp unset if removal fails after SYSTEM is saved", async () => {
