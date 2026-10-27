@@ -54,6 +54,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 		stopDirect: async (task, entryId, current) => { if (!current()) throw new Error("stale"); stopped.push(`${task.id}:${entryId}`); return "Worker stopped"; },
 		isolated: async (_cwd, current) => { inventoryCount++; assert.equal(current(), true); if (options.isolatedError) throw options.isolatedError; return inventory; },
 		recover: async () => { recoverCount++; await recoverPause?.(); return "Recovery report for Main"; },
+		collect: async (_ctx, current) => { assert.equal(current(), true); return "Subagent Collection: sessions kept."; },
 		roles: () => ({ roles: [{ name: "scout", source: "built-in", modelClass: "fast", route: { model: "test/fast", thinking: "low" },
 			tools: ["read", "grep"], extensions: [], skills: [], mcps: [] }], errors: ["/roles/bad.md: unknown Role frontmatter key"] }),
 		prunePlan: async () => options.prune ?? { root: "/git", items: [] },
@@ -593,9 +594,10 @@ test("prune without UI reports readable names and legacy identity suffixes", asy
 			: index === 1 ? `pi-subagent/subagent-request-task-${"a".repeat(24)}` : item.branch,
 	})) } });
 	await h.run("prune");
-	assert.equal(h.messages.length, 1);
+	assert.equal(h.messages.length, 2);
+	assert.match(h.messages[0]!, /Subagent Collection/);
 	// Prunable groups come first; each group names its exact reason once.
-	assert.equal(h.messages[0]!, [
+	assert.equal(h.messages[1]!, [
 		"**● Subagent prune review**", "",
 		"- **root:** `/git`",
 		"- **prunable:** 2",
@@ -680,7 +682,7 @@ test("prune removes only items its dialogs showed, never items cut from a long l
 	h.responses.push(h.pick("Continue"));
 	h.confirms.push(true);
 	await h.reviewPrune();
-	const review = h.reports[0]!;
+	const review = h.reports.find((report) => report.startsWith("**● Subagent prune review**"))!;
 	const ids = new Set(review.split(/[\s,`]+/));
 	const shown = plan.items.filter(({ branch }) => ids.has(branch.slice(-24, -16)));
 	assert.ok(shown.length && shown.every(({ prunable }) => prunable), "prunable items are listed first");
@@ -733,7 +735,7 @@ test("prune routes selected request-owned items to one discard of each whole own
 	const confirms = h.dialogs.filter(({ kind }) => kind === "confirm");
 	assert.equal(confirms.length, 1);
 	assert.match(confirms[0]!.options![0]!, /^This closes and deletes each whole owning request \(orphan-req\), not only the selected worktrees\./);
-	assert.match(h.reports[1]!, /^\*\*⚠ Close and delete request orphan-req\*\*/);
+	assert.ok(h.reports.some((report) => /^\*\*⚠ Close and delete request orphan-req\*\*/.test(report)));
 });
 
 test("Select multiple batches discard of isolated requests and close of direct workflows, reporting skipped rows", async () => {
@@ -876,7 +878,7 @@ test("prune cancel stops pending scans, holds the slot until settlement, and cle
 	assert.match(h.notices.at(-1)!.message, /stopping/);
 	scan.resolve(prunePlan);
 	await settle();
-	assert.equal(h.reports.length, 0);
+	assert.ok(h.reports.every((report) => report.includes("Subagent Collection")));
 	assert.equal(h.notices.some(({ message }) => message.includes("scan ready")), false);
 	await h.run("prune");
 	await settle();
@@ -1049,4 +1051,19 @@ test("prune cancellation during discard reports the active request and does not 
 	assert.deepEqual(requests, ["first"]);
 	assert.match(h.reports.at(-1)!, /first: checkout removed; branch kept/);
 	assert.equal(h.statuses.at(-1), undefined);
+});
+
+test("prune collects tabs independently of empty or failed worktree review and deletion confirmation", async () => {
+	const h = harness({ ui: false });
+	let collections = 0;
+	h.adapter.collect = async (_ctx, current) => { assert.equal(current(), true); collections++; return "Collected completed tabs; sessions kept."; };
+	await h.run("prune");
+	assert.equal(collections, 1);
+	assert.match(h.messages[0]!, /Collected completed tabs/);
+	h.adapter.prunePlan = async () => { throw new Error("Cannot inspect worktrees"); };
+	await h.run("prune");
+	assert.equal(collections, 2);
+	assert.match(h.messages.at(-1)!, /Cannot inspect worktrees/);
+	assert.deepEqual(h.pruned, []);
+	assert.deepEqual(h.dialogs, []);
 });

@@ -798,7 +798,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	async cleanupHost(
-		input: { requestId: ExecuteRequest["id"]; kind: HostCleanupKind; task: TaskRequest; attempt: TaskAttempt },
+		input: { requestId: ExecuteRequest["id"]; kind: HostCleanupKind; task: TaskRequest; attempt: TaskAttempt; collection?: { current(): boolean } },
 		context: OperationContext,
 	): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }> {
 		const terminationProven = input.attempt.termination?.status === "terminated";
@@ -810,6 +810,14 @@ export class HerdrHostRuntime implements HostRuntime {
 			return { outcome: "blocked", failure: "Host cleanup requires exact worker termination or a definitive absent-agent allocation." };
 		}
 		try {
+			if (input.collection) {
+				if (!input.collection.current() || input.kind !== "worker_tab" || !terminationProven) {
+					throw new Error("Collection requires a current scope and a terminated worker tab.");
+				}
+				const proof = await this.reconcileWorkerTermination({ task: input.task, attempt: input.attempt,
+					workerId: input.attempt.termination!.workerId, candidate: input.attempt.termination!.candidate }, context);
+				if (proof.outcome !== "terminated") throw new Error(proof.outcome === "unknown" ? proof.failure : "Worker is active; tab retained.");
+			}
 			if (input.kind === "worker_tab") {
 				const owned = ownedIntent(input.attempt, "worker_tab");
 				const workspace = ownedIntent(input.attempt, "workspace");
@@ -844,6 +852,7 @@ export class HerdrHostRuntime implements HostRuntime {
 					if (workspaceIsAbsent || tab.workspace_id !== workspaceId || tab.label !== allocation.label || tab.pane_count !== 0) {
 						return { outcome: "blocked", failure: "The exact saved worker tab no longer matches its owned empty tab identity." };
 					}
+					if (input.collection && !input.collection.current()) throw new Error("Collection scope changed; tab retained.");
 					const closed = await this.herdr.exec(["tab", "close", tabId], this.processOptions(allocation.worktreeCwd, context, HERDR_OPERATION_CAP_MS));
 					if (closed.code !== 0 || closed.killed) return { outcome: "blocked", failure: safeText(herdrCommandFailure(["tab", "close"], closed)) };
 					requireOkResponse(closed.stdout, "Herdr tab close response");
@@ -851,7 +860,7 @@ export class HerdrHostRuntime implements HostRuntime {
 						return { outcome: "blocked", failure: "The exact saved worker tab still exists after close." };
 					}
 				}
-				await this.removeLeaseArtifacts(allocation, input.attempt.correlationToken, paneId, tabId, context);
+				if (!input.collection) await this.removeLeaseArtifacts(allocation, input.attempt.correlationToken, paneId, tabId, context);
 				return tab ? { outcome: "completed" } : { outcome: "absent" };
 			}
 
