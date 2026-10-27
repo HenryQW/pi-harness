@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -133,6 +134,7 @@ async function withReviewFixture(
 		memory?: string;
 		user?: string;
 		system?: string;
+		append?: string;
 		responses?: ReviewReply[];
 		select?: (choices: string[]) => string | undefined | Promise<string | undefined>;
 		input?: string;
@@ -165,6 +167,7 @@ async function withReviewFixture(
 		if (options.memory !== undefined) await writeFile(join(memoryDir, "MEMORY.md"), options.memory);
 		if (options.user !== undefined) await writeFile(join(memoryDir, "USER.md"), options.user);
 		if (options.system !== undefined) await writeFile(join(agentDir, "SYSTEM.md"), options.system);
+		if (options.append !== undefined) await writeFile(join(agentDir, "APPEND_SYSTEM.md"), options.append);
 
 		const handlers = new Map<string, Handler>();
 		const commands = new Map<string, CapturedCommand>();
@@ -625,7 +628,7 @@ test("/dream shows activity before file reads and clears it on every exit", asyn
 
 test("/dream applies an approved exact SYSTEM edit before removing represented whole entries", async () => {
 	await withReviewFixture({
-		system: "# Rules\nExisting global rules.", memory: "promote this rule\n§\nkeep this fact", user: "keep this preference",
+		system: "# Rules\nExisting global rules.", append: "Keep append rules.", memory: "promote this rule\n§\nkeep this fact", user: "keep this preference",
 		responses: [JSON.stringify({
 			reason: "Global behavior applies to all sessions.",
 			system: { find: "", replace: "\nAlways verify the boundary." },
@@ -640,6 +643,7 @@ test("/dream applies an approved exact SYSTEM edit before removing represented w
 		assert.match(questions[0]!, /\+\s*3 Always verify the boundary\.\n\s*\n\s*Remove from MEMORY\.md \(now covered by SYSTEM\.md\):\n\s*- promote this rule\n/);
 		assert.match(questions[0]!, /→ Reject\s+Change no files\n\s*Approve\s+Update SYSTEM\.md, delete 1 entry from MEMORY\.md\n/);
 		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "# Rules\nExisting global rules.\nAlways verify the boundary.");
+		assert.equal(await readFile(join(agentDir, "APPEND_SYSTEM.md"), "utf8"), "Keep append rules.");
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "keep this fact");
 		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "keep this preference");
 		assert.ok(Number.isFinite(Date.parse(JSON.parse(await readFile(join(agentDir, "config", "pi-memory", "dream.json"), "utf8")).lastDreamAt)));
@@ -647,46 +651,184 @@ test("/dream applies an approved exact SYSTEM edit before removing represented w
 	});
 });
 
-test("/dream keeps replacement text literal in SYSTEM.md", async () => {
-	await withReviewFixture({
-		system: "# Rules\nOld rule.\nKeep this rule.", memory: "promote this rule",
-		responses: [JSON.stringify({
-			reason: "Keep replacement tokens literal.",
-			system: { find: "Old rule.", replace: "Keep $& and $' literal." },
-			remove: { memory: ["promote this rule"], user: [] },
-		})],
-		select: () => "Approve",
-	}, async ({ agentDir, commands, ctx }) => {
-		await commands.get("dream")!.handler("", ctx);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "# Rules\nKeep $& and $' literal.\nKeep this rule.");
-	});
+test("/dream keeps replacement text literal in the selected prompt", async () => {
+	for (const target of ["system", "append"] as const) {
+		await withReviewFixture({
+			[target]: "# Rules\nOld rule.\nKeep this rule.", memory: "promote this rule",
+			responses: [JSON.stringify({
+				reason: "Keep replacement tokens literal.",
+				system: { find: "Old rule.", replace: "Keep $& and $' literal." },
+				remove: { memory: ["promote this rule"], user: [] },
+			})],
+			select: () => "Approve",
+		}, async ({ agentDir, memoryDir, commands, ctx, calls, questions, notifications }) => {
+			const filename = target === "system" ? "SYSTEM.md" : "APPEND_SYSTEM.md";
+			await commands.get("dream")!.handler("", ctx);
+			assert.equal(await readFile(join(agentDir, filename), "utf8"), "# Rules\nKeep $& and $' literal.\nKeep this rule.");
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "");
+			assert.ok(calls[0]!.context.systemPrompt.includes(filename));
+			assert.ok(questions[0]!.includes(`Promote memory to ${filename}`));
+			assert.match(notifications.at(-1)!, /Dream completed/);
+		});
+	}
 });
 
-test("/dream cancellation and source drift preserve SYSTEM, entries, and timestamp", async () => {
+test("/dream creates or fills APPEND_SYSTEM.md only after approval without creating SYSTEM.md", async () => {
+	for (const append of [undefined, ""]) {
+		await withReviewFixture({
+			append, memory: "entry", user: "preference",
+			responses: [JSON.stringify({ reason: "Global rule.", system: { find: "", replace: "Verify changes." }, remove: { memory: ["entry"], user: ["preference"] } })],
+			select: async (lines) => {
+				assert.match(lines.join("\n"), /Promote memory to APPEND_SYSTEM\.md/);
+				assert.match(lines.join("\n"), /\+\s*1 Verify changes\./);
+				assert.match(lines.join("\n"), /Remove from MEMORY\.md \(now covered by APPEND_SYSTEM\.md\):\n\s*- entry/);
+				assert.match(lines.join("\n"), /Remove from USER\.md \(now covered by APPEND_SYSTEM\.md\):\n\s*- preference/);
+				assert.ok(lines.join("\n").includes(`${append === undefined ? "Create" : "Update"} APPEND_SYSTEM.md`));
+				if (append === undefined) await assert.rejects(readFile(join(process.env.PI_CODING_AGENT_DIR!, "APPEND_SYSTEM.md")), /ENOENT/);
+				return "Approve";
+			},
+		}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
+			await commands.get("dream")!.handler("", ctx);
+			assert.equal(await readFile(join(agentDir, "APPEND_SYSTEM.md"), "utf8"), "Verify changes.");
+			assert.equal((await stat(join(agentDir, "APPEND_SYSTEM.md"))).mode & 0o777, 0o600);
+			await assert.rejects(readFile(join(agentDir, "SYSTEM.md")), /ENOENT/);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "");
+			assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "");
+			const request = JSON.parse(calls[0]!.context.messages[0]!.content);
+			assert.equal(request.filename, "APPEND_SYSTEM.md");
+			assert.equal(request.state, append === undefined ? "absent" : "present");
+			assert.equal(request.system, "");
+			assert.match(notifications.at(-1)!, /Dream completed/);
+		});
+	}
+});
+
+test("/dream rejects invalid prompt targets without fallback or entry removal", async () => {
+	for (const filename of ["SYSTEM.md", "APPEND_SYSTEM.md"]) {
+		for (const invalid of ["directory", "oversized", "invalid-text", "symlink", "dangling-symlink"]) {
+			await withReviewFixture({ memory: "entry", user: "preference" }, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
+				const path = join(agentDir, filename);
+				if (filename === "SYSTEM.md") await writeFile(join(agentDir, "APPEND_SYSTEM.md"), "Keep append rules.");
+				if (invalid === "directory") await mkdir(path);
+				else if (invalid === "oversized") await writeFile(path, "x".repeat(MAX_FILE_BYTES + 1));
+				else if (invalid === "invalid-text") await writeFile(path, Buffer.from([0xff]));
+				else await symlink(join(memoryDir, invalid === "symlink" ? "MEMORY.md" : "missing.md"), path);
+				await commands.get("dream")!.handler("", ctx);
+				assert.equal(calls.length, 0, `${filename}: ${invalid}`);
+				assert.ok(notifications.at(-1)!.includes(filename));
+				assert.match(notifications.at(-1)!, /unreadable|oversized|over .*byte review limit|symlink/);
+				assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+				assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "preference");
+				if (filename === "SYSTEM.md") assert.equal(await readFile(join(agentDir, "APPEND_SYSTEM.md"), "utf8"), "Keep append rules.");
+			});
+		}
+	}
+});
+
+test("/dream stops when prompt selection, prompt state, or either store changes during approval", async () => {
+	const cases: Array<[string | undefined, string | undefined, string, string | undefined]> = [
+		[undefined, undefined, "SYSTEM.md", "New system"],
+		[undefined, "Append rules", "SYSTEM.md", "New system"],
+		[undefined, undefined, "APPEND_SYSTEM.md", ""],
+		[undefined, "Append rules", "APPEND_SYSTEM.md", "Changed append"],
+		[undefined, "Append rules", "APPEND_SYSTEM.md", undefined],
+		["System rules", "Append rules", "SYSTEM.md", undefined],
+		[undefined, undefined, "MEMORY.md", "Changed memory"],
+		[undefined, "Append rules", "USER.md", "Changed user"],
+	];
+	for (const [system, append, changedFile, changedText] of cases) {
+		let changedPath = "";
+		await withReviewFixture({
+			system, append, memory: "entry", user: "preference",
+			responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: ["preference"] } })],
+			select: async () => {
+				if (changedText === undefined) await rm(changedPath);
+				else await writeFile(changedPath, changedText);
+				return "Approve";
+			},
+		}, async ({ agentDir, memoryDir, commands, ctx, notifications, questions }) => {
+			changedPath = join(changedFile === "MEMORY.md" || changedFile === "USER.md" ? memoryDir : agentDir, changedFile);
+			await commands.get("dream")!.handler("", ctx);
+			assert.equal(questions.length, 1);
+			assert.match(notifications.at(-1)!, /sources changed|disappeared/);
+			for (const [file, initial] of [["SYSTEM.md", system], ["APPEND_SYSTEM.md", append], ["MEMORY.md", "entry"], ["USER.md", "preference"]] as const) {
+				const path = join(file === "MEMORY.md" || file === "USER.md" ? memoryDir : agentDir, file);
+				const expected = file === changedFile ? changedText : initial;
+				if (expected === undefined) await assert.rejects(readFile(path), /ENOENT/);
+				else assert.equal(await readFile(path, "utf8"), expected);
+			}
+			await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
+		});
+	}
+});
+
+test("/dream retains entries when an approved append write fails", async (t) => {
+	for (const append of [undefined, "Append rules"]) {
+		await withReviewFixture({
+			append, memory: "entry", user: "preference",
+			responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: ["preference"] } })],
+			select: () => "Approve",
+		}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
+			const path = join(agentDir, "APPEND_SYSTEM.md");
+			const rename = fs.rename;
+			const failure = t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+				if (args[1] === path) throw new Error("simulated prompt write failure");
+				return rename(...args);
+			});
+			syncBuiltinESMExports();
+			try { await commands.get("dream")!.handler("", ctx); }
+			finally { failure.mock.restore(); syncBuiltinESMExports(); }
+			assert.match(notifications.at(-1)!, /APPEND_SYSTEM\.md.*simulated prompt write failure/);
+			if (append === undefined) await assert.rejects(readFile(path), /ENOENT/);
+			else assert.equal(await readFile(path, "utf8"), append);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+			assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "preference");
+			await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
+		});
+	}
+});
+
+test("/dream rejection preserves prompt files, entries, and timestamp", async () => {
 	const promotion = JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } });
-	await withReviewFixture({ system: "original", memory: "entry", responses: [promotion], select: () => "Reject" }, async ({ agentDir, memoryDir, commands, ctx }) => {
-		await commands.get("dream")!.handler("", ctx);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
-		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
-	});
+	for (const source of [{}, { system: "original" }, { append: "original" }]) {
+		await withReviewFixture({ ...source, memory: "entry", responses: [promotion], select: () => "Reject" }, async ({ agentDir, memoryDir, commands, ctx }) => {
+			await commands.get("dream")!.handler("", ctx);
+			for (const [file, content] of [["SYSTEM.md", source.system], ["APPEND_SYSTEM.md", source.append]] as const) {
+				if (content === undefined) await assert.rejects(readFile(join(agentDir, file)), /ENOENT/);
+				else assert.equal(await readFile(join(agentDir, file), "utf8"), content);
+			}
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+			await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
+		});
+	}
 	await withReviewFixture({ system: "original", memory: "entry", mode: "print" }, async ({ commands, ctx, calls, notifications }) => {
 		await commands.get("dream")!.handler("", ctx);
 		assert.equal(calls.length, 0);
 		assert.match(notifications.at(-1)!, /interactive TUI/);
 	});
-	let memoryPath = "";
-	await withReviewFixture({
-		system: "original", memory: "entry", responses: [promotion],
-		select: async () => { await writeFile(memoryPath, "changed entry"); return "Approve"; },
-	}, async ({ agentDir, memoryDir, commands, ctx, notifications }) => {
-		memoryPath = join(memoryDir, "MEMORY.md");
-		await commands.get("dream")!.handler("", ctx);
-		assert.match(notifications.at(-1)!, /Dream sources changed/);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
-		assert.equal(await readFile(memoryPath, "utf8"), "changed entry");
-		await assert.rejects(readFile(join(agentDir, "config", "pi-memory", "dream.json")), /ENOENT/);
-	});
+});
+
+test("/dream rejects invalid append proposals before approval or removal", async () => {
+	for (const [append, find, replace, removal, error] of [
+		[undefined, "missing", "New rule.", "entry", /excerpt must match exactly once/],
+		[undefined, "", "", "entry", /empty or oversized/],
+		[undefined, "", "New rule.", "ent", /exact existing whole memory entries/],
+		["Old rule.", "Old rule.", "New rule.", "entry", /cannot replace the entire APPEND_SYSTEM.md/],
+		["Old rule.", "", "New rule.", "entry", /needs a line break/],
+	] as const) {
+		await withReviewFixture({
+			append, memory: "entry",
+			responses: [JSON.stringify({ reason: "Global.", system: { find, replace }, remove: { memory: [removal], user: [] } })],
+		}, async ({ agentDir, memoryDir, commands, ctx, questions, notifications }) => {
+			await commands.get("dream")!.handler("", ctx);
+			assert.match(notifications.at(-1)!, /APPEND_SYSTEM\.md/);
+			assert.match(notifications.at(-1)!, error);
+			assert.deepEqual(questions, []);
+			if (append === undefined) await assert.rejects(readFile(join(agentDir, "APPEND_SYSTEM.md")), /ENOENT/);
+			else assert.equal(await readFile(join(agentDir, "APPEND_SYSTEM.md"), "utf8"), append);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+		});
+	}
 });
 
 test("/dream rejects a unique substring removal before editing SYSTEM", async () => {
@@ -705,22 +847,25 @@ test("/dream rejects a unique substring removal before editing SYSTEM", async ()
 	});
 });
 
-test("/dream cancellation during approval prevents SYSTEM and memory writes", async () => {
-	const controller = new AbortController();
-	await withReviewFixture({
-		system: "original", memory: "entry",
-		responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
-		select: () => {
-			controller.abort(new Error("dream cancelled"));
-			return "Approve";
-		},
-	}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
-		await commands.get("dream")!.handler("", { ...ctx, signal: controller.signal });
-		assert.equal(calls[0]!.options.signal, controller.signal);
-		assert.match(notifications.at(-1)!, /dream cancelled/);
-		assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), "original");
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
-	});
+test("/dream cancellation during approval prevents prompt and memory writes", async () => {
+	for (const system of [undefined, "original"]) {
+		const controller = new AbortController();
+		await withReviewFixture({
+			system, memory: "entry",
+			responses: [JSON.stringify({ reason: "Global.", system: { find: "", replace: "\nNew rule." }, remove: { memory: ["entry"], user: [] } })],
+			select: () => {
+				controller.abort(new Error("dream cancelled"));
+				return "Approve";
+			},
+		}, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
+			await commands.get("dream")!.handler("", { ...ctx, signal: controller.signal });
+			assert.equal(calls[0]!.options.signal, controller.signal);
+			assert.match(notifications.at(-1)!, /dream cancelled/);
+			if (system !== undefined) assert.equal(await readFile(join(agentDir, "SYSTEM.md"), "utf8"), system);
+			await assert.rejects(readFile(join(agentDir, "APPEND_SYSTEM.md")), /ENOENT/);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+		});
+	}
 });
 
 test("/dream reports a timestamp failure without claiming the approved promotion failed", async () => {
