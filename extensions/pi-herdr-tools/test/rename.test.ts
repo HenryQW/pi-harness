@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -25,13 +25,37 @@ const response = (text: string, stopReason = "stop") => ({
 });
 const success = (stdout = "") => ({ stdout, stderr: "", code: 0, killed: false });
 
+function herdrFixture(checkoutPath: string) {
+	const workspace = { workspace_id: "workspace-1", label: "worktree-brave-meadow-4aa8", tokens: {} as Record<string, string>, worktree: { checkout_path: checkoutPath, is_linked_worktree: true } };
+	const tabs = [1, 2].map((number) => ({ tab_id: `tab-${number}`, workspace_id: workspace.workspace_id, label: `Tab ${number}`, number, pane_count: 1 }));
+	const panes = tabs.map((tab, index) => ({ pane_id: `pane-${index + 1}`, tab_id: tab.tab_id, workspace_id: workspace.workspace_id, cwd: checkoutPath }));
+	const state = { workspace, tabs, panes, branch: "worktree/generated", branches: [] as readonly string[] };
+	const json = (type: string, fields: object) => success(JSON.stringify({ result: { type, ...fields } }));
+	return { ...state, state, exec: async (args: string[]) => {
+		if (args[0] === "branch" && args[1] === "--show-current") return success(state.branch);
+		if (args[0] === "for-each-ref") return success(state.branches.join("\n"));
+		if ((args[0] === "branch" && args[1] === "-m") || args[0] === "switch") state.branch = args[2];
+		if (args[0] === "pane" && args[1] === "get") return json("pane_info", { pane: panes.find((pane) => pane.pane_id === args[2]) });
+		if (args[0] === "tab" && args[1] === "get") return json("tab_info", { tab: tabs.find((tab) => tab.tab_id === args[2]) });
+		if (args[0] === "tab" && args[1] === "list") return json("tab_list", { tabs });
+		if (args[0] === "workspace" && args[1] === "get") return json("workspace_info", { workspace });
+		if (args[0] === "workspace" && args[1] === "report-metadata") {
+			const [key, value] = args[6].split("="); workspace.tokens[key] = value;
+		}
+		if (args[1] === "rename" && args[0] === "tab") tabs.find((tab) => tab.tab_id === args[2])!.label = args[3];
+		if (args[1] === "rename" && args[0] === "workspace") workspace.label = args[3];
+		return success("{}");
+	} };
+}
+
 function harness(options: {
 	sessionName?: string;
 	models?: Model[];
 	currentModel?: Model;
 	branch?: any[];
 	complete?: (call: CompletionCall) => Promise<any>;
-	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success>>;
+	herdr?: ReturnType<typeof herdrFixture>;
+	exec?: (args: string[], options?: { signal?: AbortSignal; cwd?: string }) => Promise<ReturnType<typeof success> | undefined>;
 } = {}) {
 	const handlers = new Map<string, Handler>();
 	const commands = new Map<string, Command>();
@@ -65,7 +89,9 @@ function harness(options: {
 		},
 		exec: async (_command: string, args: string[], execOptions?: { signal?: AbortSignal; cwd?: string }) => {
 			execCalls.push(args);
-			if (options.exec) return options.exec(args, execOptions);
+			const override = await options.exec?.(args, execOptions);
+			if (override) return override;
+			if (options.herdr) return options.herdr.exec(args);
 			if (args[0] === "pane" && args[1] === "get") {
 				return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
 			}
@@ -112,13 +138,13 @@ async function eventually(check: () => boolean): Promise<void> {
 }
 
 async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> {
-	const dir = await mkdtemp(join(tmpdir(), "pi-herdr-rename-"));
-	const previousDir = process.env.PI_CODING_AGENT_DIR;
-	const previousHerdrEnv = process.env.HERDR_ENV;
-	const previousPane = process.env.HERDR_PANE_ID;
+	const dir = await realpath(await mkdtemp(join(tmpdir(), "pi-herdr-rename-")));
+	const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "PI_SUBAGENT_PROCESS_LEASE"].map((key) => [key, process.env[key]]));
 	process.env.PI_CODING_AGENT_DIR = dir;
+	process.env.HERDR_SOCKET_PATH = "/tmp/rename-test.sock";
 	delete process.env.HERDR_ENV;
 	delete process.env.HERDR_PANE_ID;
+	delete process.env.PI_SUBAGENT_PROCESS_LEASE;
 	try {
 		await mkdir(join(dir, "config", "pi-task-models"), { recursive: true });
 		await writeFile(
@@ -131,12 +157,9 @@ async function withAgentDir(run: (dir: string) => Promise<void>): Promise<void> 
 		);
 		await run(dir);
 	} finally {
-		if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previousDir;
-		if (previousHerdrEnv === undefined) delete process.env.HERDR_ENV;
-		else process.env.HERDR_ENV = previousHerdrEnv;
-		if (previousPane === undefined) delete process.env.HERDR_PANE_ID;
-		else process.env.HERDR_PANE_ID = previousPane;
+		for (const [key, value] of Object.entries(previous)) {
+			if (value === undefined) delete process.env[key]; else process.env[key] = value;
+		}
 		await rm(dir, { recursive: true, force: true });
 	}
 }
@@ -154,6 +177,10 @@ test("a pane ID without Herdr mode only persists the Pi title", async () => {
 
 		assert.deepEqual(app.names, ["Generated title"]);
 		assert.deepEqual(app.entries, [{ customType: "pi-herdr-rename/title", data: { display: "Generated title", branch: "feat/generated-title" } }]);
+		assert.deepEqual(app.execCalls, []);
+		await app.commands.get("main-tab")!("", app.ctx);
+		assert.match(app.notifications.at(-1) ?? "", /requires a Herdr pane/);
+		assert.equal(app.completionCalls.length, 1);
 		assert.deepEqual(app.execCalls, []);
 	});
 });
@@ -233,40 +260,38 @@ test("saved display titles keep semantic branches, replace generated branches, a
 	await withAgentDir(async (dir) => {
 		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
-		const checkoutPath = join(dir, "worktree");
-		await mkdir(checkoutPath);
 		for (const [paneCount, workspaceName, isLinkedWorktree, currentBranch, existingBranches, renameWorkspace, gitMutation] of [
 			[1, "worktree-brave-meadow-4aa8", true, "fix/title-length", [], true, undefined],
-			[2, "lucky-field-f694", true, "feat/new-loader", [], true, undefined],
+			[2, "lucky-field-f694", true, "feat/new-loader", [], false, undefined],
 			[1, "worktree/brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", [], true, ["branch", "-m", "fix/saved-title"]],
 			[1, "worktree-brave-meadow-4aa8", true, "worktree/brave-meadow-4aa8", ["fix/saved-title"], true, ["branch", "-m", "fix/saved-title-2"]],
 			[1, "chosen workspace", true, "worktree/brave-meadow-4aa8", [], false, ["branch", "-m", "fix/saved-title"]],
 			[1, "worktree-clear-field-8512", false, "worktree/clear-field-8512", [], false, undefined],
 			[1, "worktree-quiet-river-1234", true, "", ["fix"], true, ["switch", "-c", "fix-2/saved-title"]],
 		] as const) {
+			const checkoutPath = await mkdtemp(join(dir, "worktree-"));
+			const herdr = herdrFixture(checkoutPath);
+			herdr.tabs[0].pane_count = paneCount;
+			herdr.workspace.label = workspaceName;
+			herdr.workspace.worktree.is_linked_worktree = isLinkedWorktree;
+			herdr.state.branch = currentBranch;
+			herdr.state.branches = existingBranches;
 			const gitCwds: Array<string | undefined> = [];
 			const app = harness({
+				herdr,
 				sessionName: "Saved title",
 				branch: [{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } }],
 				exec: async (args, options) => {
 					if (args[0] === "branch" || args[0] === "switch" || args[0] === "for-each-ref") gitCwds.push(options?.cwd);
-					if (args.join("\0") === "branch\0--show-current") return success(`${currentBranch}\n`);
-					if (args[0] === "for-each-ref") return success(existingBranches.join("\n"));
-					if (args[0] === "pane" && args[1] === "get") {
-						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
-					}
-					if (args[0] === "tab" && args[1] === "get") {
-						return success(JSON.stringify({ result: { tab: { pane_count: paneCount } } }));
-					}
-					if (args[0] === "workspace" && args[1] === "get") {
-						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: checkoutPath, is_linked_worktree: isLinkedWorktree } } } }));
-					}
-					return success("{}");
 				},
 			});
+			await app.commands.get("main-tab")!("", app.ctx);
+			app.execCalls.length = 0; app.notifications.length = 0;
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
-			await eventually(() => !isLinkedWorktree || gitCwds.length === 1 + Number(Boolean(gitMutation)) * 2);
+			await eventually(() => paneCount !== 1 ? app.notifications.length > 0
+				: !isLinkedWorktree ? app.execCalls.filter((args) => args[0] === "workspace" && args[1] === "get").length === 3
+				: gitCwds.length === 1 + Number(Boolean(gitMutation)) * 2);
 			assert.equal(app.completionCalls.length, 0);
 			assert.equal(app.names.length, 0);
 			assert.ok(app.execCalls.some((args) => args.join("\0") === "pane\0rename\0pane-1\0Saved title"));
@@ -277,7 +302,7 @@ test("saved display titles keep semantic branches, replace generated branches, a
 				app.execCalls.filter((args) => (args[0] === "branch" && args[1] === "-m") || args[0] === "switch"),
 				gitMutation ? [gitMutation] : [],
 			);
-			assert.deepEqual(gitCwds, Array(isLinkedWorktree ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill(checkoutPath));
+			assert.deepEqual(gitCwds, Array(isLinkedWorktree && paneCount === 1 ? 1 + Number(Boolean(gitMutation)) * 2 : 0).fill(checkoutPath));
 			assert.equal(app.execCalls.filter((args) => args[0] === "for-each-ref").length, Number(Boolean(gitMutation)));
 			if (gitMutation) {
 				assert.ok(app.execCalls.some((args) => args.join("\0") === "for-each-ref\0--format=%(refname:short)\0refs/heads"));
@@ -294,30 +319,20 @@ test("manual rename updates generated and custom workspace titles", async () => 
 	await withAgentDir(async (dir) => {
 		process.env.HERDR_ENV = "1";
 		process.env.HERDR_PANE_ID = "pane-1";
-		const checkoutPath = join(dir, "worktree");
-		await mkdir(checkoutPath);
 		for (const workspaceName of ["Saved title", "Custom workspace"]) {
+			const herdr = herdrFixture(await mkdtemp(join(dir, "worktree-")));
+			herdr.workspace.label = workspaceName;
+			herdr.state.branch = "fix/saved-title";
 			const app = harness({
+				herdr,
 				sessionName: "Saved title",
 				branch: [
 					{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
 					{ type: "message", message: { role: "user", content: "update task logic" } },
 				],
 				complete: async () => response('{"kind":"refactor","subject":"update task logic"}'),
-				exec: async (args) => {
-					if (args.join("\0") === "branch\0--show-current") return success("fix/saved-title\n");
-					if (args[0] === "pane" && args[1] === "get") {
-						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
-					}
-					if (args[0] === "tab" && args[1] === "get") {
-						return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
-					}
-					if (args[0] === "workspace" && args[1] === "get") {
-						return success(JSON.stringify({ result: { workspace: { label: workspaceName, worktree: { checkout_path: checkoutPath, is_linked_worktree: true } } } }));
-					}
-					return success("{}");
-				},
 			});
+			await app.commands.get("main-tab")!("", app.ctx);
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			await eventually(() => app.execCalls.some((args) => args[0] === "workspace" && args[1] === "get"));
 			await app.commands.get("rename")?.("", app.ctx);
@@ -345,21 +360,9 @@ test("semantic branch mutation honors the shared worktree lock", async () => {
 			const app = harness({
 				sessionName: "Saved title",
 				branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
-				exec: async (args) => {
-					if (args.join("\0") === "branch\0--show-current") return success("worktree/generated\n");
-					if (args[0] === "for-each-ref") return success("");
-					if (args[0] === "pane" && args[1] === "get") {
-						return success(JSON.stringify({ result: { pane: { tab_id: "tab-1", workspace_id: "workspace-1" } } }));
-					}
-					if (args[0] === "tab" && args[1] === "get") {
-						return success(JSON.stringify({ result: { tab: { pane_count: 1 } } }));
-					}
-					if (args[0] === "workspace" && args[1] === "get") {
-						return success(JSON.stringify({ result: { workspace: { label: "worktree-rapid-meadow-04ae", worktree: { checkout_path: checkoutPath, is_linked_worktree: true } } } }));
-					}
-					return success("{}");
-				},
+				herdr: herdrFixture(checkoutPath),
 			});
+			await app.commands.get("main-tab")!("", app.ctx);
 			await app.handlers.get("session_start")?.({}, app.ctx);
 			await app.commands.get("rename")?.("", app.ctx);
 
@@ -369,6 +372,203 @@ test("semantic branch mutation honors the shared worktree lock", async () => {
 			releaseLock();
 			await heldLock;
 		}
+	});
+});
+
+test("only the main tab changes workspace and branch; closing it does not promote another", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		const main = harness({ herdr });
+		await main.commands.get("main-tab")!("", main.ctx);
+		await main.handlers.get("session_start")?.({}, main.ctx);
+		main.handlers.get("input")?.({ source: "interactive", text: "prompt" }, main.ctx);
+		await main.handlers.get("before_agent_start")?.({ prompt: "prompt" }, main.ctx);
+		await eventually(() => herdr.state.branch === "feat/generated-title");
+		assert.equal(herdr.workspace.label, "Generated title");
+		process.env.HERDR_PANE_ID = "pane-2";
+		const side = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "side task" } }],
+			complete: async () => response('{"kind":"fix","subject":"side task"}') });
+		await side.commands.get("rename")!("", side.ctx);
+		assert.deepEqual(side.names, ["Side task"]);
+		assert.equal(herdr.tabs[1].label, "Side task");
+		assert.equal(herdr.workspace.label, "Generated title");
+		assert.equal(herdr.state.branch, "feat/generated-title");
+		assert.equal(side.execCalls.some((args) => args[0] === "branch"), false);
+		await side.commands.get("main-tab")!("", side.ctx);
+		assert.equal(herdr.workspace.label, "Side task");
+		assert.equal(side.completionCalls.length, 1);
+		herdr.tabs.pop(); herdr.panes.pop();
+		process.env.HERDR_PANE_ID = "pane-1";
+		await main.commands.get("rename")!("", main.ctx);
+		assert.equal(herdr.workspace.label, "Side task");
+	});
+});
+
+test("an unselected restored tab 1 keeps automatic and manual names local", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		herdr.workspace.tokens.pi_harness_main_tab = "existing-live-token";
+		const app = harness({ herdr });
+		await app.handlers.get("session_start")?.({}, app.ctx);
+		app.handlers.get("input")?.({ source: "interactive", text: "prompt" }, app.ctx);
+		await app.handlers.get("before_agent_start")?.({ prompt: "prompt" }, app.ctx);
+		await eventually(() => app.notifications.some((message) => message.includes("Run /main-tab")));
+		await app.commands.get("rename")!("", app.ctx);
+		assert.equal(herdr.tabs[0].label, "Generated title");
+		assert.equal(app.names.length, 2);
+		assert.equal(herdr.workspace.label, "worktree-brave-meadow-4aa8");
+		assert.equal(herdr.state.branch, "worktree/generated");
+		assert.equal(herdr.workspace.tokens.pi_harness_main_tab, "existing-live-token");
+		assert.equal(app.execCalls.some((args) => args[1] === "report-metadata" || args[0] === "branch"), false);
+		await assert.rejects(readFile(join(dir, ".context/pi-harness/pi-herdr-tools/state.json")), { code: "ENOENT" });
+	});
+});
+
+test("a token change after workspace rename blocks the later Git mutation", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		const app = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+			exec: async (args) => {
+				if (args[0] === "workspace" && args[1] === "rename") {
+					const result = await herdr.exec(args);
+					herdr.workspace.tokens = {};
+					return result;
+				}
+			} });
+		await app.commands.get("main-tab")!("", app.ctx);
+		await app.commands.get("rename")!("", app.ctx);
+		assert.equal(herdr.workspace.label, "Generated title");
+		assert.equal(herdr.state.branch, "worktree/generated");
+		assert.equal(app.execCalls.some((args) => args[0] === "switch" || (args[0] === "branch" && args[1] === "-m")), false);
+		assert.match(app.notifications.at(-1) ?? "", /token changed.*\/main-tab/);
+	});
+});
+
+test("rename and main-tab revalidate immediately before workspace mutation", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		for (const command of ["rename", "main-tab"]) {
+			const herdr = herdrFixture(await mkdtemp(join(dir, "worktree-")));
+			let armed = false, reads = 0;
+			const app = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "rename this" } }],
+				exec: async (args) => {
+					if (armed && args[0] === "workspace" && args[1] === "get" && ++reads === 4) herdr.workspace.tokens = {};
+				} });
+			await app.commands.get("main-tab")!("", app.ctx);
+			herdr.tabs[0].label = "Meaningful label"; armed = true;
+			await app.commands.get(command)!("", app.ctx);
+			assert.equal(herdr.workspace.label, "worktree-brave-meadow-4aa8");
+			assert.match(app.notifications.at(-1) ?? "", /token changed/);
+		}
+	});
+});
+
+test("a delayed rename checks the selection after another session selects its tab", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		let complete!: (value: any) => void;
+		const oldMain = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "old main" } }],
+			complete: async () => new Promise((resolve) => { complete = resolve; }) });
+		await oldMain.commands.get("main-tab")!("", oldMain.ctx);
+		const pending = oldMain.commands.get("rename")!("", oldMain.ctx);
+		await eventually(() => Boolean(complete));
+		process.env.HERDR_PANE_ID = "pane-2";
+		herdr.tabs[1].label = "Chosen task";
+		const newMain = harness({ herdr });
+		await newMain.commands.get("main-tab")!("", newMain.ctx);
+		assert.equal(herdr.workspace.label, "Chosen task");
+		process.env.HERDR_PANE_ID = "pane-1";
+		complete(response('{"kind":"fix","subject":"old request"}'));
+		await pending;
+		assert.equal(herdr.tabs[0].label, "Old request");
+		assert.equal(herdr.workspace.label, "Chosen task");
+		assert.equal(herdr.state.branch, "worktree/generated");
+		assert.equal(newMain.completionCalls.length, 0);
+		assert.deepEqual(newMain.names, []);
+	});
+});
+
+test("multi-pane titles stay local; main-tab copies meaningful shared labels without branch changes", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		herdr.tabs[0].pane_count = 2;
+		const app = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "rename this pane" } }] });
+		await app.commands.get("main-tab")!("", app.ctx);
+		herdr.tabs[0].label = "Shared investigation";
+		await app.commands.get("rename")!("", app.ctx);
+		assert.equal(herdr.tabs[0].label, "Shared investigation");
+		assert.equal(herdr.workspace.label, "worktree-brave-meadow-4aa8");
+		assert.equal(herdr.state.branch, "worktree/generated");
+		assert.match(app.notifications.at(-1) ?? "", /multiple panes/);
+		await app.commands.get("main-tab")!("", app.ctx);
+		assert.equal(herdr.workspace.label, "Shared investigation");
+		assert.equal(herdr.state.branch, "worktree/generated");
+		for (const generic of ["1", "Tab 1"]) {
+			herdr.tabs[0].label = generic;
+			await app.commands.get("main-tab")!("", app.ctx);
+			assert.equal(herdr.workspace.label, "Shared investigation");
+			assert.match(app.notifications.at(-1) ?? "", /Name the tab/);
+		}
+		assert.equal(app.completionCalls.length, 1);
+	});
+});
+
+test("subagent automatic and resumed titles preserve assigned Herdr names; rename overrides them", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-2";
+		process.env.PI_SUBAGENT_PROCESS_LEASE = join(dir, "worker.lease");
+		const herdr = herdrFixture(dir);
+		herdr.tabs[1].label = "D1.1 Assigned task";
+		const automatic = harness({ herdr });
+		await automatic.handlers.get("session_start")?.({}, automatic.ctx);
+		automatic.handlers.get("input")?.({ source: "interactive", text: "task" }, automatic.ctx);
+		await automatic.handlers.get("before_agent_start")?.({ prompt: "task" }, automatic.ctx);
+		await eventually(() => automatic.names.length === 1);
+		assert.deepEqual(automatic.execCalls, []);
+		const resumed = harness({ herdr, sessionName: "Saved title", branch: [
+			{ type: "custom", customType: "pi-herdr-rename/title", data: { display: "Saved title", branch: "fix/saved-title" } },
+			{ type: "message", message: { role: "user", content: "worker task" } },
+		] });
+		await resumed.handlers.get("session_start")?.({}, resumed.ctx);
+		assert.equal(resumed.execCalls.length, 0);
+		assert.equal(herdr.tabs[1].label, "D1.1 Assigned task");
+		await resumed.commands.get("rename")!("", resumed.ctx);
+		assert.equal(herdr.tabs[1].label, "Generated title");
+		assert.ok(resumed.execCalls.some((args) => args.join(" ") === "pane rename pane-2 Generated title"));
+		assert.equal(herdr.workspace.label, "worktree-brave-meadow-4aa8");
+	});
+});
+
+test("stale and unavailable shared state never block local names or overwrite malformed files", async () => {
+	await withAgentDir(async (dir) => {
+		process.env.HERDR_ENV = "1"; process.env.HERDR_PANE_ID = "pane-1";
+		const herdr = herdrFixture(dir);
+		const app = harness({ herdr, branch: [{ type: "message", message: { role: "user", content: "rename this" } }] });
+		await app.commands.get("main-tab")!("", app.ctx);
+		await app.commands.get("rename")!("", app.ctx);
+		herdr.workspace.tokens = {}; herdr.workspace.label = "Custom workspace";
+		await app.commands.get("rename")!("", app.ctx);
+		assert.equal(herdr.workspace.label, "Custom workspace");
+		assert.match(app.notifications.at(-1) ?? "", /Run \/main-tab/);
+		await app.commands.get("main-tab")!("", app.ctx);
+		assert.equal(herdr.workspace.label, "Generated title");
+		const stateFile = join(dir, ".context/pi-harness/pi-herdr-tools/state.json");
+		await writeFile(stateFile, "{broken");
+		await app.commands.get("rename")!("", app.ctx);
+		assert.equal(await readFile(stateFile, "utf8"), "{broken");
+		assert.match(app.notifications.at(-1) ?? "", /main-tab state.*preserved/);
+		await rm(join(dir, ".context"), { recursive: true });
+		await writeFile(join(dir, ".context"), "not a directory");
+		await app.commands.get("rename")!("", app.ctx);
+		assert.match(app.notifications.at(-1) ?? "", /Workspace title or branch synchronization failed/);
+		assert.equal(app.names.length, 4);
+		assert.equal(app.execCalls.filter((args) => args[0] === "tab" && args[1] === "rename").length, 4);
+		assert.deepEqual(app.widgets.at(-1), ["renamed to Generated title"]);
 	});
 });
 

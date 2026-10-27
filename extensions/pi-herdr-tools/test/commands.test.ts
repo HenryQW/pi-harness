@@ -355,15 +355,18 @@ test(`shared nested config loads without warnings; ${state} completion requests 
 	sessionManager.appendMessage({ role: "toolResult", toolCallId: "sibling", toolName: "read",
 		content: [{ type: "text", text: "sibling result" }], isError: false, timestamp: Date.now() });
 	const sent: Parameters<ExtensionAPI["sendMessage"]>[0][] = [];
+	const deliveryOptions: Array<{ triggerTurn: boolean; deliverAs: string }> = [];
 	const turnRequests: boolean[] = [];
+	let pendingMessage: any;
 	let idle = false;
 	const ctx = { cwd: root, sessionManager, hasUI: true, ui: { notify: (message: string) => notifications.push(message) }, isIdle: () => idle } as unknown as ExtensionContext;
 	const load = () => {
 		const h = host(root);
 		let tool: any;
 		const api = { ...h.pi, registerTool(value: any) { tool = value; }, registerCommand() {}, sendMessage(message: any, options: any) {
+			deliveryOptions.push(options);
 			turnRequests.push(options?.triggerTurn === true);
-			sent.push(message); sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+			sent.push(message); pendingMessage = message; idle = false;
 		} } as unknown as ExtensionAPI;
 		const manager = registerCommands(api);
 		return { h, manager, tool };
@@ -398,10 +401,17 @@ test(`shared nested config loads without warnings; ${state} completion requests 
 	sessionManager.branch(launchEntry);
 	t.mock.timers.tick(1000);
 	await waitFor(async () => sent.length === 1 ? true : undefined);
-	await waitFor(async () => await readPrivate(join(job.dir, "delivered.json")));
+	assert.deepEqual(deliveryOptions, [{ triggerTurn: true, deliverAs: "followUp" }]);
 	assert.deepEqual(turnRequests, [true]);
-	assert.equal(sent[0]!.content, `Background command ${job.spec.id}: ${state}. Output: ${job.outputPath}`);
+	assert.equal(sent[0]!.content, `Background command ${job.spec.id}: ${state}. Output: ${job.outputPath}. Inspect the result and continue the user's request if needed.`);
 	assert.equal((sent[0]!.details as { exitCode: number }).exitCode, exitCode);
+	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
+	idle = true;
+	const previousReads = branchReads.mock.callCount();
+	await waitFor(async () => { t.mock.timers.tick(1000); return branchReads.mock.callCount() > previousReads ? true : undefined; });
+	assert.equal(sent.length, 1);
+	sessionManager.appendCustomMessageEntry(pendingMessage.customType, pendingMessage.content, pendingMessage.display, pendingMessage.details);
+	await waitFor(async () => { t.mock.timers.tick(1000); return await readPrivate(join(job.dir, "delivered.json")); });
 	await reloaded.h.event("session_shutdown", {}, ctx);
 	// Simulate loss of the delivery checkpoint after the transcript append.
 	await rm(join(job.dir, "delivered.json"));

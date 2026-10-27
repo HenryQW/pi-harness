@@ -41,6 +41,7 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | `/btw help` | command | Show command grammar. |
 | BTW capability widget | ui | Show `tool-free`, `read-only`, `tool-enabled`, or context-load errors with recovery steps. |
 | `/rename` | command | Generate a title from up to five recent user messages. |
+| `/main-tab` | command | Select this tab as main and copy its existing meaningful label to the workspace. |
 | Rename progress and result widgets | ui | Show `renaming...`, then `renamed to <title>` for two seconds on success. |
 | First real user prompt | ui | Start titles in new, untitled conversations. |
 | `pi-herdr-tools/rename` | model task | Title model profile. |
@@ -108,7 +109,15 @@ Run `/btw merge Apply the smallest safe fix` after the answer. The merge request
 
 Automatic titles ignore extension-injected, empty, and image-only prompts. Expanded skill and prompt-template text starts background generation without delaying the reply. English, sentence-case display titles usually have two or three words; limits are four words and 20 characters.
 
-Herdr updates the pane and sole-pane tab. Linked worktrees get semantic branches only for detached checkouts or generated `worktree/...` branches; other branches remain unchanged. For example, `Update task logic` gives `refactor/update-task-logic`. Generated worktree labels change automatically; manual `/rename` can replace custom workspace names.
+Titles update the Pi session, Herdr pane, and sole-pane tab. A main tab is the selected tab that can change the workspace title and Git branch. The first-created tab is the default main tab. Other tabs keep these effects local, including with `/rename`. Closing a selected main tab does not promote another tab. Run `/main-tab` in the intended replacement.
+
+Only a sole-pane main tab can copy a generated title to the workspace. Automatic titles replace generated linked-worktree labels or the previous saved display title. Custom workspace names stay unchanged unless you run `/rename` in that main tab. Multi-pane tabs keep their tab label, workspace title, and branch unchanged when one pane generates a title.
+
+Linked worktrees get semantic branches only from the sole-pane main tab, and only for detached checkouts or generated `worktree/...` branches. Other branches remain unchanged. For example, `Update task logic` gives `refactor/update-task-logic`.
+
+Run `/main-tab` to select the current tab and explicitly copy its existing meaningful label to the workspace, including for a multi-pane tab. This command makes no model request, changes no Pi session title, and derives no Git branch. Numeric labels and generic labels such as `Tab 1`, `Tab`, `Shell`, `Terminal`, or `Untitled` are not copied. Selection still succeeds; name the tab, then run `/main-tab` again.
+
+Automatic and resumed titles preserve assigned subagent pane and tab names when `PI_SUBAGENT_PROCESS_LEASE` is set. The Pi session can still get an automatic title. Explicit `/rename` overrides these assigned names but does not bypass main-tab selection.
 
 ### Idle recaps
 
@@ -130,7 +139,9 @@ Status clears on answer, cancellation, failure, `/reload`, session switch, or ex
 
 The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown. Only an exact runner record can restore status or prove completion.
 
-The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice. Delivery requests one model turn after success or failure, so the agent can continue with the result. A saved delivery record and the session history prevent duplicate notices and turn requests, including after rewind.
+The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice.
+
+After a success or failure, delivery requests one model turn. The agent can inspect the result and continue the request if needed. If Pi cannot start the turn, Pi reports an error. Reload the session to retry a notice that is not in the session history. The delivery record and session history prevent duplicate notices and turn requests after a rewind.
 
 ### Worktree completion
 
@@ -201,6 +212,20 @@ Malformed state is preserved and blocks writes. Repair requires inspection of th
 
 On Linux, use an init process that reaps exited child processes. A zombie is an exited process whose parent has not collected its status. Without child reaping, zombie process groups can remain `unknown` and keep writer admission held. A process-table snapshot is not proof of termination and cannot release ownership.
 
+Main-tab selection is shared generated state at `<checkout>/.context/pi-harness/pi-herdr-tools/state.json`, not package configuration. Herdr supplies the checkout path. Outside Git, the extension uses a directory only when every pane in the workspace reports the same working directory. This check does not require Git to be installed. Missing Herdr checkout data for a Git directory disables shared workspace effects.
+
+The versioned file separates socket paths and workspace identifiers. `HERDR_SOCKET_PATH` must identify the active Herdr socket. A private directory lock covers selection and workspace effects. Git branch changes also take the separate checkout lock.
+
+Symlinks in any checkout-relative state-directory component are refused. Directories are created one component at a time. Every component is checked before state reads and writes. Each component must be owned by the current user. Parent components must not allow group or other writes; the extension directory must be private. Correct the permissions if the extension reports an unsafe directory.
+
+Files are limited to 65,536 bytes, read strictly, and replaced atomically with private permissions. Malformed files remain unchanged. The state is not added to Git or automatically ignored; it can appear as untracked work. If `.context/` is not ignored, pi-subagent and `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows.
+
+A workspace lifetime token is a random, non-secret metadata value that connects the saved selection to the live workspace. Herdr clears this metadata on server restart. A missing or changed token on an existing record disables automatic workspace effects until `/main-tab` confirms selection.
+
+Herdr assigns number 1 to the first-created tab. The extension uses that number for the default selection and stores the tab identifier. If that tab is absent, select a main tab with `/main-tab`. An existing live token without a local selection does not authorize automatic selection.
+
+The extension checks the lifetime token immediately before each workspace rename and Git branch mutation. An independent client can still clear metadata or change Herdr state after that check. Herdr cannot make the token check and mutation one atomic operation.
+
 Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved titles restore display titles and semantic branches without another model request.
 
 ## Limits and recovery
@@ -224,6 +249,8 @@ Timed-out prompts can still arrive. Check `herdr agent get` and `herdr agent rea
 
 After a failed primary update, the removed worktree stays removed. Correct primary-checkout changes or divergence, then run `git -C <primary-checkout> pull --ff-only`.
 
-`/rename` warns without user text. For Herdr or Git synchronization warnings, correct the problem and retry `/rename`. Newer renames silently cancel older requests.
+`/rename` warns without user text. Unavailable shared directories, malformed state, or failed token checks do not prevent Pi session, pane, and sole-pane-tab naming. They produce a warning and prevent shared workspace effects. Inspect and repair malformed state without deleting it to force automatic selection. Use `/main-tab` for a stale token or a closed main tab.
+
+For other Herdr or Git synchronization warnings, correct the reported problem and retry the command. A later failure does not undo an earlier name change. Newer renames and `/main-tab` cancel older title requests in the same Pi process.
 
 When an idle recap request fails, Pi shows a warning and does not retry. Pi shows each different warning only one time. The next settled run starts a new idle timer.

@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { lstat } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { extensionConfigDir, readTextFileBounded, writePrivateTextFileAtomically } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { collectPullRequestFeedback, feedbackAuthorityFromCurrent, feedbackEntries, type FeedbackSnapshot } from "./pr-feedback.ts";
 import { loadCurrentPullRequest, samePullRequestSnapshot, type CurrentPullRequest } from "./pr-github.ts";
-import { canonicalWorktree, extensionExecApi, hasExactKeys, isRecord } from "./pr-execution.ts";
+import { canonicalWorktree, extensionExecApi, hasExactKeys, isRecord, runChecked } from "./pr-execution.ts";
 
 // Bot conversation comments are status output (deploys, review progress); bot findings arrive as reviews and threads.
 function attentionEntries(snapshot: FeedbackSnapshot) {
@@ -19,9 +20,33 @@ function fingerprint(snapshot: FeedbackSnapshot, blockedIds: ReadonlySet<string>
 	return createHash("sha256").update(JSON.stringify(entries)).digest("hex");
 }
 
+/** Check checkout-controlled components before reads, writes, or directory chmod.
+ * This does not protect against a same-user process that swaps paths during use. */
+async function feedbackPath(root: string, fileName: string): Promise<{ path: string; directory: string }> {
+	let path = root;
+	let directory = root;
+	for (const component of [".context", "pi-harness", "pi-pr", fileName]) {
+		path = join(path, component);
+		try {
+			const stat = await lstat(path);
+			if (stat.isSymbolicLink() || (component === fileName ? !stat.isFile() || stat.nlink !== 1 : !stat.isDirectory())) {
+				throw new Error(`Unsafe state path is preserved: ${path}`);
+			}
+			if (component !== fileName) directory = path;
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	}
+	return { path, directory };
+}
+
 async function markerPath(cwd: string, agentDir?: string, signal?: AbortSignal, exec: Exec = spawnBounded): Promise<string> {
-	const identity = createHash("sha256").update(await canonicalWorktree(cwd, signal, exec)).digest("hex");
-	return join(extensionConfigDir("pi-pr", agentDir), "feedback", `${identity}.json`);
+	const root = await canonicalWorktree(cwd, signal, exec);
+	const identity = createHash("sha256").update(resolve(extensionConfigDir("pi-pr", agentDir))).digest("hex");
+	const fileName = `feedback-${identity}.json`;
+	const { path, directory } = await feedbackPath(root, fileName);
+	// Query the owning repository: recursive listing skips inactive checked-out submodules.
+	const tracked = await runChecked(exec, "git", ["ls-files", "--cached", "--", relative(directory, path)], { cwd: directory, signal });
+	if (tracked.stdout !== "") throw new Error(`Tracked feedback marker is preserved at ${path}; repository content cannot acknowledge feedback. Keep this state untracked.`);
+	return path;
 }
 
 async function readMarker(path: string, signal?: AbortSignal): Promise<{ url: string; fingerprint: string } | null> {
@@ -59,6 +84,7 @@ export async function needsFeedbackAttention(
 	return !marker || marker.url !== current.url.href || marker.fingerprint !== fingerprint(snapshot);
 }
 
+/** The sweep holds its agent-scoped checkout mutation lock and verifies fresh feedback before this write. */
 export async function markFeedbackHandled(
 	snapshot: FeedbackSnapshot,
 	options: { cwd: string; agentDir?: string; signal?: AbortSignal; exec?: Exec; blockedIds?: readonly string[] },

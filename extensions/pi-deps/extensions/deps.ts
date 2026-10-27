@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
+import { link, lstat, mkdir, readFile, rename, rm, writeFile, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -81,28 +81,48 @@ function formatElapsed(startedAt: number): string {
 }
 
 interface InstallStatus {
-	state?: string;
+	state: "running" | "ok" | "error" | "invalid";
 	message?: string;
 }
 
 // Watches the status file written by the background installer spawned by the post-checkout hook.
-// First consumer wins: the status file is removed once reported.
+// First consumer wins for completed results; a timeout preserves pending status.
 async function watchDependencyInstallation(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	signal: AbortSignal,
 ): Promise<void> {
 	if (ctx.mode !== "tui") return;
-	const git = await pi.exec("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { cwd: ctx.cwd });
+	const git = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd });
 	if (git.code !== 0 || git.killed) return;
-	const stateDir = join(git.stdout.trim(), "pi-deps");
+	const stateDir = join(git.stdout.trim(), ".context", "pi-harness", "pi-deps");
 	const statusPath = join(stateDir, "status.json");
+	const checkPaths = async () => {
+		for (const path of [dirname(dirname(stateDir)), dirname(stateDir), stateDir, statusPath]) {
+			try {
+				const stat = await lstat(path);
+				if (stat.isSymbolicLink() || (path === statusPath ? !stat.isFile() : !stat.isDirectory())) {
+					throw new Error(`Unsafe state path is preserved: ${path}`);
+				}
+			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		}
+	};
 	const readStatus = async (): Promise<InstallStatus | undefined> => {
+		let bytes: Buffer;
+		await checkPaths();
 		try {
-			return JSON.parse(await readFile(statusPath, "utf8")) as InstallStatus;
+			bytes = await readFile(statusPath);
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-			return { state: "running" }; // partial write from installer or test; retry next poll
+			throw error;
+		}
+		try {
+			const status = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+			if (!status || !["running", "ok", "error"].includes(status.state) ||
+				(status.message !== undefined && typeof status.message !== "string")) return { state: "invalid" };
+			return status as InstallStatus;
+		} catch {
+			return { state: "invalid" }; // an installer write may be in progress
 		}
 	};
 
@@ -116,19 +136,24 @@ async function watchDependencyInstallation(
 	};
 	let timer: ReturnType<typeof setInterval> | undefined;
 	try {
-		if (status.state === "running") {
+		if (status.state === "running" || status.state === "invalid") {
 			update();
 			timer = setInterval(update, spinnerIntervalMs);
 			timer.unref();
 		}
 		const deadline = startedAt + waitTimeoutMs;
-		while (status.state === "running" && Date.now() < deadline) {
+		while ((status.state === "running" || status.state === "invalid") && Date.now() < deadline) {
 			await delay(pollMs, undefined, { signal });
 			status = await readStatus();
 			if (!status) return;
 		}
 		signal.throwIfAborted();
-		await rm(statusPath, { force: true }); // consume so later sessions do not replay a stale outcome
+		if (status.state === "invalid") throw new Error(`Invalid status is preserved at ${statusPath}`);
+		// Never remove a running result: the installer can complete after our last read.
+		if (status.state !== "running") {
+			await checkPaths();
+			await rm(statusPath, { force: true });
+		}
 		if (status.state === "error" || status.state === "running") {
 			ctx.ui.setWidget(statusKey, [
 				status.state === "error"

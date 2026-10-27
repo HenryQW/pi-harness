@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { spawnBounded, type Exec, type ExecResult } from "@henryqw/pi-process";
-import { needsFeedbackAttention } from "../extensions/pr-feedback-attention.ts";
+import { markFeedbackHandled, needsFeedbackAttention } from "../extensions/pr-feedback-attention.ts";
 import {
 	collectPullRequestFeedback,
 	FEEDBACK_API_PAGE_MAX_BYTES,
@@ -14,6 +15,7 @@ import {
 	replyToPullRequestThread,
 	type FeedbackAuthority,
 } from "../extensions/pr-feedback.ts";
+import { withWorktreeLock } from "../extensions/pr-execution.ts";
 import { PrRun } from "../extensions/pr-run.ts";
 import {
 	PullRequestCommentSweep,
@@ -150,6 +152,10 @@ type Fixture = {
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+function markerFileName(agentDir: string): string {
+	return `feedback-${createHash("sha256").update(resolve(extensionConfigDir("pi-pr", agentDir))).digest("hex")}.json`;
 }
 
 function fixture(): Fixture {
@@ -1563,7 +1569,7 @@ test("failed feedback marker write retains finalization recovery for retry", asy
 	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard);
 	const recovery = await workflow.recoveryPath();
-	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
+	const folder = join(app.root, ".context", "pi-harness", "pi-pr");
 	mkdirSync(dirname(folder), { recursive: true });
 	writeFileSync(folder, "blocks marker directory");
 	await assert.rejects(workflow.finalize(resolved.guard, []));
@@ -1631,6 +1637,7 @@ test("bot conversation comments neither start nor restart feedback attention", a
 test("finalization preserves a malformed existing feedback marker and its recovery", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
+	writeFileSync(join(app.root, ".git", "info", "exclude"), ".context/\n");
 	const workflow = app.workflow();
 	const started = await workflow.start();
 	const recorded = await workflow.record(started.guard, ledger(started), []);
@@ -1639,9 +1646,9 @@ test("finalization preserves a malformed existing feedback marker and its recove
 	const refreshed = pending;
 	const resolved = await workflow.resolve(refreshed.guard);
 	const recovery = await workflow.recoveryPath();
-	const folder = join(dirname(dirname(dirname(recovery))), "feedback");
+	const folder = join(app.root, ".context", "pi-harness", "pi-pr");
 	mkdirSync(folder, { recursive: true });
-	const marker = join(folder, `${createHash("sha256").update(realpathSync(app.root)).digest("hex")}.json`);
+	const marker = join(folder, markerFileName(app.agentDir));
 	writeFileSync(marker, "{ malformed");
 	await assert.rejects(workflow.finalize(resolved.guard, []), /marker is preserved/);
 	assert.equal(readFileSync(marker, "utf8"), "{ malformed");
@@ -1663,10 +1670,17 @@ test("finalized sweep records standalone feedback attention and new comments ret
 	const resolved = await workflow.resolve(refreshed.guard);
 	await workflow.finalize(resolved.guard, []);
 	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	const marker = join(app.root, ".context", "pi-harness", "pi-pr", markerFileName(app.agentDir));
+	const saved = readFileSync(marker, "utf8");
+	const oldDir = join(app.agentDir, "config", "pi-pr", "feedback");
+	mkdirSync(oldDir, { recursive: true });
+	writeFileSync(join(oldDir, `${createHash("sha256").update(realpathSync(app.root)).digest("hex")}.json`), saved);
+	rmSync(marker);
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+	writeFileSync(marker, saved);
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
 	app.world.extraBody = "please check the other file";
 	assert.equal(await needsFeedbackAttention(app.current(), options), true);
-	const folder = join(dirname(dirname(dirname(await workflow.recoveryPath()))), "feedback");
-	const marker = join(folder, readdirSync(folder)[0]!);
 	writeFileSync(marker, "{ malformed");
 	await assert.rejects(needsFeedbackAttention(app.current(), options), /marker is preserved/);
 	assert.equal(readFileSync(marker, "utf8"), "{ malformed");
@@ -1678,4 +1692,142 @@ test("finalized sweep records standalone feedback attention and new comments ret
 	assert.equal(emptySnapshot.conversationComments.length + emptySnapshot.reviews.length + emptySnapshot.reviewThreads.length, 0);
 	await assert.rejects(needsFeedbackAttention(app.current(), { cwd: app.root, agentDir: app.agentDir, exec: emptyExec,
 		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) }), /marker is preserved/);
+});
+
+
+test("feedback writes reject checkout-controlled links without external chmod or replacement", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const snapshot = await collectPullRequestFeedback({ ...authority(app.current().head.oid), base: app.current().base }, { cwd: app.root, exec: app.exec });
+	const outside = join(app.agentDir, "outside");
+	mkdirSync(outside, { recursive: true }); chmodSync(outside, 0o755);
+	const file = join(outside, "feedback.json");
+	const bytes = JSON.stringify({ version: 1, url: "other", fingerprint: "a".repeat(64) });
+	writeFileSync(file, bytes); chmodSync(file, 0o644);
+	for (const component of [".context", ".context/pi-harness", ".context/pi-harness/pi-pr", `.context/pi-harness/pi-pr/${markerFileName(app.agentDir)}`, "hardlink"]) {
+		const path = join(app.root, component === "hardlink" ? `.context/pi-harness/pi-pr/${markerFileName(app.agentDir)}` : component);
+		mkdirSync(dirname(path), { recursive: true });
+		if (component === "hardlink") linkSync(file, path);
+		else symlinkSync(component.endsWith(".json") ? file : outside, path);
+		await assert.rejects(withWorktreeLock(app.root, () => markFeedbackHandled(snapshot, {
+			cwd: app.root, agentDir: app.agentDir, exec: app.exec,
+		}), { agentDir: app.agentDir }), /Unsafe state path is preserved/);
+		assert.equal(readFileSync(file, "utf8"), bytes);
+		assert.equal(statSync(file).mode & 0o777, 0o644);
+		assert.equal(statSync(outside).mode & 0o777, 0o755);
+		rmSync(join(app.root, ".context"), { recursive: true, force: true });
+	}
+});
+
+test("cross-agent recovery refreshes changed feedback without hiding blocked items or stranding the sweep", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	writeFileSync(join(app.root, ".git", "info", "exclude"), ".context/\n");
+	const first = app.workflow();
+	const secondDir = join(app.agentDir, "second");
+	const second = app.workflow(undefined, { agentDir: secondDir });
+	const a = await first.start(), b = await second.start();
+	const recordedA = await first.record(a.guard, ledger(a), []);
+	const recordedB = await second.record(b.guard, ledger(b), []);
+	const publishedA = await publishRecorded(first, recordedA);
+	const publishedB = await publishRecorded(second, recordedB);
+	const resolvedA = await first.resolve((await first.refresh(publishedA.guard)).guard);
+	const resolvedB = await second.resolve((await second.refresh(publishedB.guard)).guard);
+	await first.finalize(resolvedA.guard, []);
+	const marker = join(app.root, ".context", "pi-harness", "pi-pr", markerFileName(app.agentDir));
+	const saved = readFileSync(marker, "utf8");
+	app.world.extraBody = "New finding after the other agent finalized";
+	await assert.rejects(second.finalize(resolvedB.guard, []), /Feedback changed after refresh/);
+	assert.equal(readFileSync(marker, "utf8"), saved);
+	assert.equal(existsSync(await second.recoveryPath()), true);
+	const options = { cwd: app.root, agentDir: secondDir, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+	const resumed = app.workflow(undefined, { agentDir: secondDir });
+	const recovery = await resumed.resume();
+	const refreshed = await resumed.refresh(recovery.guard);
+	assert.equal(refreshed.plan?.ledger.find(({ id }) => id === "conversation-2")?.disposition, "blocked");
+	await resumed.finalize((await resumed.resolve(refreshed.guard)).guard, []);
+	assert.equal(existsSync(await resumed.recoveryPath()), false);
+	assert.equal(await needsFeedbackAttention(app.current(), options), true);
+	// A later explicit review can handle the finding through the existing workflow.
+	const reviewed = app.workflow(undefined, { agentDir: secondDir });
+	const started = await reviewed.start();
+	const published = await publishRecorded(reviewed, await reviewed.record(started.guard, ledger(started), []));
+	await reviewed.finalize((await reviewed.resolve((await reviewed.refresh(published.guard)).guard)).guard, []);
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+});
+
+test("tracked feedback markers cannot acknowledge feedback or be replaced; untracked migrated markers work", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const snapshot = await collectPullRequestFeedback({ ...authority(app.current().head.oid), base: app.current().base }, { cwd: app.root, exec: app.exec });
+	const options = { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	await withWorktreeLock(app.root, () => markFeedbackHandled(snapshot, options), { agentDir: app.agentDir });
+	const relative = `.context/pi-harness/pi-pr/${markerFileName(app.agentDir)}`;
+	const marker = join(app.root, relative);
+	const saved = readFileSync(marker, "utf8");
+	assert.equal(await needsFeedbackAttention(app.current(), options), false);
+	git(app.root, "add", "--", relative);
+	git(app.root, "commit", "-m", "tracked feedback marker");
+	await assert.rejects(needsFeedbackAttention(app.current(), options), /Tracked feedback marker is preserved/);
+	await assert.rejects(withWorktreeLock(app.root, () => markFeedbackHandled(snapshot, options), { agentDir: app.agentDir }), /Tracked feedback marker is preserved/);
+	assert.equal(readFileSync(marker, "utf8"), saved);
+});
+
+
+test("two agent directories keep conflicting decisions for identical feedback isolated", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	writeFileSync(join(app.root, ".git", "info", "exclude"), ".context/\n");
+	app.world.resolved = true;
+	const blocked = app.workflow();
+	const otherDir = join(app.agentDir, "other");
+	const handled = app.workflow(undefined, { agentDir: otherDir });
+	const a = await blocked.start(), b = await handled.start();
+	const recordedA = await blocked.record(a.guard, ledger(a).map((entry) => entry.id === "conversation-1"
+		? { ...entry, disposition: "blocked" as const } : entry), []);
+	const recordedB = await handled.record(b.guard, ledger(b), []);
+	const publishedA = await publishRecorded(blocked, recordedA);
+	const publishedB = await publishRecorded(handled, recordedB);
+	await blocked.finalize((await blocked.resolve((await blocked.refresh(publishedA.guard)).guard)).guard, []);
+	const marker = join(app.root, ".context", "pi-harness", "pi-pr", markerFileName(app.agentDir));
+	const saved = readFileSync(marker, "utf8");
+	await handled.finalize((await handled.resolve((await handled.refresh(publishedB.guard)).guard)).guard, []);
+	const options = { cwd: app.root, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	assert.equal(await needsFeedbackAttention(app.current(), { ...options, agentDir: app.agentDir }), true);
+	assert.equal(await needsFeedbackAttention(app.current(), { ...options, agentDir: otherDir }), false);
+	assert.equal(readFileSync(marker, "utf8"), saved);
+});
+
+test("a tracked marker in a checked-out submodule cannot authorize feedback or be overwritten", async (t) => {
+	const app = fixture();
+	t.after(app.cleanup);
+	const snapshot = await collectPullRequestFeedback({ ...authority(app.current().head.oid), base: app.current().base }, { cwd: app.root, exec: app.exec });
+	const options = { cwd: app.root, agentDir: app.agentDir, exec: app.exec,
+		load: async () => ({ kind: "current" as const, pullRequest: app.current() }) };
+	await withWorktreeLock(app.root, () => markFeedbackHandled(snapshot, options), { agentDir: app.agentDir });
+	const directory = ".context/pi-harness/pi-pr";
+	const name = markerFileName(app.agentDir);
+	const marker = join(app.root, directory, name);
+	const saved = readFileSync(marker, "utf8");
+	const source = join(app.agentDir, "marker-source");
+	mkdirSync(source);
+	git(source, "init", "-q");
+	writeFileSync(join(source, name), saved);
+	git(source, "add", "--", name);
+	git(source, "-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "marker");
+	rmSync(dirname(marker), { recursive: true });
+	git(app.root, "-c", "protocol.file.allow=always", "submodule", "add", source, directory);
+	git(app.root, "commit", "-m", "local marker submodule");
+	for (const active of [true, false]) {
+		const exec: Exec = (command, args, options) => app.exec(command,
+			command === "git" ? ["-c", `submodule.${directory}.active=${active}`, ...args] : args, options);
+		const scoped = { ...options, exec };
+		await assert.rejects(needsFeedbackAttention(app.current(), scoped), /Tracked feedback marker is preserved/);
+		await assert.rejects(withWorktreeLock(app.root, () => markFeedbackHandled(snapshot, scoped), { agentDir: app.agentDir }), /Tracked feedback marker is preserved/);
+		assert.equal(readFileSync(marker, "utf8"), saved);
+	}
 });

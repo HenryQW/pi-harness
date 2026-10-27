@@ -179,6 +179,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let scanning = false;
 	let warned = false;
+	const dispatched = new Set<string>();
 	const scan = async () => {
 		const ctx = context;
 		if (!ctx || scanning) return;
@@ -199,7 +200,13 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 						(entry.details as { runnerId?: string }).runnerId === job.claim?.runnerId);
 					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
 					if (!recorded && !ctx.sessionManager.getBranch().some((entry) => entry.id === job.spec.callEntryId)) return;
-					if (!recorded) pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}`, display: true, details: summary(job) }, { triggerTurn: true });
+					if (!recorded) {
+						if (dispatched.has(job.spec.id)) return;
+						dispatched.add(job.spec.id);
+						pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}. Inspect the result and continue the user's request if needed.`, display: true, details: summary(job) }, { triggerTurn: true, deliverAs: "followUp" });
+						return;
+					}
+					dispatched.delete(job.spec.id);
 					await writePrivate(join(job.dir, "delivered.json"), { id: job.spec.id, runnerId: job.claim!.runnerId });
 				});
 			}
