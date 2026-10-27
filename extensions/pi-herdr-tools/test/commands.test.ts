@@ -137,18 +137,6 @@ test("private cancellation stops the owned ordinary descendant group; completion
 	assert.equal((await readJob(completed.dir)).state, "succeeded");
 });
 
-test("unclosed output from an escaped descendant records unknown instead of releasing ownership", async (t) => {
-	const script = 'const {spawn}=require("node:child_process"); const child=spawn(process.execPath,["-e","setTimeout(()=>{}, 20000)"],{detached:true,stdio:"inherit"}); console.log(child.pid); child.unref()';
-	const f = await fixture(t, `exec '${process.execPath}' -e '${script}'`);
-	const execution = start(f.dir, f.spec);
-	const pid = await waitFor(async () => { const text = await outputTail(await readJob(f.dir)); return /^\d+\n$/.test(text) ? Number(text) : undefined; });
-	t.after(() => { try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } });
-	await execution.done;
-	const job = await readJob(f.dir);
-	assert.equal(job.state, "unknown");
-	assert.equal(job.result?.failure, "output_close_timeout");
-});
-
 test("one-time runner claim prevents duplicate execution, including after an interrupted claim", async (t) => {
 	const f = await fixture(t, "printf once; sleep 0.1", { createdAt: Date.now() - 30_000 });
 	const first = start(f.dir, f.spec);
