@@ -640,32 +640,36 @@ test("version-one recorded sweeps retain owned edits or commits without a new ap
 	}
 });
 
-test("a legacy non-actionable projection can resume and acknowledge its open thread", async (t) => {
-	const app = fixture();
-	t.after(app.cleanup);
-	const workflow = app.workflow();
-	const started = await workflow.start();
-	const reason = "This request is outside this change.";
-	const classified = ledger(started).map((entry) => entry.id === "thread-1"
-		? { ...entry, disposition: "non-actionable" as const, note: reason } : entry);
-	const recorded = await workflow.record(started.guard, classified, []);
-	const published = await publishRecorded(workflow, recorded);
-	const pending = await workflow.refresh(published.guard);
-	assert.deepEqual(pending.plan?.ledger, classified);
-	const path = await workflow.recoveryPath();
-	const saved = JSON.parse(readFileSync(path, "utf8"));
-	saved.version = 1;
-	delete saved.pendingScope;
-	delete saved.validation;
-	delete saved.approved;
-	saved.projection.threads[0].isResolved = false;
-	writeFileSync(path, `${JSON.stringify(saved)}\n`);
-	const resumed = await workflow.resume();
-	const resolved = await workflow.resolve(resumed.guard);
-	assert.equal(app.world.replyBody, reason);
-	assert.equal(app.world.replyCalls, 1);
-	assert.equal(app.world.mutationCalls, 1);
-	await workflow.finalize(resolved.guard, []);
+test("current and legacy non-actionable projections acknowledge their open threads", async (t) => {
+	for (const legacy of [false, true]) {
+		const app = fixture();
+		t.after(app.cleanup);
+		const workflow = app.workflow();
+		const started = await workflow.start();
+		const reason = "This request is outside this change.";
+		const classified = ledger(started).map((entry) => entry.id === "thread-1"
+			? { ...entry, disposition: "non-actionable" as const, note: reason } : entry);
+		const recorded = await workflow.record(started.guard, classified, []);
+		const published = await publishRecorded(workflow, recorded);
+		let pending = await workflow.refresh(published.guard);
+		assert.deepEqual(pending.plan?.ledger, classified);
+		if (legacy) {
+			const path = await workflow.recoveryPath();
+			const saved = JSON.parse(readFileSync(path, "utf8"));
+			saved.version = 1;
+			delete saved.pendingScope;
+			delete saved.validation;
+			delete saved.approved;
+			saved.projection.threads[0].isResolved = false;
+			writeFileSync(path, `${JSON.stringify(saved)}\n`);
+			pending = await workflow.resume();
+		}
+		const resolved = await workflow.resolve(pending.guard);
+		assert.equal(app.world.replyBody, reason);
+		assert.equal(app.world.replyCalls, 1);
+		assert.equal(app.world.mutationCalls, 1);
+		await workflow.finalize(resolved.guard, []);
+	}
 });
 
 test("an already-published fix is cited by its own commit, not the sweep head", async (t) => {
