@@ -640,7 +640,7 @@ test("parent uses authenticated task-profile fallback when primary authenticatio
 					fallback: { model: "anthropic/claude-haiku", thinkingLevel: "low" },
 				},
 			},
-			tasks: { "pi-herdr-btw/btw": "frontier" },
+			tasks: { "pi-herdr-tools/btw": "frontier" },
 		}, agentDir);
 		const store = new FakeStore();
 		const harness = await createHarness(store, herdrExec());
@@ -670,7 +670,7 @@ test("parent rejects unavailable or unauthenticated task-profile routes before s
 	await withParentEnvironment(async (agentDir) => {
 		await writeTaskModelsConfig({
 			profiles: { frontier: { primary: { model: "missing/model", thinkingLevel: "high" } } },
-			tasks: { "pi-herdr-btw/btw": "frontier" },
+			tasks: { "pi-herdr-tools/btw": "frontier" },
 		}, agentDir);
 		const unavailableStore = new FakeStore();
 		const unavailableHarness = await createHarness(unavailableStore, herdrExec());

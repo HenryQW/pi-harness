@@ -535,7 +535,7 @@ test("rename never uses the current session model without a configured fallback"
 	});
 });
 
-test("rename defaults to fast and uses its fallback after an invalid title", async () => {
+test("rename uses its assigned profile and its fallback after an invalid title", async () => {
 	await withAgentDir(async (dir) => {
 		const primary: Model = {
 			provider: "primary",
@@ -554,11 +554,13 @@ test("rename defaults to fast and uses its fallback after an invalid title", asy
 		const currentModel: Model = { provider: "main", id: "reliable", input: ["text"] };
 		await writeFile(join(dir, "config", "pi-task-models", "config.json"), JSON.stringify({
 			profiles: {
-				fast: {
+				fast: { primary: { model: "main/reliable", thinkingLevel: "off" } },
+				frontier: {
 					primary: { model: "primary/fast", thinkingLevel: "low" },
 					fallback: { model: "fallback/fast", thinkingLevel: "low" },
 				},
 			},
+			tasks: { "pi-herdr-tools/rename": "frontier" },
 		}));
 
 		const app = harness({
