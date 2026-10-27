@@ -596,86 +596,52 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 	}
 });
 
-test("prepare accepts untracked dirty work with no commits ahead", async (t) => {
-	const creationTarget = target(true);
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const workflow = new PullRequestCreator({
-		run: new PrRun(),
-		cwd,
-		target: creationTarget,
-		agentDir,
-		exec: async (command, args) => {
-			const text = args.join(" ");
-			if (command === "git" && text === "branch --show-current") return result("feature\n");
-			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
-			if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-			if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-			if (command === "git" && args[0] === "config") return result("", 1);
-			if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") return result(JSON.stringify({ defaultBranchRef: { name: "main" } }));
-			if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-			if (command === "gh" && args[0] === "api") return result(baseOutput());
-			if (command === "git" && args[0] === "fetch") return result();
-			if (command === "git" && args[0] === "cat-file") return result();
-			if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
-			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
-			if (command === "git" && args[0] === "merge-base") return result(`${base}\n`);
-			if (command === "git" && args[0] === "rev-list") return result("0\n");
-			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result("?? pending.ts\n");
-			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
-			unexpectedCommands.push(`Unexpected ${command} ${text}`);
-			throw new Error(`Unexpected ${command} ${text}`);
-		},
-		loadCurrentPullRequest: async () => none(creationTarget, {
-			ahead: 0,
-			worktree: "dirty",
-			relation: "distinct-ref",
-		}),
-	});
+test("prepare accepts dirty-only work and rejects it if eligibility disappears", async (t) => {
+	for (const disappears of [false, true]) {
+		const creationTarget = target(true);
+		const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
+		t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+		let loads = 0;
+		const workflow = new PullRequestCreator({
+			run: new PrRun(),
+			cwd,
+			target: creationTarget,
+			agentDir,
+			exec: async (command, args) => {
+				const text = args.join(" ");
+				if (command === "git" && text === "branch --show-current") return result("feature\n");
+				if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
+				if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
+				if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
+				if (command === "git" && args[0] === "config") return result("", 1);
+				if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") return result(JSON.stringify({ defaultBranchRef: { name: "main" } }));
+				if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+				if (command === "gh" && args[0] === "api") return result(baseOutput());
+				if (command === "git" && args[0] === "fetch") return result();
+				if (command === "git" && args[0] === "cat-file") return result();
+				if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
+				if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+				if (command === "git" && args[0] === "merge-base") return result(`${base}\n`);
+				if (command === "git" && args[0] === "rev-list") return result("0\n");
+				if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result("?? pending.ts\n");
+				if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+				unexpectedCommands.push(`Unexpected ${command} ${text}`);
+				throw new Error(`Unexpected ${command} ${text}`);
+			},
+			loadCurrentPullRequest: async () => none(creationTarget, {
+				ahead: 0,
+				worktree: !disappears || loads++ === 0 ? "dirty" : "clean",
+				relation: "distinct-ref",
+			}),
+		});
 
-	assert.equal((await workflow.prepare()).kind, "prepared");
-});
-
-test("prepare rejects dirty-only eligibility that disappears during preparation", async (t) => {
-	const creationTarget = target(true);
-	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
-	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	let loads = 0;
-	const workflow = new PullRequestCreator({
-		run: new PrRun(),
-		cwd,
-		target: creationTarget,
-		agentDir,
-		exec: async (command, args) => {
-			const text = args.join(" ");
-			if (command === "git" && text === "branch --show-current") return result("feature\n");
-			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
-			if (command === "git" && text === "remote get-url --push --all origin") return result("git@github.com:acme/project.git\n");
-			if (command === "git" && text === "remote get-url --all origin") return result("git@github.com:acme/project.git\n");
-			if (command === "git" && args[0] === "config") return result("", 1);
-			if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") return result(JSON.stringify({ defaultBranchRef: { name: "main" } }));
-			if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-			if (command === "gh" && args[0] === "api") return result(baseOutput());
-			if (command === "git" && args[0] === "fetch") return result();
-			if (command === "git" && args[0] === "cat-file") return result();
-			if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
-			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
-			if (command === "git" && args[0] === "merge-base") return result(`${base}\n`);
-			if (command === "git" && args[0] === "rev-list") return result("0\n");
-			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result("?? pending.ts\n");
-			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
-			unexpectedCommands.push(`Unexpected ${command} ${text}`);
-			throw new Error(`Unexpected ${command} ${text}`);
-		},
-		loadCurrentPullRequest: async () => none(creationTarget, {
-			ahead: 0,
-			worktree: loads++ === 0 ? "dirty" : "clean",
-			relation: "distinct-ref",
-		}),
-	});
-
-	await assert.rejects(workflow.prepare(), /branch no longer has a committed change or pending work/);
-	assert.equal(workflow.state.phase, "blocked");
+		if (disappears) {
+			await assert.rejects(workflow.prepare(), /branch no longer has a committed change or pending work/);
+			assert.equal(workflow.state.phase, "blocked");
+		} else {
+			assert.equal((await workflow.prepare()).kind, "prepared");
+		}
+	}
 });
 
 test("prepare rejects a shared preflight with no commits ahead", async (t) => {

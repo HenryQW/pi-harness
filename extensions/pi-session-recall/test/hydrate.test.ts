@@ -121,6 +121,17 @@ test("linear session: window and read", () => {
 	assert.equal(r.truncated, false);
 	assert.equal(r.totalMessages, 4);
 	assert.equal(r.branchTip, "e04");
+
+	appendFileSync(p, [
+		{ type: "model_change", id: "mc1", parentId: "e04", timestamp: "2024-01-01T00:00:05.000Z", provider: "openai", modelId: "gpt-4o" },
+		msg("mc1", "user", "q3"),
+	].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+	const interleaved = getWindow(p, "e03", 1);
+	assert.deepEqual(interleaved.messages.map((m) => m.entryId), ["e02", "e03", "e04"]);
+	assert.equal(interleaved.messagesAfter, 2);
+	const extended = readSession(p);
+	assert.equal(extended.totalMessages, 5);
+	assert.deepEqual(extended.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
 });
 
 test("fork tree: window counts only messages on anchor branch", () => {
@@ -154,50 +165,15 @@ test("fork tree: window counts only messages on anchor branch", () => {
 	assert.equal(r.truncated, true);
 	assert.equal(r.totalMessages, 5);
 	assert.deepEqual(r.messages.map((m) => m.entryId), ["e01", "e02", "e06", "e07"]);
-});
-
-test("branchTip selects branch independently of aroundMessageId center", () => {
-	const msg = mkMsgs();
-	// e01..e03 shared, branch A e04,e05; branch B e06,e07 (leaf).
-	const p = write("fork.jsonl", [
-		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
-		msg(null, "user", "q1"), // e01
-		msg("e01", "assistant", "a1"), // e02
-		msg("e02", "user", "q2"), // e03
-		msg("e03", "assistant", "A-a1"), // e04 branch A
-		msg("e04", "user", "A-q2"), // e05
-		msg("e03", "assistant", "B-a1"), // e06 branch B
-		msg("e06", "user", "B-q2"), // e07 leaf
-	]);
-	// Scroll backward on inactive branch A: anchor moves to shared root while
-	// branchTip keeps the window on A instead of jumping to leaf branch B.
-	const w = getWindow(p, "e01", 5, { branchTip: "e05" });
-	assert.deepEqual(w.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
-	assert.equal(w.messagesBefore, 0);
-	assert.equal(w.messagesAfter, 4);
-	assert.equal(w.branchTip, "e05");
+	// Keep the inactive branch selected while the anchor moves to the shared root.
+	const branchA = getWindow(p, "e01", 5, { branchTip: "e05" });
+	assert.deepEqual(branchA.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
+	assert.equal(branchA.messagesBefore, 0);
+	assert.equal(branchA.messagesAfter, 4);
+	assert.equal(branchA.branchTip, "e05");
 	// Anchor on the other branch must be rejected.
 	assert.throws(() => getWindow(p, "e06", 5, { branchTip: "e05" }), /not on branch/);
 	assert.throws(() => getWindow(p, "e01", 5, { branchTip: "nope" }), /not found/);
-});
-
-test("interleaved non-message entries are transparent", () => {
-	const msg = mkMsgs();
-	const p = write("interleaved.jsonl", [
-		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
-		msg(null, "user", "q1"),
-		msg("e01", "assistant", "a1"),
-		msg("e02", "user", "q2"),
-		msg("e03", "assistant", "a2"),
-		{ type: "model_change", id: "mc1", parentId: "e04", timestamp: "2024-01-01T00:00:05.000Z", provider: "openai", modelId: "gpt-4o" },
-		msg("mc1", "user", "q3"), // e05
-	]);
-	const w = getWindow(p, "e03", 1);
-	assert.deepEqual(w.messages.map((m) => m.entryId), ["e02", "e03", "e04"]);
-	assert.equal(w.messagesAfter, 2); // model_change doesn't count
-	const r = readSession(p);
-	assert.equal(r.totalMessages, 5);
-	assert.deepEqual(r.messages.map((m) => m.entryId), ["e01", "e02", "e03", "e04", "e05"]);
 });
 
 test("non-message branch tip centers on its nearest message ancestor", () => {
@@ -382,17 +358,4 @@ assert.equal(result.totalMessages, 2);`;
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
-
-test("real ids ending in #h/#t are anchored without suffix stripping", () => {
-	const p = write("suffix-id-anchor.jsonl", [
-		{ type: "session", version: 3, id: "s1", timestamp: "2024-01-01T00:00:00.000Z", cwd: "/tmp/x" },
-		{ type: "message", id: "e01", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "q1" }] } },
-		{ type: "message", id: "e02#t", parentId: "e01", timestamp: "t2", message: { role: "assistant", content: [{ type: "text", text: "a1" }] } },
-		{ type: "message", id: "e03", parentId: "e02#t", timestamp: "t3", message: { role: "user", content: [{ type: "text", text: "q2" }] } },
-	]);
-	const w = getWindow(p, "e02#t", 5);
-	assert.deepEqual(w.messages.map((m) => m.entryId), ["e01", "e02#t", "e03"]);
-	assert.equal(w.messages.find((m) => m.entryId === "e02#t")?.anchor, true);
-	assert.equal(w.messagesAfter, 1);
 });

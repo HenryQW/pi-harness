@@ -14,6 +14,7 @@ function fixture(t: TestContext, exec?: Exec) {
 	execFileSync("git", ["init", "-q", "--initial-branch=main", cwd]);
 	const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	git("config", "user.name", "Commit Test"); git("config", "user.email", "test@example.invalid");
+	git("config", "commit.gpgsign", "false");
 	const write = (path: string, value: string) => writeFileSync(join(cwd, path), value);
 	write("file.txt", "base\n"); write("other.txt", "base\n");
 	git("add", "-A"); git("commit", "-qm", "initial"); git("checkout", "-qb", "feature");

@@ -210,7 +210,7 @@ describe("session_search entry point", () => {
 		assert.deepEqual(tool.renderResult(result, { expanded: true }, theme, {}).render(width), new Text(`\n${result.content[0]!.text}`, 0, 0).render(width));
 	});
 
-	it("registers the tool and dispatches browse/discovery", async () => {
+	it("registers search and dispatches browse, discovery, read, and scroll", async () => {
 		const pi = makePi();
 		const { default: register } = await import("../extensions/session-recall.ts");
 		register(pi as never);
@@ -284,28 +284,21 @@ describe("session_search entry point", () => {
 		assert.equal(scrollResult.messages.at(-1).entryId, "e04"); // window extends past the anchor
 		assert.equal(scrollResult.messages.find((m: { entryId: string }) => m.entryId === "e03").anchor, true);
 		assert.equal(scrollResult.messagesBefore, 2);
-	});
 
-	it("READ and SCROLL preserve raw tool-result messages", async () => {
-		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-raw-retrieval`);
-		register(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
 		const session = writeSession("raw-retrieval/session.jsonl", [
 			{ type: "session", version: 3, id: "raw-retrieval", timestamp: "2026-02-01T00:00:00.000Z", cwd: "/tmp" },
 			{ type: "message", id: "u1", parentId: null, timestamp: "t1", message: { role: "user", content: [{ type: "text", text: "request" }] } },
 			{ type: "message", id: "tool1", parentId: "u1", timestamp: "t2", message: { role: "toolResult", content: [{ type: "text", text: "raw tool output" }] } },
 			{ type: "message", id: "a1", parentId: "tool1", timestamp: "t3", message: { role: "assistant", content: [{ type: "text", text: "response" }] } },
 		]);
-		const { syncSessions } = await import(`../extensions/search-core.ts?bust=${Date.now()}-raw-retrieval`);
 		syncSessions(path.join(agentDir, "sessions"), path.join(agentDir, "config", "pi-session-recall", "index.db"));
 
-		const read = JSON.parse((await tool.execute("read-raw", { sessionId: session }, undefined, undefined, { sessionManager: {} })).content[0].text);
-		assert.equal(read.messages.find((message: { entryId: string }) => message.entryId === "tool1").role, "toolResult");
-		assert.equal(read.messages.find((message: { entryId: string }) => message.entryId === "tool1").content, "raw tool output");
+		const rawRead = JSON.parse((await tool.execute("read-raw", { sessionId: session }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		assert.equal(rawRead.messages.find((message: { entryId: string }) => message.entryId === "tool1").role, "toolResult");
+		assert.equal(rawRead.messages.find((message: { entryId: string }) => message.entryId === "tool1").content, "raw tool output");
 
-		const scroll = JSON.parse((await tool.execute("scroll-raw", { sessionId: session, aroundMessageId: "a1", window: 1 }, undefined, undefined, { sessionManager: {} })).content[0].text);
-		const toolMessage = scroll.messages.find((message: { entryId: string }) => message.entryId === "tool1");
+		const rawScroll = JSON.parse((await tool.execute("scroll-raw", { sessionId: session, aroundMessageId: "a1", window: 1 }, undefined, undefined, { sessionManager: {} })).content[0].text);
+		const toolMessage = rawScroll.messages.find((message: { entryId: string }) => message.entryId === "tool1");
 		assert.equal(toolMessage.role, "toolResult");
 		assert.equal(toolMessage.content, "raw tool output");
 	});
@@ -337,7 +330,7 @@ describe("session_search entry point", () => {
 		assert.equal(parsed.branchTip, "e05");
 	});
 
-	it("READ clamps oversized content to the output budget (PR #135)", async () => {
+	it("READ and SCROLL bound oversized content to the output budget", async () => {
 		const pi = makePi();
 		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-read`);
 		register(pi as never);
@@ -356,13 +349,6 @@ describe("session_search entry point", () => {
 		assert.equal(parsed.truncated, false, "message-count truncation untouched");
 		assert.equal(parsed.contentTruncated, true, "character-level truncation signaled");
 		assert.ok(parsed.messages.every((m: { content: string }) => m.content.length < 10_000));
-	});
-
-	it("SCROLL bounds oversized content to the output budget (PR #135)", async () => {
-		const pi = makePi();
-		const { default: register } = await import(`../extensions/session-recall.ts?bust=${Date.now()}-bound`);
-		register(pi as never);
-		const tool = (pi as any).tool as CapturedTool;
 
 		msgCount = 1;
 		const sBig = writeSession("e/session-e.jsonl", [

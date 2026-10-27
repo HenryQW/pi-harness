@@ -466,7 +466,7 @@ test("rejects an alternate CODEGRAPH_DIR instead of indexing a different directo
 	assert.equal(run.calls.some(({ command, args }) => command === "codegraph" && args[0] === "init"), false);
 });
 
-test("codegraph_explore passes the query, file cap, and project path to the CLI", async () => {
+test("codegraph_explore passes arguments and reports bounded errors", async () => {
 	const run = harness("/session");
 	assert.equal(run.tool.name, "codegraph_explore");
 	assert.deepEqual(await run.explore({ query: "how does init work" }), { content: [{ type: "text", text: "explored" }], details: undefined });
@@ -475,11 +475,8 @@ test("codegraph_explore passes the query, file cap, and project path to the CLI"
 		{ command: "codegraph", args: ["explore", "--path", "/session", "--max-files", "12", "how does init work"], cwd: "/session", timeout: 120_000 },
 		{ command: "codegraph", args: ["explore", "--path", "/project/src", "--max-files", "3", "initialize"], cwd: "/project/src", timeout: 120_000 },
 	]);
-});
-
-test("codegraph_explore surfaces the CLI stderr tail on failure", async () => {
-	const run = harness("/session", { explore: { code: 1, stdout: "", stderr: `${"x".repeat(3000)}CodeGraph not initialized\n`, killed: false } });
-	await assert.rejects(run.explore({ query: "q" }), (error: Error) => {
+	const failed = harness("/session", { explore: { code: 1, stdout: "", stderr: `${"x".repeat(3000)}CodeGraph not initialized\n`, killed: false } });
+	await assert.rejects(failed.explore({ query: "q" }), (error: Error) => {
 		assert.match(error.message, /^codegraph explore failed \(exit 1\): x+CodeGraph not initialized$/);
 		assert.ok(error.message.length < 2100);
 		return true;

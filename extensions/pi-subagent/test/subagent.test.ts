@@ -502,7 +502,7 @@ async function recoverDirect(app: ReturnType<typeof harness>, reference = ""): P
 	await app.commands.get("subagent")!.handler("", app.ctx);
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (!check()) {
 		if (Date.now() >= deadline) throw new Error("Timed out waiting for test state.");

@@ -337,38 +337,24 @@ test("/remember prepares from the snapshot actually checked after a concurrent e
 	});
 });
 
-test("/remember passes cancellation through preparation and leaves memory untouched", async () => {
-	const controller = new AbortController();
-	await withReviewFixture({
-		responses: [async () => {
-			controller.abort(new Error("remember cancelled"));
-			return JSON.stringify({ target: "memory", content: "candidate" });
-		}],
-	}, async ({ memoryDir, commands, ctx, calls, notifications }) => {
-		await commands.get("remember")!.handler("candidate", { ...ctx, signal: controller.signal });
-		assert.equal(calls.length, 1);
-		assert.equal(calls[0]!.options.signal, controller.signal);
-		assert.match(notifications.at(-1)!, /remember cancelled/);
-		await assert.rejects(readFile(join(memoryDir, "MEMORY.md")), /ENOENT/);
-	});
-});
-
-test("/remember also passes cancellation into the add review", async () => {
-	const controller = new AbortController();
-	await withReviewFixture({
-		responses: [
-			JSON.stringify({ target: "user", content: "candidate" }),
-			async () => {
-				controller.abort(new Error("review cancelled"));
-				return JSON.stringify({ verdict: "distinct", explanation: "New fact." });
-			},
-		],
-	}, async ({ memoryDir, commands, ctx, calls, notifications }) => {
-		await commands.get("remember")!.handler("candidate", { ...ctx, signal: controller.signal });
-		assert.deepEqual(calls.map((call) => call.options.signal), [controller.signal, controller.signal]);
-		assert.match(notifications.at(-1)!, /review cancelled/);
-		await assert.rejects(readFile(join(memoryDir, "USER.md")), /ENOENT/);
-	});
+test("/remember passes cancellation through preparation and review without writing", async () => {
+	for (const phase of ["preparation", "review"] as const) {
+		const controller = new AbortController();
+		const cancelled = async () => {
+			controller.abort(new Error(`${phase} cancelled`));
+			return phase === "preparation"
+				? JSON.stringify({ target: "memory", content: "candidate" })
+				: JSON.stringify({ verdict: "distinct", explanation: "New fact." });
+		};
+		await withReviewFixture({
+			responses: phase === "preparation" ? [cancelled] : [JSON.stringify({ target: "user", content: "candidate" }), cancelled],
+		}, async ({ memoryDir, commands, ctx, calls, notifications }) => {
+			await commands.get("remember")!.handler("candidate", { ...ctx, signal: controller.signal });
+			assert.deepEqual(calls.map((call) => call.options.signal), Array(phase === "preparation" ? 1 : 2).fill(controller.signal));
+			assert.match(notifications.at(-1)!, new RegExp(`${phase} cancelled`));
+			await assert.rejects(readFile(join(memoryDir, phase === "preparation" ? "MEMORY.md" : "USER.md")), /ENOENT/);
+		});
+	}
 });
 
 test("/remember cannot write after a model switch during review without an idle signal", async () => {

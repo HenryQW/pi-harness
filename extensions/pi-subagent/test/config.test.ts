@@ -16,21 +16,16 @@ async function withStore(run: (store: ReturnType<typeof createSubagentConfigStor
 	}
 }
 
-test("missing config yields default limits without a legacy fallback", async () => {
+test("missing and valid configs resolve execution limits without a legacy fallback", async () => {
 	await withStore(async (store) => {
 		const legacyPath = join(store.path, "..", "pi-subagent.json");
 		await writeFile(legacyPath, JSON.stringify({ maxTurns: 1 }));
-		const loaded = store.loadSync();
-		assert.deepEqual(loaded, { status: "ok", source: "missing", value: DEFAULT_SUBAGENT_CONFIG, issues: [] });
-		assert.deepEqual(resolveExecutionPolicy(store.path, loaded), {
+		const missing = store.loadSync();
+		assert.deepEqual(missing, { status: "ok", source: "missing", value: DEFAULT_SUBAGENT_CONFIG, issues: [] });
+		assert.deepEqual(resolveExecutionPolicy(store.path, missing), {
 			maxSubagents: 5, maxTurns: 50, childIdleMs: 600_000, childMaxMs: 1_800_000, maxCorrections: 1,
 		});
 		await assert.rejects(() => readFile(store.path, "utf8"), { code: "ENOENT" });
-	});
-});
-
-test("valid execution limits, timeout, and roleDefaults are accepted", async () => {
-	await withStore(async (store) => {
 		const roleDefaults = { extensions: ["/provider.ts"], tools: ["read"], skills: [] };
 		await writeFile(store.path, JSON.stringify({
 			maxSubagents: 3, maxTurns: 1, maxTokens: 2_000, maxCorrections: 0, timeout: { idleMinutes: 15, maxMinutes: 60 }, roleDefaults,

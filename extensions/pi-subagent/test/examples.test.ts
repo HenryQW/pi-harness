@@ -148,8 +148,10 @@ test("Role isolation is rejected because mode owns checkout policy", async (t) =
 	const agentDir = await isolatedAgentDir(t);
 	const rolesDir = join(agentDir, "config", "pi-subagent");
 	await mkdir(rolesDir, { recursive: true });
-	await writeFile(join(rolesDir, "role.md"), "---\nname: role\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	assert.match(roleError(agentDir), /Role isolation is retired.*mode "isolated"/i);
+	for (const value of ["worktree", "bogus"]) {
+		await writeFile(join(rolesDir, "role.md"), `---\nname: role\ndescription: d\nisolation: ${value}\ntools: []\nextensions: []\nskills: []\n---\nBody.\n`);
+		assert.match(roleError(agentDir), /Role isolation is retired.*mode "isolated"/i);
+	}
 });
 
 test("Role capability lists are required arrays", async (t) => {

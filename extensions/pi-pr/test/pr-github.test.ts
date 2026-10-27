@@ -585,6 +585,7 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		headRepository: { nameWithOwner: "acme/unrelated" },
 	});
 	const matching = pullRequest({
+		baseRefOid: BASE_HEAD,
 		mergeable: "CONFLICTING",
 		mergeStateStatus: "DIRTY",
 		reviewDecision: "CHANGES_REQUESTED",
@@ -596,6 +597,7 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 	const { pi, context, calls } = harness({
 		candidates: [foreign, matching],
 		remote: "publish",
+		baseRefTargetOid: LIVE_BASE_HEAD,
 		threads: reviewThreadOutput(
 			reviewThreadPage([{ isResolved: false }], true),
 			reviewThreadPage([{ isResolved: false }]),
@@ -622,7 +624,7 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 			policy: "pending", mergeability: "known",
 		},
 		local: { worktree: "clean", head: "behind" },
-		base: { repository: "acme/project", ref: "main", oid: BASE_HEAD },
+		base: { repository: "acme/project", ref: "main", oid: LIVE_BASE_HEAD },
 		head: { repository: "acme/fork", ref: "feature/pr", oid: REMOTE_HEAD },
 		headFetchSource: "git@github.com:acme/fork.git",
 		target: {
@@ -680,40 +682,16 @@ test("discovers an upstream PR from repository-scoped ref associations", async (
 		REMOTE_HEAD,
 	]);
 	assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes("FETCH_HEAD"))), false);
+	const baseRefQuery = calls.find(({ command, args }) => command === "gh" && args.some((arg) => arg.includes("target{oid}")));
+	assert.ok(baseRefQuery?.args.includes("qualifiedName=refs/heads/main"));
+	assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), false);
+	assert.equal(calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
+	assert.equal(calls.some(({ args }) => args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod")), false);
 	for (const call of calls) {
 		assert.equal(call.options?.cwd, "/repo");
 		assert.equal(call.options?.timeout, 10_000);
 		assert.equal(call.options?.signal, context.signal);
 	}
-});
-
-test("loads an open PR without repository policy lookups", async () => {
-	const app = harness();
-
-	const loaded = await loadCurrentPullRequest(app.pi, app.context);
-	assert.equal(loaded?.number, 42);
-	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("rules/branches"))), false);
-	assert.equal(app.calls.some(({ args }) => args.some((arg) => arg.includes("branchProtectionRule"))), false);
-	assert.equal(app.calls.some(({ args }) => args.includes("mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed,viewerDefaultMergeMethod")), false);
-});
-
-test("resolves the current base ref target instead of the pull request base snapshot", async () => {
-	const app = harness({
-		candidates: [pullRequest({
-			baseRefOid: BASE_HEAD,
-			mergeable: "CONFLICTING",
-			mergeStateStatus: "DIRTY",
-		})],
-		baseRefTargetOid: LIVE_BASE_HEAD,
-	});
-
-	const loaded = await loadCurrentPullRequest(app.pi, app.context);
-	assert.ok(loaded);
-	assert.equal(loaded.base.oid, LIVE_BASE_HEAD);
-	const baseRefQuery = app.calls.find(({ command, args }) =>
-		command === "gh" && args.some((arg) => arg.includes("target{oid}"))
-	);
-	assert.ok(baseRefQuery?.args.includes("qualifiedName=refs/heads/main"));
 });
 
 test("uses inspected local safety without reopening the fetch window", async () => {

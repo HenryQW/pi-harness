@@ -60,7 +60,7 @@ const boundedReaders = [
 	(path: string, maxBytes: number) => readTextFileBounded(path, maxBytes),
 ];
 
-test("bounded text reads enforce byte limits and strict UTF-8", async () => {
+test("bounded text reads enforce byte limits and strict UTF-8 and report missing files", async () => {
 	await withAgentDir(async (agentDir) => {
 		const path = join(agentDir, "input.txt");
 		await writeFile(path, "é");
@@ -81,19 +81,13 @@ test("bounded text reads enforce byte limits and strict UTF-8", async () => {
 		await writeFile(path, Buffer.from([0x80]));
 		for (const read of boundedReaders) await assert.rejects(read(path, 1), TypeError);
 		await rm(path);
-	});
-});
-
-test("bounded text reads propagate missing files", async () => {
-	await withAgentDir(async (agentDir) => {
-		const path = join(agentDir, "missing.txt");
 		for (const read of boundedReaders) {
 			await assert.rejects(read(path, 1), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
 		}
 	});
 });
 
-test("private text writes replace atomically with private modes", async () => {
+test("private text writes are atomic, private, and clean up failures and aborts", async () => {
 	await withAgentDir(async (agentDir) => {
 		const path = join(agentDir, "state", "usage.txt");
 		await writePrivateTextFileAtomically(path, "first");
@@ -104,29 +98,19 @@ test("private text writes replace atomically with private modes", async () => {
 			assert.equal((await stat(dirname(path))).mode & 0o777, 0o700);
 			assert.equal((await stat(path)).mode & 0o777, 0o600);
 		}
-	});
-});
-
-test("private text writes clean temporary files after failure", async () => {
-	await withAgentDir(async (agentDir) => {
-		const path = join(agentDir, "state", "usage.txt");
-		await mkdir(path, { recursive: true });
-		await assert.rejects(writePrivateTextFileAtomically(path, "blocked"));
-		assert.equal((await readdir(dirname(path))).some((entry) => entry.endsWith(".tmp")), false);
-	});
-});
-
-test("already-aborted private text writes have no filesystem side effects", async () => {
-	await withAgentDir(async (agentDir) => {
-		const path = join(agentDir, "not-created", "usage.txt");
+		const blocked = join(agentDir, "blocked", "usage.txt");
+		await mkdir(blocked, { recursive: true });
+		await assert.rejects(writePrivateTextFileAtomically(blocked, "blocked"));
+		assert.equal((await readdir(dirname(blocked))).some((entry) => entry.endsWith(".tmp")), false);
+		const aborted = join(agentDir, "not-created", "usage.txt");
 		const controller = new AbortController();
 		controller.abort();
-		await assert.rejects(writePrivateTextFileAtomically(path, "blocked", { signal: controller.signal }), { name: "AbortError" });
-		await assert.rejects(stat(dirname(path)), { code: "ENOENT" });
+		await assert.rejects(writePrivateTextFileAtomically(aborted, "blocked", { signal: controller.signal }), { name: "AbortError" });
+		await assert.rejects(stat(dirname(aborted)), { code: "ENOENT" });
 	});
 });
 
-test("config paths reject traversal and have no filesystem side effects", async () => {
+test("config paths reject traversal and missing config uses defaults without writes", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-config-store-path-"));
 	try {
 		assert.equal(extensionConfigDir("pi-test-store", agentDir), join(agentDir, "config", "pi-test-store"));
@@ -135,16 +119,11 @@ test("config paths reject traversal and have no filesystem side effects", async 
 			assert.throws(() => extensionConfigPath(extensionId, agentDir), /extensionId/);
 		}
 		assert.deepEqual(await readdir(agentDir), []);
+		assert.deepEqual(createStore(agentDir).loadSync(), { status: "ok", source: "missing", value: { count: 0 }, issues: [] });
+		assert.deepEqual(await readdir(agentDir), []);
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });
 	}
-});
-
-test("missing optional config returns defaults without writing", async () => {
-	await withAgentDir(async (agentDir) => {
-		assert.deepEqual(createStore(agentDir).loadSync(), { status: "ok", source: "missing", value: { count: 0 }, issues: [] });
-		assert.deepEqual(await readdir(agentDir), []);
-	});
 });
 
 test("unknown keys and invalid optional values are reported and replaced by defaults", async () => {

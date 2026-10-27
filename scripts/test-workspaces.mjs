@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 const packageManagerExecPath = process.env.npm_execpath;
 if (!packageManagerExecPath) throw new Error("Package manager executable is required to run workspace tests.");
 
-const concurrency = 2;
+const concurrency = 3;
 const testArgs = process.argv.slice(2);
 const workspaces = ["extensions", "packages"]
 	.flatMap((root) => readdirSync(root, { withFileTypes: true })
@@ -15,7 +15,7 @@ const workspaces = ["extensions", "packages"]
 
 if (!workspaces.length) throw new Error("No workspace test scripts found.");
 
-const prioritizedWorkspaces = ["@henryqw/pi-subagent"];
+const prioritizedWorkspaces = ["@henryqw/pi-subagent", "@henryqw/pi-pr"];
 const scheduledWorkspaces = [
 	...prioritizedWorkspaces.filter((workspace) => workspaces.includes(workspace)),
 	...workspaces.filter((workspace) => !prioritizedWorkspaces.includes(workspace)),
@@ -25,8 +25,7 @@ const failures = [];
 function run(workspace) {
 	return new Promise((resolve) => {
 		const args = ["--filter", workspace, "run", "test"];
-		if (workspace === "@henryqw/pi-subagent") args.push("--", "--test-concurrency=2", ...testArgs);
-		else if (testArgs.length) args.push("--", ...testArgs);
+		if (testArgs.length) args.push("--", ...testArgs);
 		const child = spawn(packageManagerExecPath, args, { stdio: "inherit" });
 		child.once("error", (error) => {
 			console.error(`Failed to start tests for ${workspace}: ${error.message}`);
