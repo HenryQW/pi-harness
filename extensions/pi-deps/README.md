@@ -35,7 +35,9 @@ Only tools that run `post-checkout` prepare dependencies. `git worktree add --no
 
 Results go to `<worktree>/.context/pi-harness/pi-deps/status.json`; command output goes to adjacent `install.log`. Non-Pi consumers must use these paths too.
 
-The first Pi TUI session to report a completed result removes the status file. RPC, JSON, and print sessions neither show nor consume it. The state directory uses mode `0700`; status and log files use mode `0600` (owner access only). These files can make the Git worktree dirty. The installer log can contain sensitive output. Inspect it before you share or stage it; the extension does not change ignore rules.
+The first Pi TUI session to report a completed result removes the status file. RPC, JSON, and print sessions neither show nor consume it. The state directory uses mode `0700`; status and log files use mode `0600` (owner access only).
+
+These files can make the Git worktree dirty. If `.context/` is not ignored, pi-subagent and `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows. The installer log can contain sensitive output. Inspect it before you share or stage it; the extension does not change ignore rules.
 
 ### Migration to version 4
 
@@ -92,7 +94,7 @@ Only Git-root lockfiles count. Package managers handle root npm and uv workspace
 | `.pnp.cjs` | Yarn only |
 | `.venv` | uv |
 
-After ten minutes, the TUI watcher stops waiting, clears the footer, and reports the log path. It preserves a pending status so that a late installer result is not lost. It stops watching, not the installer. Open Pi again to read the result.
+After ten minutes, the TUI watcher stops waiting, clears the footer, and reports the log path. It preserves a pending status so that a late installer result is not lost. It stops watching, not the installer. Open Pi again to read the result. If an installer stopped without a result, confirm that no install process remains. Then remove `<worktree>/.context/pi-harness/pi-deps/status.json`.
 
 Closing Pi stops its watcher and animation, but does not cancel the installer or consume its pending result.
 
