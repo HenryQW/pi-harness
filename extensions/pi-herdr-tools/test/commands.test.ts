@@ -336,7 +336,8 @@ test("runner death cannot authorize a replacement runner or release its checkout
 	assert.doesNotThrow(() => process.kill(pid, 0));
 });
 
-test("shared nested config loads without warnings; completion waits for its branch and survives reload and rewind", async (t) => {
+for (const [command, state, exitCode] of [["printf once", "succeeded", 0], ["printf failed >&2; exit 7", "failed", 7]] as const)
+test(`shared nested config loads without warnings; ${state} completion requests one turn on its idle launch branch across reload and rewind`, async (t) => {
 	const root = await environment(t);
 	const configDir = join(root, "config", "pi-herdr-tools");
 	await mkdir(configDir, { recursive: true });
@@ -344,7 +345,7 @@ test("shared nested config loads without warnings; completion waits for its bran
 	const notifications: string[] = [];
 	const sessionManager = SessionManager.inMemory(root);
 	const firstEntry = sessionManager.appendMessage({ role: "user", content: "run a command", timestamp: Date.now() });
-	const launchInput = { action: "launch", command: "printf once", access: "write" };
+	const launchInput = { action: "launch", command, access: "write" };
 	const launchEntry = sessionManager.appendMessage({ role: "assistant",
 		content: [{ type: "toolCall", id: "call", name: "background_command", arguments: launchInput },
 			{ type: "toolCall", id: "sibling", name: "read", arguments: { path: "README.md" } }],
@@ -353,8 +354,9 @@ test("shared nested config loads without warnings; completion waits for its bran
 	});
 	sessionManager.appendMessage({ role: "toolResult", toolCallId: "sibling", toolName: "read",
 		content: [{ type: "text", text: "sibling result" }], isError: false, timestamp: Date.now() });
-	let sent = 0;
+	const sent: Parameters<ExtensionAPI["sendMessage"]>[0][] = [];
 	const deliveryOptions: Array<{ triggerTurn: boolean; deliverAs: string }> = [];
+	const turnRequests: boolean[] = [];
 	let pendingMessage: any;
 	let idle = false;
 	const ctx = { cwd: root, sessionManager, hasUI: true, ui: { notify: (message: string) => notifications.push(message) }, isIdle: () => idle } as unknown as ExtensionContext;
@@ -363,7 +365,8 @@ test("shared nested config loads without warnings; completion waits for its bran
 		let tool: any;
 		const api = { ...h.pi, registerTool(value: any) { tool = value; }, registerCommand() {}, sendMessage(message: any, options: any) {
 			deliveryOptions.push(options);
-			sent++; pendingMessage = message; idle = false;
+			turnRequests.push(options?.triggerTurn === true);
+			sent.push(message); pendingMessage = message; idle = false;
 		} } as unknown as ExtensionAPI;
 		const manager = registerCommands(api);
 		return { h, manager, tool };
@@ -377,30 +380,36 @@ test("shared nested config loads without warnings; completion waits for its bran
 	assert.equal(job.spec.outputBytes, policy.outputBytes);
 	assert.deepEqual(notifications, []);
 	await start(job.dir, job.spec).done;
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const idleChecks = t.mock.method(ctx, "isIdle");
 	await first.h.event("session_start", {}, ctx);
+	t.mock.timers.tick(1000);
+	await waitFor(async () => idleChecks.mock.callCount() > 0 ? true : undefined);
 	await first.h.event("session_shutdown", {}, ctx);
-	assert.equal(sent, 0);
+	assert.equal(sent.length, 0);
 	idle = true;
 	sessionManager.branch(firstEntry);
 	const branchReads = t.mock.method(sessionManager, "getBranch");
-	t.mock.timers.enable({ apis: ["setInterval"] });
 	const reloaded = load();
 	t.after(() => reloaded.h.event("session_shutdown", {}, ctx));
 	await reloaded.h.event("session_start", {}, ctx);
 	t.mock.timers.tick(1000);
 	await waitFor(async () => branchReads.mock.callCount() > 0 ? true : undefined);
-	assert.equal(sent, 0);
+	assert.equal(sent.length, 0);
 	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
-	assert.equal((await reloaded.manager.get(job.spec.id)).state, "succeeded");
+	assert.equal((await reloaded.manager.get(job.spec.id)).state, state);
 	sessionManager.branch(launchEntry);
 	t.mock.timers.tick(1000);
-	await waitFor(async () => sent === 1 ? true : undefined);
+	await waitFor(async () => sent.length === 1 ? true : undefined);
 	assert.deepEqual(deliveryOptions, [{ triggerTurn: true, deliverAs: "followUp" }]);
+	assert.deepEqual(turnRequests, [true]);
+	assert.equal(sent[0]!.content, `Background command ${job.spec.id}: ${state}. Output: ${job.outputPath}. Inspect the result and continue the user's request if needed.`);
+	assert.equal((sent[0]!.details as { exitCode: number }).exitCode, exitCode);
 	assert.equal(await readPrivate(join(job.dir, "delivered.json")), undefined);
 	idle = true;
 	const previousReads = branchReads.mock.callCount();
 	await waitFor(async () => { t.mock.timers.tick(1000); return branchReads.mock.callCount() > previousReads ? true : undefined; });
-	assert.equal(sent, 1);
+	assert.equal(sent.length, 1);
 	sessionManager.appendCustomMessageEntry(pendingMessage.customType, pendingMessage.content, pendingMessage.display, pendingMessage.details);
 	await waitFor(async () => { t.mock.timers.tick(1000); return await readPrivate(join(job.dir, "delivered.json")); });
 	await reloaded.h.event("session_shutdown", {}, ctx);
@@ -412,5 +421,6 @@ test("shared nested config loads without warnings; completion waits for its bran
 	await rewound.h.event("session_start", {}, ctx);
 	t.mock.timers.tick(1000);
 	await waitFor(async () => await readPrivate(join(job.dir, "delivered.json")));
-	assert.equal(sent, 1);
+	assert.equal(sent.length, 1);
+	assert.deepEqual(turnRequests, [true]);
 });

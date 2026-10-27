@@ -141,7 +141,7 @@ The specification is saved before dispatch. A one-time claim prevents duplicate 
 
 The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice.
 
-Delivery starts a model turn to inspect the result and continue the request if necessary. If the turn cannot start, Pi reports an error; reload the session to retry an unrecorded notice. A saved delivery record and the session history prevent duplicate notices, including after rewind.
+After a success or failure, delivery requests one model turn. The agent can inspect the result and continue the request if needed. If Pi cannot start the turn, Pi reports an error. Reload the session to retry a notice that is not in the session history. The delivery record and session history prevent duplicate notices and turn requests after a rewind.
 
 ### Worktree completion
 
