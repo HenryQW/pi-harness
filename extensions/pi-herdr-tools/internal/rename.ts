@@ -6,6 +6,7 @@ import {
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import { executeTaskRoutes, registerModelTask, registerTaskModelsConfigReporting, type ModelTask, type ResolvedTaskRoute } from "@henryqw/pi-task-models";
 import { configuredTaskRoutes } from "./task-models.ts";
+import { withMainTab } from "./main-tab.ts";
 
 const WIDGET_KEY = "pi-herdr-rename";
 const WIDGET_RESULT_MS = 2_000;
@@ -217,12 +218,14 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		displayTitle: string,
 		branchCandidate: string,
 		previousDisplayTitle: string | undefined,
-		forceWorkspaceRename: boolean,
+		manual: boolean,
 		request: number,
 		controller: AbortController,
+		ctx: ExtensionContext,
 	): Promise<void> => {
 		const paneId = process.env.HERDR_PANE_ID;
 		if (process.env.HERDR_ENV !== "1" || !paneId) return;
+		if (!manual && process.env.PI_SUBAGENT_PROCESS_LEASE !== undefined) return;
 
 		if (!isCurrent(request, controller)) return;
 		await herdr.run(["pane", "rename", paneId, displayTitle], { signal: controller.signal });
@@ -236,52 +239,53 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 
 		const tabResponse: unknown = await herdr.json(["tab", "get", tabId], { signal: controller.signal });
 		const paneCount = (tabResponse as { result?: { tab?: { pane_count?: unknown } } }).result?.tab?.pane_count;
-		if (typeof paneCount !== "number") throw new Error("Herdr tab response omitted pane_count.");
+		if (!Number.isSafeInteger(paneCount) || Number(paneCount) < 1) throw new Error("Herdr tab response has invalid pane_count.");
 		if (paneCount === 1 && isCurrent(request, controller)) {
 			await herdr.run(["tab", "rename", tabId, displayTitle], { signal: controller.signal });
 		}
 		if (!isCurrent(request, controller)) return;
 
-		const workspaceId = pane?.workspace_id;
-		if (typeof workspaceId !== "string" || !workspaceId) throw new Error("Herdr pane response omitted workspace_id.");
-		const workspaceResponse: unknown = await herdr.json(["workspace", "get", workspaceId], { signal: controller.signal });
-		const workspace = (workspaceResponse as { result?: { workspace?: { label?: unknown; worktree?: { checkout_path?: unknown; is_linked_worktree?: unknown } } } }).result?.workspace;
-		const workspaceName = workspace?.label;
-		if (typeof workspaceName !== "string") throw new Error("Herdr workspace response omitted label.");
-		const worktree = workspace?.worktree;
-		if (
-			workspaceName !== displayTitle &&
-			(forceWorkspaceRename ||
-				(worktree?.is_linked_worktree === true &&
-					(HERDR_DEFAULT_WORKTREE_NAME.test(workspaceName) || workspaceName === previousDisplayTitle))) &&
-			isCurrent(request, controller)
-		) {
-			await herdr.run(["workspace", "rename", workspaceId, displayTitle], { signal: controller.signal });
-		}
-
-		const checkoutPath = worktree?.checkout_path;
-		if (worktree?.is_linked_worktree !== true || typeof checkoutPath !== "string" || !checkoutPath) return;
-
-		const runGit = async (args: string[]) => {
-			const result = await pi.exec("git", args, { cwd: checkoutPath, signal: controller.signal });
-			if (result.code !== 0 || result.killed) {
-				throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim() || (result.killed ? "killed" : `exit ${result.code}`)}`);
-			}
-			return result.stdout.trim();
-		};
-
-		await withWorktreeLock(checkoutPath, async () => {
-			if (!isCurrent(request, controller)) return;
-			const branch = await runGit(["branch", "--show-current"]);
-			if (!branch || branch.startsWith("worktree/")) {
+		try {
+			const selected = await withMainTab(herdr, paneId, controller.signal, "auto", async (location, revalidate) => {
 				if (!isCurrent(request, controller)) return;
-				const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
-					.split("\n")
-					.filter(Boolean);
-				const semanticBranch = availableBranch(branchCandidate, branches);
-				await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
+				if (location.paneCount !== 1) {
+					ctx.ui.notify("This tab has multiple panes. Workspace title and branch are unchanged. Use /main-tab to copy the existing tab label.", "warning");
+					return;
+				}
+				const { workspaceId, workspaceLabel, checkoutPath, isLinkedWorktree } = location;
+				if (workspaceLabel !== displayTitle && (manual || (isLinkedWorktree &&
+					(HERDR_DEFAULT_WORKTREE_NAME.test(workspaceLabel) || workspaceLabel === previousDisplayTitle)))) {
+					await revalidate();
+					await herdr.run(["workspace", "rename", workspaceId, displayTitle], { signal: controller.signal });
+				}
+				if (!isLinkedWorktree || !isCurrent(request, controller)) return;
+				const runGit = async (args: string[]) => {
+					const result = await pi.exec("git", args, { cwd: checkoutPath, signal: controller.signal });
+					if (result.code !== 0 || result.killed) {
+						throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim() || result.stdout.trim() || (result.killed ? "killed" : `exit ${result.code}`)}`);
+					}
+					return result.stdout.trim();
+				};
+				// Lock order is state directory, then checkout. Selection never takes the checkout lock.
+				await withWorktreeLock(checkoutPath, async () => {
+					if (!isCurrent(request, controller)) return;
+					const branch = await runGit(["branch", "--show-current"]);
+					if (!branch || branch.startsWith("worktree/")) {
+						if (!isCurrent(request, controller)) return;
+						const branches = (await runGit(["for-each-ref", "--format=%(refname:short)", "refs/heads"]))
+							.split("\n").filter(Boolean);
+						const semanticBranch = availableBranch(branchCandidate, branches);
+						await revalidate();
+						await runGit(branch ? ["branch", "-m", semanticBranch] : ["switch", "-c", semanticBranch]);
+					}
+				});
+			});
+			if (isCurrent(request, controller) && (selected.selection === "stale-token" || selected.selection === "unselected")) {
+				ctx.ui.notify("Workspace title and branch are unchanged. Run /main-tab in the intended main tab to confirm its selection.", "warning");
 			}
-		});
+		} catch (error) {
+			if (isCurrent(request, controller)) ctx.ui.notify(`Workspace title or branch synchronization failed: ${error instanceof Error ? error.message : "Unknown error."}`, "warning");
+		}
 	};
 
 	const begin = () => {
@@ -308,7 +312,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 			const previousDisplayTitle = saved && pi.getSessionName() === saved.display ? saved.display : undefined;
 			pi.setSessionName(title.display);
 			pi.appendEntry(TITLE_STATE_TYPE, title);
-			await applyHerdr(title.display, title.branch, previousDisplayTitle, manual, request, controller);
+			await applyHerdr(title.display, title.branch, previousDisplayTitle, manual, request, controller, ctx);
 			return title.display;
 		} catch (error) {
 			if (isCurrent(request, controller)) {
@@ -340,7 +344,7 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		if (!title || title !== saved?.display) return;
 
 		const { request, controller } = begin();
-		void applyHerdr(title, saved.branch, saved.display, false, request, controller)
+		void applyHerdr(title, saved.branch, saved.display, false, request, controller, ctx)
 			.catch((error) => {
 				if (isCurrent(request, controller)) {
 					ctx.ui.notify(error instanceof Error ? error.message : "Rename failed.", "warning");
@@ -371,6 +375,40 @@ export default function herdrRenameExtension(pi: ExtensionAPI): void {
 		active = undefined;
 		automaticPending = false;
 		sequence++;
+	});
+
+	pi.registerCommand("main-tab", {
+		description: "Select this main tab and copy its existing label to the workspace",
+		handler: async (_args, ctx) => {
+			const paneId = process.env.HERDR_PANE_ID;
+			if (process.env.HERDR_ENV !== "1" || !paneId) {
+				ctx.ui.notify("/main-tab requires a Herdr pane.", "warning");
+				return;
+			}
+			clearWidget(ctx);
+			automaticPending = false;
+			const { request, controller } = begin();
+			try {
+				const selected = await withMainTab(herdr, paneId, controller.signal, "select", async (location, revalidate) => {
+					// Numeric labels and generic terminal labels do not describe the workspace.
+					if (/^(?:\d+|tab(?:\s+\d+)?|shell|terminal|untitled)$/i.test(location.tabLabel.trim())) return false;
+					if (!isCurrent(request, controller)) return false;
+					if (location.workspaceLabel !== location.tabLabel) {
+						await revalidate();
+						await herdr.run(["workspace", "rename", location.workspaceId, location.tabLabel], { signal: controller.signal });
+					}
+					return true;
+				});
+				if (isCurrent(request, controller) && selected.selection === "main") {
+					ctx.ui.notify(selected.value ? `Main tab selected. Workspace title: ${selected.tabLabel}`
+						: "Main tab selected. Name the tab, then run /main-tab to copy its label.", "info");
+				}
+			} catch (error) {
+				if (isCurrent(request, controller)) ctx.ui.notify(`Main-tab selection failed: ${error instanceof Error ? error.message : "Unknown error."}`, "warning");
+			} finally {
+				finish(request, controller);
+			}
+		},
 	});
 
 	pi.registerCommand("rename", {
