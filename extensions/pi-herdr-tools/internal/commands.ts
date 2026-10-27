@@ -199,7 +199,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 						(entry.details as { runnerId?: string }).runnerId === job.claim?.runnerId);
 					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
 					if (!recorded && !ctx.sessionManager.getBranch().some((entry) => entry.id === job.spec.callEntryId)) return;
-					if (!recorded) pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}`, display: true, details: summary(job) }, { triggerTurn: false });
+					if (!recorded) pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}`, display: true, details: summary(job) }, { triggerTurn: true });
 					await writePrivate(join(job.dir, "delivered.json"), { id: job.spec.id, runnerId: job.claim!.runnerId });
 				});
 			}
