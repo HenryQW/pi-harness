@@ -89,6 +89,13 @@ export class PullRequestLoadError extends Error {
 	}
 }
 
+export class GitHubRepositoryLookupError extends PullRequestLoadError {
+	constructor(message: string) {
+		super(message);
+		this.name = "GitHubRepositoryLookupError";
+	}
+}
+
 export class GitHubRateLimitError extends PullRequestLoadError {
 	constructor() {
 		super("GitHub API rate limit exhausted; retry after GitHub resets it");
@@ -1238,10 +1245,16 @@ async function readRemoteAuthority(
 			return parseRemoteUrl(urls[0], kind);
 		};
 		const readRepository = async (remoteUrl: PushUrl, kind: "push" | "fetch"): Promise<string> => {
-			const result = await execute(pi, context, `Read ${kind} repository`, "gh", [
-				"repo", "view", remoteUrl.locator, "--json", "nameWithOwner,url",
-			]);
-			return result.stdout;
+			try {
+				const result = await execute(pi, context, `Read ${kind} repository`, "gh", [
+					"repo", "view", remoteUrl.locator, "--json", "nameWithOwner,url",
+				]);
+				return result.stdout;
+			} catch (error) {
+				if (error instanceof GitHubRateLimitError) throw error;
+				if (error instanceof PullRequestLoadError) throw new GitHubRepositoryLookupError(error.message);
+				throw error;
+			}
 		};
 
 		const pushUrl = await readUrl("push");
@@ -1256,7 +1269,7 @@ async function readRemoteAuthority(
 		) fail("Read fetch repository", "fetch and push repositories do not match");
 		return { fetchSource: pushUrl.fetchSource, repository: pushRepository };
 	} catch (error) {
-		if (error instanceof GitHubRateLimitError) throw error;
+		if (error instanceof GitHubRateLimitError || error instanceof GitHubRepositoryLookupError) throw error;
 		if (!strict && error instanceof PullRequestLoadError) return null;
 		throw error;
 	}

@@ -25,6 +25,8 @@ import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/
 import type { PrCommandHandler } from "../extensions/pr-command.ts";
 import {
 	GitHubRateLimitError,
+	GitHubRepositoryLookupError,
+	PullRequestLoadError,
 	pullRequestObservation,
 	type CurrentPullRequest,
 	type CurrentPullRequestDiscovery,
@@ -2474,6 +2476,99 @@ test("polls an idle transient PR with backoff until its state is terminal", asyn
 		await advance(3_600_000);
 		assert.equal(loads, 5, "a terminal state stops polling");
 	} finally { await app.shutdown(ctx); }
+});
+
+test("retries repository lookup outages with idle backoff and recovers without user action", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	let idle = false;
+	const app = harness({
+		isIdle: () => idle,
+		async load() {
+			if (++loads < 7) throw new GitHubRepositoryLookupError("Read push repository failed: exit code 1");
+			return currentPullRequest({ conditions: { ci: "failure" } });
+		},
+	});
+	const ctx = app.context();
+	const advance = async (ms: number) => { t.mock.timers.tick(ms); await flush(); };
+	try {
+		await app.start(ctx);
+		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR · status unavailable");
+		await advance(30_000);
+		assert.equal(loads, 1, "busy sessions do not retry");
+		idle = true;
+		for (const delay of [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]) {
+			await advance(delay - 1);
+			const before: number = loads;
+			await advance(1);
+			assert.equal(loads, before + 1);
+		}
+		assert.equal(loads, 7);
+		assert.match(plain(app.statuses.at(-1) ?? ""), /PR #42.*CI failed/);
+		assert.deepEqual(app.widgets.at(-1), widgetLine("✗ Run /pr to fix CI"));
+		assert.equal(app.notifications.length, 1);
+		await advance(3_600_000);
+		assert.equal(loads, 7, "a recovered final state stops retries");
+	} finally { await app.shutdown(ctx); }
+});
+
+test("repository lookup retry stops when discovery finds invalid target configuration", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	const app = harness({ async load() {
+		if (++loads === 1) throw new GitHubRepositoryLookupError("Read push repository failed: exit code 1");
+		return { kind: "blocked", issue: { kind: "target-invalid" } };
+	} });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		t.mock.timers.tick(30_000);
+		await flush();
+		assert.match(plain(app.statuses.at(-1) ?? ""), /discovery blocked/);
+		t.mock.timers.tick(3_600_000);
+		await flush();
+		assert.equal(loads, 2);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("repository lookup retry stops on configured target validation failure", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	const app = harness({ async load() {
+		if (++loads === 1) throw new GitHubRepositoryLookupError("Read push repository failed: exit code 1");
+		throw new PullRequestLoadError("fetch and push repositories do not match");
+	} });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		t.mock.timers.tick(30_000);
+		await flush();
+		t.mock.timers.tick(3_600_000);
+		await flush();
+		assert.equal(loads, 2);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("repository lookup retry stops on quota failure or shutdown", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let loads = 0;
+	const app = harness({ async load() {
+		if (++loads === 1) throw new GitHubRepositoryLookupError("Read push repository failed: exit code 1");
+		throw new GitHubRateLimitError();
+	} });
+	const ctx = app.context();
+	await app.start(ctx);
+	t.mock.timers.tick(30_000);
+	await flush();
+	assert.equal(loads, 2);
+	assert.match(app.notifications.at(-1)?.message ?? "", /rate limit exhausted/);
+	t.mock.timers.tick(3_600_000);
+	await flush();
+	assert.equal(loads, 2);
+	await app.shutdown(ctx);
+	t.mock.timers.tick(3_600_000);
+	await flush();
+	assert.equal(loads, 2);
 });
 
 test("defers polling while busy and stops polling at shutdown", async (t) => {
