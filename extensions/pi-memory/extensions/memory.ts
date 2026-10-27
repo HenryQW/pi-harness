@@ -397,7 +397,9 @@ async function loadDreamSnapshot(config: MemoryConfig, stores: Record<Target, Me
 	const filename = snapshot.system.state === "present" ? "SYSTEM.md" : "APPEND_SYSTEM.md";
 	const path = join(getAgentDir(), filename);
 	try {
-		if ((await lstat(path)).isSymbolicLink()) throw new MemoryReviewError(`Agent-global ${filename} must not be a symlink.`);
+		const metadata = await lstat(path);
+		if (metadata.isSymbolicLink()) throw new MemoryReviewError(`Agent-global ${filename} must not be a symlink.`);
+		if (!metadata.isFile()) throw new MemoryReviewError(`Agent-global ${filename} is unreadable: expected a regular file (${path}).`);
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}

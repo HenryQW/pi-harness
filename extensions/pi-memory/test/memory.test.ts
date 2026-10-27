@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs, { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -723,6 +724,18 @@ test("/dream rejects invalid prompt targets without fallback or entry removal", 
 			});
 		}
 	}
+});
+
+test("/dream rejects a named pipe append target before reading it", { skip: process.platform === "win32" }, async () => {
+	await withReviewFixture({ memory: "entry", user: "preference" }, async ({ agentDir, memoryDir, commands, ctx, calls, notifications }) => {
+		const path = join(agentDir, "APPEND_SYSTEM.md");
+		execFileSync("mkfifo", [path]);
+		await commands.get("dream")!.handler("", ctx);
+		assert.match(notifications.at(-1)!, /APPEND_SYSTEM\.md.*expected a regular file/);
+		assert.equal(calls.length, 0);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "entry");
+		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "preference");
+	});
 });
 
 test("/dream stops when prompt selection, prompt state, or either store changes during approval", async () => {
