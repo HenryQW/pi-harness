@@ -60,6 +60,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	git(root, "init", "-q", "-b", "main");
 	git(root, "config", "user.name", "Subagent Test");
 	git(root, "config", "user.email", "subagent@example.com");
+	git(root, "config", "commit.gpgsign", "false");
 	await writeFile(join(root, "base.txt"), "base\n");
 	git(root, "add", "base.txt");
 	git(root, "commit", "-qm", "base");
@@ -373,34 +374,6 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 		}, context()), candidate);
 	});
 
-	await t.test("ownership", async (t) => {
-		const definition = task("ownership");
-		const setup = await prepared(t, definition);
-		setup.intent.status = "absent";
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /owned worktree allocation metadata/);
-	});
-
-	await t.test("registration", async (t) => {
-		const definition = task("registration");
-		const setup = await prepared(t, definition);
-		git(setup.root, "worktree", "remove", "--force", setup.intent.worktree!.path);
-		await mkdir(setup.intent.worktree!.path, { recursive: true });
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /not registered/);
-	});
-
-	await t.test("checked-out branch", async (t) => {
-		const definition = task("branch");
-		const setup = await prepared(t, definition);
-		git(setup.intent.worktree!.cwd, "checkout", "-qb", "unexpected-branch");
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /moved off its owned branch/);
-	});
-
 	await t.test("branch tip", async (t) => {
 		let recordedBranch: string | undefined;
 		const runtime = new CheckedGitRuntime({
@@ -421,45 +394,38 @@ test("pre-prompt inspection proves exact owned worktree identity and fails close
 		}, context()), /failed with exit 128: injected branch-tip failure/);
 	});
 
-	await t.test("ignored dependency artifacts do not dirty a candidate", async (t) => {
-		const definition = task("ignored-prompt");
+	await t.test("worktree identity, clean state, and wave base", async (t) => {
+		const definition = task("identity");
 		const setup = await prepared(t, definition);
-		await writeFile(join(setup.root, ".git", "info", "exclude"), "\nnode_modules/\n", { flag: "a" });
-		await mkdir(join(setup.intent.worktree!.cwd, "node_modules"));
-		await writeFile(join(setup.intent.worktree!.cwd, "node_modules", "generated"), "ignored\n");
-		const candidate = await setup.runtime.inspectTaskCandidate({
+		const worktree = setup.intent.worktree!;
+		const inspect = () => setup.runtime.inspectTaskCandidate({
 			root: setup.root, task: definition, attempt: setup.attempt,
 		}, context());
+
+		setup.intent.status = "absent";
+		await assert.rejects(inspect(), /owned worktree allocation metadata/);
+		setup.intent.status = "owned";
+		await writeFile(join(setup.root, ".git", "info", "exclude"), "\nnode_modules/\n", { flag: "a" });
+		await mkdir(join(worktree.cwd, "node_modules"));
+		await writeFile(join(worktree.cwd, "node_modules", "generated"), "ignored\n");
+		const candidate = await inspect();
 		assert.equal(candidate.head, setup.base.head);
 		assert.equal(candidate.index, setup.base.index);
 		assert.equal(candidate.tree, setup.base.tree);
-	});
 
-	await t.test("dirty candidate", async (t) => {
-		const definition = task("dirty-prompt");
-		const setup = await prepared(t, definition);
-		await writeFile(join(setup.intent.worktree!.cwd, "untracked.txt"), "dirty\n");
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /tracked|dirty|inspection|workspace is not clean/i);
-	});
-
-	await t.test("gitlink", async (t) => {
-		const definition = task("gitlink-prompt");
-		const setup = await prepared(t, definition);
-		git(setup.intent.worktree!.cwd, "update-index", "--add", "--cacheinfo", `160000,${setup.base.head},nested`);
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /160000|gitlink/);
-	});
-
-	await t.test("initial wave base", async (t) => {
-		const definition = task("base");
-		const setup = await prepared(t, definition);
-		await commit(setup.intent.worktree!.cwd, "advanced.txt", "advanced\n");
-		await assert.rejects(setup.runtime.inspectTaskCandidate({
-			root: setup.root, task: definition, attempt: setup.attempt,
-		}, context()), /initial prompt.*recorded wave base/);
+		await writeFile(join(worktree.cwd, "untracked.txt"), "dirty\n");
+		await assert.rejects(inspect(), /tracked|dirty|inspection|workspace is not clean/i);
+		await rm(join(worktree.cwd, "untracked.txt"));
+		git(worktree.cwd, "update-index", "--add", "--cacheinfo", `160000,${setup.base.head},nested`);
+		await assert.rejects(inspect(), /160000|gitlink/);
+		git(worktree.cwd, "update-index", "--force-remove", "nested");
+		await commit(worktree.cwd, "advanced.txt", "advanced\n");
+		await assert.rejects(inspect(), /initial prompt.*recorded wave base/);
+		git(worktree.cwd, "checkout", "-qb", "unexpected-branch");
+		await assert.rejects(inspect(), /moved off its owned branch/);
+		git(setup.root, "worktree", "remove", "--force", worktree.path);
+		await mkdir(worktree.path, { recursive: true });
+		await assert.rejects(inspect(), /not registered/);
 	});
 });
 
@@ -560,28 +526,24 @@ test("initialized, uninitialized, and worker-added gitlinks are rejected", async
 });
 
 test("candidate inspection rejects zero commits, dirty bytes, and hidden index state", async (t) => {
-	for (const kind of ["zero", "dirty", "hidden"] as const) {
-		await t.test(kind, async (t) => {
-			const root = await repository(t);
-			const runtime = new CheckedGitRuntime();
-			const base = await runtime.inspectMain({ root }, context());
-			const allocated = await allocate(runtime, root, task(kind), base, `token-${kind}-00000001`);
-			const worktree = allocated.intent.worktree!;
-			if (kind === "dirty") await writeFile(join(worktree.cwd, "untracked.txt"), "dirty\n");
-			if (kind === "hidden") {
-				await commit(worktree.cwd, "change.txt", "committed\n");
-				git(worktree.cwd, "update-index", "--skip-worktree", "base.txt");
-				await writeFile(join(worktree.cwd, "base.txt"), "hidden\n");
-			}
-			await assert.rejects(
-				runtime.inspectRetainedTask({ root, task: task(kind), attempt: allocated.attempt }, context()),
-				kind === "zero" ? /no committed change/ : /tracked|hidden|skip-worktree|inspection|workspace is not clean/i,
-			);
-		});
-	}
+	const root = await repository(t);
+	const runtime = new CheckedGitRuntime();
+	const definition = task("candidate");
+	const base = await runtime.inspectMain({ root }, context());
+	const allocated = await allocate(runtime, root, definition, base, "token-candidate-00000001");
+	const worktree = allocated.intent.worktree!;
+	const inspect = () => runtime.inspectRetainedTask({ root, task: definition, attempt: allocated.attempt }, context());
+	await assert.rejects(inspect(), /no committed change/);
+	await writeFile(join(worktree.cwd, "untracked.txt"), "dirty\n");
+	await assert.rejects(inspect(), /tracked|hidden|skip-worktree|inspection|workspace is not clean/i);
+	await rm(join(worktree.cwd, "untracked.txt"));
+	await commit(worktree.cwd, "change.txt", "committed\n");
+	git(worktree.cwd, "update-index", "--skip-worktree", "base.txt");
+	await writeFile(join(worktree.cwd, "base.txt"), "hidden\n");
+	await assert.rejects(inspect(), /tracked|hidden|skip-worktree|inspection|workspace is not clean/i);
 });
 
-test("final review resolves a canonical Main worktree root without changing the launch subdirectory", async (t) => {
+test("final review uses the correct directory and cleans up its launch", async (t) => {
 	const root = await repository(t);
 	const subdirectory = join(root, "nested");
 	await mkdir(subdirectory);
@@ -623,14 +585,6 @@ test("final review resolves a canonical Main worktree root without changing the 
 		&& options.signal === operationContext.signal
 		&& (options.timeoutMs ?? 0) > 0
 		&& (options.timeoutMs ?? 0) <= (operationContext.timeoutMs ?? 0)));
-});
-
-test("Reviewer launch cleanup runs after success, failure, and abort, and cleanup errors surface", async (t) => {
-	const root = await repository(t);
-	const baseRuntime = new CheckedGitRuntime();
-	const base = await baseRuntime.inspectMain({ root }, context());
-	await commit(root, "reviewed.txt", "reviewed\n");
-	const tip = await baseRuntime.inspectMain({ root }, context());
 
 	for (const outcome of ["success", "failure", "abort"] as const) {
 		await t.test(outcome, async () => {

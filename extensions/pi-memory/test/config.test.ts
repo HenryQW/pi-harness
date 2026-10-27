@@ -21,7 +21,7 @@ async function writeConfig(agentDir: string, contents: string): Promise<string> 
 	return path;
 }
 
-test("absent config returns defaults without creating its home", async () => {
+test("missing and valid configs load without unexpected writes", async () => {
 	await withAgentDir(async (agentDir) => {
 		const store = memoryConfigStore(agentDir);
 		assert.deepEqual(store.loadSync(), {
@@ -35,11 +35,6 @@ test("absent config returns defaults without creating its home", async () => {
 			issues: [],
 		});
 		await assert.rejects(readFile(store.path, "utf8"), { code: "ENOENT" });
-	});
-});
-
-test("valid full config is accepted", async () => {
-	await withAgentDir(async (agentDir) => {
 		await writeConfig(agentDir, JSON.stringify({ directory: "/tmp/memory", memoryCharLimit: 42, userCharLimit: 7 }));
 		assert.deepEqual(memoryConfigStore(agentDir).loadSync(), {
 			status: "ok",

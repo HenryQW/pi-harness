@@ -19,6 +19,7 @@ async function repository(t: import("node:test").TestContext): Promise<string> {
 	git(path, "init", "-q");
 	git(path, "config", "user.name", "Test");
 	git(path, "config", "user.email", "test@example.com");
+	git(path, "config", "commit.gpgsign", "false");
 	await writeFile(join(path, "tracked.txt"), "base\n");
 	git(path, "add", ".");
 	git(path, "commit", "-qm", "base");
@@ -153,18 +154,15 @@ async function candidate(
 	t: import("node:test").TestContext,
 	repo: string,
 	name: string,
-	change = true,
 ): Promise<{ base: string; tip: string; worktree: string }> {
 	const base = git(repo, "rev-parse", "HEAD");
 	const parent = await mkdtemp(join(tmpdir(), "pi-subagent-review-worktree-"));
 	const worktree = join(parent, name);
 	t.after(async () => { await rm(parent, { recursive: true, force: true }); });
 	git(repo, "worktree", "add", "-qb", `test/${name}`, worktree, base);
-	if (change) {
-		await writeFile(join(worktree, "changed.txt"), "changed\n");
-		git(worktree, "add", ".");
-		git(worktree, "commit", "-qm", "change");
-	}
+	await writeFile(join(worktree, "changed.txt"), "changed\n");
+	git(worktree, "add", ".");
+	git(worktree, "commit", "-qm", "change");
 	return { base, tip: git(worktree, "rev-parse", "HEAD"), worktree };
 }
 
@@ -207,7 +205,7 @@ process.exit(7);
 }
 
 test("exact evidence preserves its 200-character ordinary Git diagnostic cap", async (t) => {
-	const context = await candidate(t, await repository(t), "diagnostic");
+	const context = { base: "a".repeat(40), tip: "b".repeat(40), worktree: process.cwd() };
 	const stderr = "x".repeat(201);
 	await withFakeGit(t, stderr, async () => {
 		await assert.rejects(prepareExactReviewEvidence(context), (error: unknown) => {
@@ -219,7 +217,7 @@ test("exact evidence preserves its 200-character ordinary Git diagnostic cap", a
 	});
 });
 
-test("exact evidence creates one private binary patch and idempotently cleans it up", async (t) => {
+test("exact evidence creates private binary and empty patches and cleans them up", async (t) => {
 	const repo = await repository(t);
 	const context = await candidate(t, repo, "patch");
 	const directories = trackEvidenceDirectories(t);
@@ -241,14 +239,11 @@ test("exact evidence creates one private binary patch and idempotently cleans it
 	assert.equal(existsSync(evidence.patchPath), false);
 	assert.equal(directories.length, 1);
 	assertEvidenceDirectoriesRemoved(directories);
-});
 
-test("exact evidence accepts an empty base-to-tip patch", async (t) => {
-	const context = await candidate(t, await repository(t), "empty", false);
-	const evidence = await prepareExactReviewEvidence(context);
-	assert.deepEqual(evidence.changedPaths, []);
-	assert.equal((await stat(evidence.patchPath)).size, 0);
-	await evidence.cleanup();
+	const empty = await prepareExactReviewEvidence({ ...context, base: context.tip });
+	assert.deepEqual(empty.changedPaths, []);
+	assert.equal((await stat(empty.patchPath)).size, 0);
+	await empty.cleanup();
 });
 
 test("exact evidence cleans up failed temporary artifact setup", async (t) => {
@@ -289,20 +284,16 @@ test("exact evidence cleans up failed temporary artifact setup", async (t) => {
 	assertEvidenceDirectoriesRemoved(directories);
 });
 
-test("exact evidence rejects assume-unchanged and skip-worktree tracked changes", async (t) => {
+test("exact evidence rejects hidden index flags, dirty work, and wrong-tip worktrees", async (t) => {
+	const context = await candidate(t, await repository(t), "invalid");
 	for (const [enable, disable] of [
 		["--assume-unchanged", "--no-assume-unchanged"],
 		["--skip-worktree", "--no-skip-worktree"],
 	] as const) {
-		const context = await candidate(t, await repository(t), enable);
 		git(context.worktree, "update-index", enable, "tracked.txt");
 		await assert.rejects(prepareExactReviewEvidence(context), /assume-unchanged or skip-worktree/);
 		git(context.worktree, "update-index", disable, "tracked.txt");
 	}
-});
-
-test("exact evidence rejects dirty and wrong-tip registered worktrees", async (t) => {
-	const context = await candidate(t, await repository(t), "invalid");
 	await writeFile(join(context.worktree, "dirty.txt"), "dirty\n");
 	await assert.rejects(prepareExactReviewEvidence(context), /not clean/);
 	await rm(join(context.worktree, "dirty.txt"));

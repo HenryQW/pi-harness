@@ -73,15 +73,6 @@ function seedDeploy() {
 	syncSessions(sessionsDir, dbPath);
 }
 
-/** Seed a Go deployment-strategy session (short term `Go` forces the LIKE path). */
-function seedGoDeployment() {
-	writeFixture("--go-deploy-proj--", "gd.jsonl", [
-		sessionHeader(),
-		msg("gd1", "user", "we chose the Go deployment strategy for the edge service"),
-	]);
-	syncSessions(sessionsDir, dbPath);
-}
-
 describe("sync + BM25 search", () => {
 	it("indexes user/assistant text and finds hits with snippet", () => {
 		writeFixture("--users-tester-proj--", "a.jsonl", [
@@ -111,16 +102,6 @@ describe("sync + BM25 search", () => {
 		assert.equal(think.hits.length, 0);
 	});
 
-	it("reports walkComplete so callers can distinguish partial walks", () => {
-		// Missing sessions root: walk cannot enumerate anything.
-		const res = syncSessions(path.join(tmp, "does-not-exist"), dbPath);
-		assert.equal(res.walkComplete, false);
-		// A normal walk over an existing tree is complete.
-		fs.mkdirSync(sessionsDir);
-		const ok = syncSessions(sessionsDir, dbPath);
-		assert.equal(ok.walkComplete, true);
-	});
-
 	it("re-sync of unchanged file is a no-op; append reindexes; delete purges", () => {
 		seedDeploy();
 		const file = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
@@ -143,7 +124,10 @@ describe("sync + BM25 search", () => {
 		assert.equal(getSessionRows(dbPath, 100).length, 0);
 	});
 
-	it("caps per call, newest-first, reports backlog and catches up", () => {
+	it("reports walk completion, caps each call, and catches up newest-first", () => {
+		assert.equal(syncSessions(path.join(tmp, "does-not-exist"), dbPath).walkComplete, false);
+		fs.mkdirSync(sessionsDir);
+		assert.equal(syncSessions(sessionsDir, dbPath).walkComplete, true);
 		for (let i = 0; i < 5; i++) {
 			writeFixture(`--cap-proj-${i}--`, `${i}.jsonl`, [sessionHeader(), msg("m1", "user", `capfile${i} marker number`)], i * 1000);
 		}
@@ -166,18 +150,32 @@ describe("sync + BM25 search", () => {
 });
 
 describe("sanitize ladder", () => {
-	it("natural language query is quoted term-by-term (implicit AND)", () => {
+	it("plans natural language queries, preserves sigils, and caps query length", () => {
 		const plan = buildFtsQueryPlan('  what about "quoted phrases" and stuff?  ');
 		assert.deepEqual(plan.ftsCandidates[0], `"what" "about" "quoted phrases" "and" "stuff"`);
 		assert.equal(plan.forceLike, false);
+		assert.match(buildFtsQueryPlan("C++ templates").ftsCandidates[0], /"C\+\+"/);
+		assert.ok(buildFtsQueryPlan("x".repeat(600)).ftsCandidates[0].length <= MAX_QUERY_CHARS + 2);
 	});
 
-	it("trailing wildcard keeps FTS5 prefix syntax (bnRnk)", () => {
+	it("searches prefix, malformed, and short queries against the same index", () => {
 		seedDeploy();
-		const plan = buildFtsQueryPlan("deploy*");
-		assert.deepEqual(plan.ftsCandidates[0], `"deploy"*`);
-		const { hits } = searchIndex(dbPath, "deploy*");
-		assert.ok(hits.length >= 1, "prefix query must match indexed deploy text");
+		assert.deepEqual(buildFtsQueryPlan("deploy*").ftsCandidates[0], `"deploy"*`);
+		assert.ok(searchIndex(dbPath, "deploy*").hits.length >= 1, "prefix query must match indexed deploy text");
+		const currentPath = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
+		assert.deepEqual(searchIndex(dbPath, "deploy pipeline", { currentSessionPath: currentPath }).hits, []);
+		assert.deepEqual(buildFtsQueryPlan("(deploy pipeline)").ftsCandidates[0], `"deploy" "pipeline"`);
+		assert.equal(buildFtsQueryPlan("(deploy pipeline)").forceLike, false);
+		assert.ok(searchIndex(dbPath, "(deploy pipeline)").hits.length >= 1);
+		assert.ok(searchIndex(dbPath, 'deploy AND NOT ("unterminated').hits.length >= 1, "malformed query must recover an existing deploy hit");
+		assert.equal(searchIndex(dbPath, "nonexistent AND deploy").hits.length, 0, "zero-row parsed candidate must not broaden to OR/LIKE");
+		const plan = buildFtsQueryPlan("ab cd");
+		assert.equal(plan.forceLike, true);
+		assert.equal(plan.ftsCandidates.length, 0);
+		assert.ok(searchIndex(dbPath, "yml").hits.length >= 1);
+		assert.equal(buildFtsQueryPlan(".y").forceLike, true);
+		assert.ok(searchIndex(dbPath, ".y").hits.length >= 1, "LIKE fallback must match short substrings");
+		assert.equal(searchIndex(dbPath, "*").hits.length, 0, "empty wildcard must not match every session");
 	});
 
 	it("quoted trailing wildcard stays literal (regression)", () => {
@@ -193,48 +191,6 @@ describe("sanitize ladder", () => {
 		assert.ok(!likeHits.some((hit) => hit.path === expanded), "LIKE must not expand a quoted star");
 	});
 
-	it("technical sigils survive boundary normalization (bhZeo)", () => {
-		const plan = buildFtsQueryPlan("C++ templates");
-		assert.match(plan.ftsCandidates[0], /"C\+\+"/);
-	});
-
-	it("parse-error recovery falls back through ladder to deploy hits (bhZf0)", () => {
-		seedDeploy();
-		// raw form is an FTS5 syntax error; recovery candidates and the LIKE
-		// fallback must still surface existing deploy hits
-		const { hits } = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
-		assert.ok(hits.length >= 1, "malformed query must recover an existing deploy hit");
-	});
-
-	it("queries with every term <3 chars use LIKE fallback", () => {
-		seedDeploy(); // text mentions deploy.yml: exercises the yml / .y substrings
-		const plan = buildFtsQueryPlan("ab cd");
-		assert.equal(plan.forceLike, true);
-		assert.equal(plan.ftsCandidates.length, 0);
-		// e2e: LIKE matches substring that trigram cannot
-		// "yml" is a substring of deploy.yml; trigram handles it
-		assert.ok(searchIndex(dbPath, "yml").hits.length >= 1);
-		// ".y" is below the trigram floor → only the LIKE path can find it
-		assert.equal(buildFtsQueryPlan(".y").forceLike, true);
-		const like = searchIndex(dbPath, ".y");
-		assert.ok(like.hits.length >= 1, "LIKE fallback must match short substrings");
-		assert.equal(searchIndex(dbPath, "*").hits.length, 0, "empty wildcard must not match every session");
-	});
-
-	it("512 char cap truncates query", () => {
-		const long = "x".repeat(600); // single term past the cap
-		const plan = buildFtsQueryPlan(long);
-		// quoted form adds one quote per side only
-		assert.ok(plan.ftsCandidates[0].length <= MAX_QUERY_CHARS + 2);
-	});
-
-	it("CJK terms match via trigram", () => {
-		writeFixture("--cjk-proj--", "cjk.jsonl", [sessionHeader(), msg("u1", "user", "今天我们要讨论部署流水线的配置问题")]);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		const { hits } = searchIndex(dbPath, "部署流水线");
-		assert.equal(hits.length, 1);
-		assert.ok(hits[0].snippet.includes("部署流水线") || hits[0].snippet.length > 0);
-	});
 });
 
 describe("lineage + guards", () => {
@@ -328,25 +284,23 @@ describe("lineage + guards", () => {
 		assert.ok(hits.every((h) => !h.path.includes("lineage-cap-child")));
 	});
 
-	it("current-session exclusion skips the whole current file", () => {
-		seedDeploy();
-		const currentPath = path.join(sessionsDir, "--users-tester-proj--", "a.jsonl");
-		assert.deepEqual(searchIndex(dbPath, "deploy pipeline", { currentSessionPath: currentPath }).hits, []);
-	});
-
 	it("real entry ids ending in #h/#t survive search and hydration untouched", () => {
-		writeFixture("--suffix-ids--", "sid.jsonl", [
+		const file = writeFixture("--suffix-ids--", "sid.jsonl", [
 			sessionHeader(),
-			msg("u1#t", "user", "suffixid unique marker alpha"),
-			msg("u2#h", "assistant", "suffixid reply beta"),
+			msg("u1", "user", "suffixid unique marker alpha"),
+			JSON.stringify({ ...JSON.parse(msg("u2#t", "assistant", "suffixid reply middle")), parentId: "u1" }),
+			JSON.stringify({ ...JSON.parse(msg("u3#h", "user", "suffixid reply beta")), parentId: "u2#t" }),
 		], 140000);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
 		const hit = searchIndex(dbPath, "suffixid beta").hits[0];
 		assert.ok(hit, "message with #h-suffixed real id is found");
-		assert.equal(hit.matchMessageId, "u2#h", "hit carries the exact source id");
-		// The exact hit id anchors a window (the discovery→scroll flow).
-		const w = getWindow(path.join(sessionsDir, "--suffix-ids--", "sid.jsonl"), hit.matchMessageId, 5);
-		assert.ok(w.messages.some((m) => m.entryId === "u2#h" && m.anchor === true));
+		assert.equal(hit.matchMessageId, "u3#h", "hit carries the exact source id");
+		const hitWindow = getWindow(file, hit.matchMessageId, 5);
+		assert.ok(hitWindow.messages.some((m) => m.entryId === "u3#h" && m.anchor === true));
+		const middle = getWindow(file, "u2#t", 5);
+		assert.deepEqual(middle.messages.map((m) => m.entryId), ["u1", "u2#t", "u3#h"]);
+		assert.equal(middle.messages.find((m) => m.entryId === "u2#t")?.anchor, true);
+		assert.equal(middle.messagesAfter, 1);
 	});
 
 	it("excluding a parent file leaves its matching child discoverable (bhGOs)", () => {
@@ -469,15 +423,6 @@ describe("lineage + guards", () => {
 		assert.ok(reads.has(oldFail), "older persistent failure must eventually be attempted, not starve behind the newest");
 	});
 
-	it("grouping parens outside quotes are stripped from terms before planning (regression)", () => {
-		seedDeploy();
-		const plan = buildFtsQueryPlan("(deploy pipeline)");
-		assert.deepEqual(plan.ftsCandidates[0], `"deploy" "pipeline"`);
-		assert.equal(plan.forceLike, false);
-		const { hits } = searchIndex(dbPath, "(deploy pipeline)");
-		assert.ok(hits.length >= 1, "parenthesized natural query must match deploy pipeline hits");
-	});
-
 	it("NEAR is a bounded operand in composed boolean LIKE expressions", () => {
 		const nearby = writeFixture("--near-proj--", "near.jsonl", [sessionHeader(), msg("n1", "user", "Go Rust AND stay nearby")], 96000);
 		const far = writeFixture("--near-far--", "far.jsonl", [sessionHeader(), msg("nf1", "user", `Go ${"arbitrarily distant ".repeat(20)}Rust`)], 96100);
@@ -493,67 +438,37 @@ describe("lineage + guards", () => {
 		assert.equal(searchIndex(dbPath, "NEAR(Go \"AND\")").hits.length, 1, "quoted operator word remains an operand");
 	});
 
-	it("NEAR keeps prior semantics on overlapping intervals (NEAR(a aaa,0) inside aaa)", () => {
-		// Short operands route through the LIKE fallback's unear UDF. The prior
-		// sliding-window sweep matches at distance 0 because the nested a@(1,2)
-		// sits fully inside aaa@(0,3): max(start) - min(end) + 2 = 0.
-		writeFixture("--near-overlap--", "overlap.jsonl", [
+	it("short LIKE searches handle overlapping and repeated NEAR operands and Unicode", () => {
+		writeFixture("--near-cases--", "near.jsonl", [
 			sessionHeader(),
 			msg("ov-u1", "user", "aaa"),
-		]);
-		syncSessions(sessionsDir, dbPath);
-		const { hits } = searchIndex(dbPath, "NEAR(a aaa,0)");
-		assert.equal(hits.length, 1);
-		assert.equal(hits[0].matchMessageId, "ov-u1");
-	});
-
-	it("NEAR with hundreds of repeated common operands still matches after deduplication", () => {
-		// 100 duplicate operands fit well under the 512-char query cap; before
-		// operand deduplication each repeat materialized every occurrence of "rs"
-		// independently per candidate row. Dedup must leave the result unchanged.
-		const query = `NEAR(${Array<string>(100).fill("rs").join(" ")} kubernetes,10)`;
-		assert.ok(query.length <= MAX_QUERY_CHARS);
-		writeFixture("--near-dedupe--", "dedupe.jsonl", [
-			sessionHeader(),
 			msg("dd-u1", "user", "deploy rs with kubernetes nearby"),
-		]);
-		syncSessions(sessionsDir, dbPath);
-		const { hits } = searchIndex(dbPath, query);
-		assert.equal(hits.length, 1);
-		assert.equal(hits[0].matchMessageId, "dd-u1");
-		// A missing distinct operand still gates the whole NEAR expression.
-		const gated = searchIndex(dbPath, `NEAR(${Array<string>(100).fill("rs").join(" ")} zebraqqq,10)`);
-		assert.equal(gated.hits.length, 0);
-	});
-
-	it("NEAR(a a,0) treats the deduplicated single needle as presence, not span math", () => {
-		const query = "NEAR(🧪 🧪,0)";
-		writeFixture("--near-single--", "single.jsonl", [
-			sessionHeader(),
 			msg("ns1", "user", "the 🧪 marker stands alone here"),
+			msg("em1", "user", "ship it \u{1F680}\u{1F680} today please"),
 		]);
 		syncSessions(sessionsDir, dbPath);
-		// One occurrence cannot satisfy multi-needle gap math at distance 0,
-		// yet FTS5 NEAR over one distinct phrase is pure presence.
-		assert.equal(buildFtsQueryPlan(query).forceLike, true);
-		const { hits } = searchIndex(dbPath, query);
-		assert.equal(hits.length, 1);
-		assert.equal(hits[0].matchMessageId, "ns1");
-		// A missing distinct operand still gates the expression closed.
-		assert.equal(searchIndex(dbPath, "NEAR(🧪 absent🧪,0)").hits.length, 0);
-	});
+		// The short operand overlaps the longer one at distance zero.
+		const overlap = searchIndex(dbPath, "NEAR(a aaa,0)").hits;
+		assert.equal(overlap.length, 1);
+		assert.equal(overlap[0].matchMessageId, "ov-u1");
 
-	it("short-term floor counts Unicode code points, not UTF-16 units (two-emoji term)", () => {
-		writeFixture("--emoji-proj--", "emoji.jsonl", [
-			sessionHeader(),
-			msg("em1", "user", "ship it \u{1F680}\u{1F680} today please"),
-		], 97000);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		// Two emoji = 4 UTF-16 units but 2 code points → below trigram floor → LIKE.
-		const plan = buildFtsQueryPlan("\u{1F680}\u{1F680}");
-		assert.equal(plan.forceLike, true);
-		const { hits } = searchIndex(dbPath, "\u{1F680}\u{1F680}");
-		assert.equal(hits.length, 1, "two-emoji term must match via LIKE fallback");
+		// Repeated operands must not multiply the search work or change the result.
+		const repeated = `NEAR(${Array<string>(100).fill("rs").join(" ")} kubernetes,10)`;
+		assert.ok(repeated.length <= MAX_QUERY_CHARS);
+		const deduped = searchIndex(dbPath, repeated).hits;
+		assert.equal(deduped.length, 1);
+		assert.equal(deduped[0].matchMessageId, "dd-u1");
+		assert.equal(searchIndex(dbPath, `NEAR(${Array<string>(100).fill("rs").join(" ")} zebraqqq,10)`).hits.length, 0);
+
+		// One distinct operand needs only one occurrence.
+		const single = "NEAR(🧪 🧪,0)";
+		assert.equal(buildFtsQueryPlan(single).forceLike, true);
+		const presence = searchIndex(dbPath, single).hits;
+		assert.equal(presence.length, 1);
+		assert.equal(presence[0].matchMessageId, "ns1");
+		assert.equal(searchIndex(dbPath, "NEAR(🧪 absent🧪,0)").hits.length, 0);
+		assert.equal(buildFtsQueryPlan("\u{1F680}\u{1F680}").forceLike, true);
+		assert.equal(searchIndex(dbPath, "\u{1F680}\u{1F680}").hits.length, 1);
 	});
 
 	it("entries without valid ids are skipped without aborting the pass (bhGOu)", () => {
@@ -744,15 +659,6 @@ describe("incompatible index schema", () => {
 	});
 
 	describe("sanitize ladder regressions from review", () => {
-		it("unmatched quote is stripped in the boolean LIKE path too", () => {
-			writeFixture("--quote-like--", "ql.jsonl", [
-				sessionHeader(),
-				msg("ql1", "user", "ordinary Zqxlang vocabulary notes"),
-			], 130000);
-			syncSessions(sessionsDir, dbPath, { cap: 10 });
-			assert.equal(searchIndex(dbPath, '"Zqxlang').hits.length, 1, 'short malformed query with unmatched quote must still match');
-		});
-
 		it("recovery operands exclude syntax operator words", () => {
 			writeFixture("--op-recovery--", "or.jsonl", [
 				sessionHeader(),
@@ -862,12 +768,13 @@ describe("incompatible index schema", () => {
 		it("unmatched quote is malformed syntax, not searchable text", () => {
 			writeFixture("--quote-fix--", "q.jsonl", [
 				sessionHeader(),
-				msg("uq1", "user", "we finished the zqxlaunch on Friday morning"),
+				msg("uq1", "user", "we finished the zqxlaunch on Friday morning; ordinary Zqxlang vocabulary notes"),
 			], 120000);
 			syncSessions(sessionsDir, dbPath, { cap: 10 });
 			const plan = buildFtsQueryPlan('"zqxlaunch');
 			assert.ok(!plan.ftsCandidates.some((candidate) => candidate.includes('""')), "unmatched quote must not become literal quote text");
 			assert.equal(searchIndex(dbPath, '"zqxlaunch').hits.length, 1, 'query with unmatched opening quote must match ordinary text');
+			assert.equal(searchIndex(dbPath, '"Zqxlang').hits.length, 1, 'short malformed query with unmatched quote must still match');
 		});
 
 		it("doubled quotes stay inside one exact phrase instead of splitting into a false-positive AND", () => {
@@ -915,16 +822,19 @@ describe("incompatible index schema", () => {
 });
 
 describe("sanitize ladder regression", () => {
-	it("mixed short-term query routes through LIKE and still matches (bhGOl)", () => {
+	it("short-term LIKE queries retain snippets and metadata, punctuation, and wildcard behavior", () => {
 		writeFixture("--short-mix--", "mix.jsonl", [
 			sessionHeader(),
 			msg("m1", "user", "we chose the Go deployment strategy for the edge service"),
 		], 50000);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		const plan = buildFtsQueryPlan("Go deployment");
-		assert.equal(plan.forceLike, true);
+		assert.equal(buildFtsQueryPlan("Go deployment").forceLike, true);
 		const { hits } = searchIndex(dbPath, "Go deployment");
 		assert.equal(hits.length, 1);
+		assert.ok(hits[0].snippet.length > 0 && /Go deployment|deployment/i.test(hits[0].snippet));
+		assert.ok(hits[0].cwd && hits[0].startedAt);
+		assert.equal(searchIndex(dbPath, "Go deployment strategy?").hits.length, 1);
+		assert.equal(searchIndex(dbPath, "Go deploy*").hits.length, 1);
 	});
 
 	it("boolean LIKE fallback surfaces both sides of OR with short operands (bhZey)", () => {
@@ -946,40 +856,20 @@ describe("sanitize ladder regression", () => {
 		assert.ok(!filtered.some((h) => h.path.includes("--rust-proj--")), "NOT must exclude the Rust renderer session");
 	});
 
-	it("LIKE fallback treats trailing FTS wildcard as prefix, not literal (bhZf1)", () => {
-		writeFixture("--go-deploy--", "gd.jsonl", [
-			sessionHeader(),
-			msg("gd1", "user", "we chose the Go deployment strategy for the edge service"),
-		]);
-		syncSessions(sessionsDir, dbPath);
-		const { hits } = searchIndex(dbPath, "Go deploy*");
-		assert.equal(hits.length, 1, "`Go deploy*` must match 'Go deployment strategy'");
-	});
-
-	it("short lowercase non-ASCII query matches uppercase text via Unicode-aware LIKE", () => {
+	it("Unicode searches match case variants, Greek final sigma, and CJK text", () => {
 		writeFixture("--unicode-case--", "uni.jsonl", [
 			sessionHeader(),
-			msg("uc1", "user", "ÉX report ΣΟΦΙΑ notes ПРИВЕТ log"),
+			msg("uc1", "user", "ÉX report ΣΟΦΙΑ notes ПРИВЕТ log; the oracle answered ΟΣ plainly; 今天我们要讨论部署流水线的配置问题"),
 		], 60000);
 		syncSessions(sessionsDir, dbPath, { cap: 10 });
 		assert.equal(buildFtsQueryPlan("éx").forceLike, true, "two-code-point term must take the LIKE path");
-		for (const q of ["éx", "σοφ", "прив"]) {
+		for (const q of ["éx", "σοφ", "прив", "οσ", "ος"]) {
 			const { hits } = searchIndex(dbPath, q);
-			assert.equal(hits.length, 1, `\`${q}\` must match its uppercase form (SQLite LIKE folds ASCII only)`);
+			assert.equal(hits.length, 1, `\`${q}\` must match its uppercase form`);
 		}
-	});
-
-	it("LIKE folds Greek final sigma: ΟΣ text matches οσ query", () => {
-		// Word-final Σ lowercases to ς, so plain toLowerCase breaks ΟΣ ↔ οσ.
-		const file = writeFixture("--greek-sigma--", "gs.jsonl", [
-			sessionHeader(),
-			msg("gs1", "user", "the oracle answered ΟΣ plainly"),
-		], 61000);
-		syncSessions(sessionsDir, dbPath, { cap: 10 });
-		for (const q of ["οσ", "ος"]) {
-			const { hits } = searchIndex(dbPath, q);
-			assert.ok(hits.some((h) => h.path === file), `\`${q}\` must match word-final Σ via LIKE`);
-		}
+		const cjk = searchIndex(dbPath, "部署流水线").hits;
+		assert.equal(cjk.length, 1);
+		assert.ok(cjk[0].snippet.length > 0);
 	});
 
 	it("quoted LIKE operands keep parentheses during balance recovery", () => {
@@ -1044,24 +934,6 @@ describe("sanitize ladder regression", () => {
 		assert.equal(searchIndex(dbPath, "abcdef").hits.filter((h) => h.path.endsWith("raw.jsonl")).length, 0, "truncation seam must not create a searchable token");
 	});
 
-	it("LIKE fallback results carry a snippet (bhGOt)", () => {
-		seedGoDeployment();
-		const { hits } = searchIndex(dbPath, "Go deployment");
-		assert.ok(hits[0].snippet.length > 0 && /Go deployment|deployment/i.test(hits[0].snippet));
-	});
-
-	it("boundary punctuation is stripped from NL terms end-to-end (bhGOw)", () => {
-		seedGoDeployment();
-		const { hits } = searchIndex(dbPath, "Go deployment strategy?");
-		assert.equal(hits.length, 1);
-	});
-
-	it("hits carry joined session metadata (bhGO0)", () => {
-		seedGoDeployment();
-		const { hits } = searchIndex(dbPath, "Go deployment");
-		assert.ok(hits[0].cwd && hits[0].startedAt);
-	});
-
 	it("3000+ row verbose session cannot starve a quiet matching session (bhGOz)", () => {
 		const lines = [sessionHeader()];
 		// Shorter rows rank above the quiet file and used to fill the 3000-row
@@ -1080,62 +952,33 @@ describe("sanitize ladder regression", () => {
 });
 
 describe("SQL prefilter + parse semantics + walk safety", () => {
-	it("excludes the current FTS file before the scan limit", () => {
+	it("excludes the current file before FTS and LIKE scan limits", () => {
 		const marker = "fts-current-prelimit-marker";
-		const current = writeFixture("--fts-current--", "current.jsonl", [
+		const current = writeFixture("--current--", "current.jsonl", [
 			sessionHeader(),
-			msg("current", "user", marker),
-		], 100000);
-		for (let i = 0; i < 300; i++) {
-			writeFixture(`--fts-other-${i}--`, "other.jsonl", [
-				sessionHeader(),
-				msg(`other-${i}`, "user", `${marker} ${"padding ".repeat(40)}`),
-			], i);
-		}
-		const synced = syncSessions(sessionsDir, dbPath, { cap: 500 });
-		assert.equal(synced.backlogRemaining, 0);
-
-		const unfiltered = searchIndex(dbPath, marker, { limit: 301 }).hits;
-		assert.equal(unfiltered[0].path, current);
-		assert.equal(unfiltered[0].rank, 0);
-		const excluded = searchIndex(dbPath, marker, { limit: 301, currentSessionPath: current }).hits;
-		assert.equal(excluded.length, 300);
-		assert.equal(new Set(excluded.map((hit) => hit.path)).size, 300);
-		assert.ok(excluded.every((hit) => hit.path !== current));
-	});
-
-	it("excludes the current LIKE file before the scan limit", () => {
-		const current = writeFixture("--like-current--", "current.jsonl", [
-			sessionHeader(),
-			msg("current-0", "user", "Qx current match zero"),
+			msg("current-0", "user", `${marker} Qx current match zero`),
 			msg("current-1", "assistant", "Qx current match one"),
 			msg("current-2", "user", "Qx current match two"),
 			msg("current-3", "assistant", "Qx current match three"),
 		], 100000);
 		for (let i = 0; i < 300; i++) {
-			writeFixture(`--like-other-${i}--`, "other.jsonl", [
+			writeFixture(`--other-${i}--`, "other.jsonl", [
 				sessionHeader(),
-				msg(`other-${i}`, "user", `Qx other match ${i}`),
+				msg(`other-${i}`, "user", `${marker} Qx other match ${i} ${"padding ".repeat(40)}`),
 			], i);
 		}
 		const synced = syncSessions(sessionsDir, dbPath, { cap: 500 });
 		assert.equal(synced.backlogRemaining, 0);
 
-		const unfiltered = searchIndex(dbPath, "Qx", { limit: 301 }).hits;
-		assert.equal(unfiltered[0].path, current);
-		assert.equal(unfiltered[0].rank, 0);
-		const excluded = searchIndex(dbPath, "Qx", { limit: 301, currentSessionPath: current }).hits;
-		assert.equal(excluded.length, 300);
-		assert.equal(new Set(excluded.map((hit) => hit.path)).size, 300);
-		assert.ok(excluded.every((hit) => hit.path !== current));
-	});
-
-	it("parsed query with zero rows stays empty; malformed recovers via LIKE", () => {
-		seedDeploy();
-		const none = searchIndex(dbPath, "nonexistent AND deploy");
-		assert.equal(none.hits.length, 0, "zero-row parsed candidate must not broaden to OR/LIKE");
-		const recovered = searchIndex(dbPath, 'deploy AND NOT ("unterminated');
-		assert.ok(recovered.hits.length >= 1, "malformed query must still recover deploy hits");
+		for (const query of [marker, "Qx"]) {
+			const unfiltered = searchIndex(dbPath, query, { limit: 301 }).hits;
+			assert.equal(unfiltered[0].path, current);
+			assert.equal(unfiltered[0].rank, 0);
+			const excluded = searchIndex(dbPath, query, { limit: 301, currentSessionPath: current }).hits;
+			assert.equal(excluded.length, 300);
+			assert.equal(new Set(excluded.map((hit) => hit.path)).size, 300);
+			assert.ok(excluded.every((hit) => hit.path !== current));
+		}
 	});
 
 	it("prunes top-level and nested /tmp and /private/tmp encoded directories without matching embedded tmp names", () => {

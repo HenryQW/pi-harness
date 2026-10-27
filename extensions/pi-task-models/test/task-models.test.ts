@@ -720,21 +720,18 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 	}
 });
 
-test("returns the first successful route", async () => {
-	const attempts: string[] = [];
-	const result = await executeTaskRoutes(
+test("returns the first successful route and runs approved fallbacks serially", async () => {
+	const successfulAttempts: string[] = [];
+	const first = await executeTaskRoutes(
 		EXECUTION_ROUTES,
 		async (route) => {
-			attempts.push(route.model.id);
+			successfulAttempts.push(route.model.id);
 			return route.model.id;
 		},
 		{ shouldFallback: () => true },
 	);
-	assert.equal(result, "primary");
-	assert.deepEqual(attempts, ["primary"]);
-});
-
-test("executes approved fallback routes serially and returns first success", async () => {
+	assert.equal(first, "primary");
+	assert.deepEqual(successfulAttempts, ["primary"]);
 	const primaryFailure = new Error("primary failed");
 	const attempts: string[] = [];
 	let releasePrimary = () => {};

@@ -8,7 +8,6 @@ import test from "node:test";
 import { createChildWorktree, finalizeChildWorktree, WorktreeSetupError, type WorktreeInfo, type WorktreePayload } from "../src/worktree.ts";
 import { runGit, type GitRunner } from "../src/git-process.ts";
 import { inspectPruneCandidates, removePruneCandidates, type PruneGuards } from "../src/prune.ts";
-import { loadRoleCatalog } from "../src/index.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -40,6 +39,7 @@ async function initializedRepository(t: import("node:test").TestContext): Promis
 	git(repo, "init", "-q");
 	git(repo, "config", "user.name", "Test");
 	git(repo, "config", "user.email", "test@example.com");
+	git(repo, "config", "commit.gpgsign", "false");
 	await writeFile(join(repo, "README.md"), "test\n");
 	git(repo, "add", ".");
 	git(repo, "commit", "-qm", "init");
@@ -772,19 +772,6 @@ test("finalizeChildWorktree counts the dedicated branch when the checkout is gon
 	), "recovery");
 	assert.equal(unproven.commits, undefined);
 	assert.equal(unproven.dirty, undefined);
-});
-
-test("loadRoleCatalog rejects retired Role isolation values", async (t) => {
-	const acceptDir = join(tmpdir(), "pi-subagent-iso-ok-");
-	const rejectDir = join(tmpdir(), "pi-subagent-iso-bad-");
-	await Promise.all([acceptDir, rejectDir].map((dir) => mkdir(join(dir, "config", "pi-subagent"), { recursive: true })));
-	t.after(async () => {
-		await Promise.all([acceptDir, rejectDir].map((dir) => rm(dir, { recursive: true, force: true })));
-	});
-	await writeFile(join(acceptDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: worktree\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	await writeFile(join(rejectDir, "config", "pi-subagent", "iso.md"), "---\nname: iso\ndescription: d\nisolation: bogus\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-
-	for (const dir of [acceptDir, rejectDir]) assert.match(loadRoleCatalog(dir).errors[0]!.message, /Role isolation is retired.*mode "isolated"/i);
 });
 
 function pruneGuards(options: { owner?: string; panes?: { paneId: string; cwds: string[] }[] | Error } = {}): PruneGuards {

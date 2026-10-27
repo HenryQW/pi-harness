@@ -1,36 +1,56 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import type { CurrentPullRequest } from "../extensions/pr-github.ts";
 import { syncLocalHead } from "../extensions/pr-sync.ts";
 
 const FETCH_SOURCE = "git@github.com:acme/project.git";
 
-/** A feature branch whose PR head (two commits) is published; the local branch is reset to the first commit. */
-function repository(t: { after(fn: () => void): void }) {
-	const dir = mkdtempSync(join(tmpdir(), "pi-pr-sync-"));
-	t.after(() => rmSync(dir, { recursive: true, force: true }));
+let template: { dir: string; base: string; prHead: string } | undefined;
+after(() => { if (template) rmSync(template.dir, { recursive: true, force: true }); });
+
+/** Prepare a published two-commit branch with the local branch at the first commit. */
+function prepareTemplate() {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-sync-template-"));
 	const root = join(dir, "worktree");
 	const bare = join(dir, "remote.git");
 	const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
-	execFileSync("git", ["init", "--bare", bare]);
-	execFileSync("git", ["init", "--initial-branch=feature", root]);
-	git("config", "user.name", "Sync Test");
-	git("config", "user.email", "sync@example.test");
-	writeFileSync(join(root, "shared.txt"), "one\n");
-	writeFileSync(join(root, "other.txt"), "other\n");
-	git("add", "-A");
-	git("commit", "-m", "initial");
-	const base = git("rev-parse", "HEAD");
-	writeFileSync(join(root, "shared.txt"), "one\ntwo\n");
-	git("commit", "-am", "remote work");
-	const prHead = git("rev-parse", "HEAD");
-	git("push", bare, `${prHead}:refs/heads/feature`);
-	git("reset", "--hard", base);
+	try {
+		execFileSync("git", ["init", "--bare", bare]);
+		execFileSync("git", ["init", "--initial-branch=feature", root]);
+		git("config", "user.name", "Sync Test");
+		git("config", "user.email", "sync@example.test");
+		git("config", "commit.gpgsign", "false");
+		writeFileSync(join(root, "shared.txt"), "one\n");
+		writeFileSync(join(root, "other.txt"), "other\n");
+		git("add", "-A");
+		git("commit", "-m", "initial");
+		const base = git("rev-parse", "HEAD");
+		writeFileSync(join(root, "shared.txt"), "one\ntwo\n");
+		git("commit", "-am", "remote work");
+		const prHead = git("rev-parse", "HEAD");
+		git("push", bare, `${prHead}:refs/heads/feature`);
+		git("reset", "--hard", base);
+		return { dir, base, prHead };
+	} catch (error) {
+		rmSync(dir, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+function repository(t: { after(fn: () => void): void }) {
+	const source = template ??= prepareTemplate();
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-sync-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	cpSync(source.dir, dir, { recursive: true, verbatimSymlinks: true });
+	const root = join(dir, "worktree");
+	const bare = join(dir, "remote.git");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+	const { base, prHead } = source;
 	const authority: CurrentPullRequest = {
 		id: "PR_123", number: 42, url: new URL("https://github.com/acme/project/pull/42"), host: "github.com",
 		approved: true, lifecycle: "open", conditions: { draft: false, baseUpdateRequired: false, conflict: false,
@@ -144,11 +164,15 @@ test("never rebases a dirty diverged branch or local merge commits", async (t) =
 	await assert.rejects(merged.sync(), /merge commits/);
 });
 
-test("leaves an equal or ahead branch unchanged", async (t) => {
+test("leaves an equal or ahead branch unchanged and keeps fixture copies independent", async (t) => {
 	const repo = repository(t);
 	repo.git("reset", "--hard", repo.prHead);
 	assert.deepEqual(await repo.sync(), { kind: "unchanged", head: repo.prHead });
 	writeFileSync(join(repo.root, "other.txt"), "ahead\n");
 	repo.git("commit", "-am", "ahead work");
 	assert.deepEqual(await repo.sync(), { kind: "unchanged", head: repo.git("rev-parse", "HEAD") });
+	repo.git("push", join(repo.root, "..", "remote.git"), "HEAD:refs/heads/feature");
+	const independent = repository(t);
+	assert.equal(independent.git("rev-parse", "HEAD"), independent.base);
+	assert.equal(independent.git("--git-dir", join(independent.root, "..", "remote.git"), "rev-parse", "refs/heads/feature"), independent.prHead);
 });

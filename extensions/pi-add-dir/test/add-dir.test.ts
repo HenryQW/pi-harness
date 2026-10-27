@@ -388,48 +388,27 @@ test("includes added directories in @ file autocomplete after an opening wrapper
 	});
 });
 
-test("finds files recursively while skipping dependency and Git trees", async () => {
+test("finds files recursively while skipping dependency, Git, and symbolic-link trees", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
+	const target = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	try {
 		const matches = [join(dir, "src", "main.ts"), join(dir, ".hidden", "config.ts")];
-		for (const file of [...matches, join(dir, "node_modules", "ignored.ts"), join(dir, ".git", "ignored.ts")]) {
+		for (const file of [...matches, join(dir, "node_modules", "ignored.ts"), join(dir, ".git", "ignored.ts"), join(target, "nested", "linked.ts")]) {
 			await mkdir(join(file, ".."), { recursive: true });
 			await writeFile(file, "");
 		}
-
+		await symlink(target, join(dir, "linked"), process.platform === "win32" ? "junction" : "dir");
 		assert.deepEqual((await findFiles(dir, "*.ts", 10)).sort(), matches.sort());
 	} finally {
 		await rm(dir, { recursive: true, force: true });
-	}
-});
-
-test("ignores symbolic links and their descendants when finding files", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
-	const target = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
-	try {
-		const included = join(root, "src", "main.ts");
-		await mkdir(join(included, ".."), { recursive: true });
-		await mkdir(join(target, "nested"), { recursive: true });
-		await writeFile(included, "");
-		await writeFile(join(target, "nested", "linked.ts"), "");
-		await symlink(target, join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
-
-		assert.deepEqual(await findFiles(root, "*.ts", 10), [included]);
-	} finally {
-		await rm(root, { recursive: true, force: true });
 		await rm(target, { recursive: true, force: true });
 	}
 });
 
-test("returns no results when an external directory disappears", async () => {
+test("returns no results for missing directories but propagates abort reasons", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	await rm(dir, { recursive: true, force: true });
 	assert.deepEqual(await findFiles(dir, "*.ts", 1), []);
-});
-
-test("propagates abort reasons that resemble missing paths", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
-	await rm(dir, { recursive: true, force: true });
 	const controller = new AbortController();
 	const reason = { code: "ENOENT" };
 	const search = findFiles(dir, "*.ts", 1, controller.signal);
@@ -823,10 +802,12 @@ test("surfaces Git failures inside a discovered repository", async () => {
 	}
 });
 
-test("warns and preserves missing or overlapping global directories", async () => {
+test("reports and preserves missing or overlapping global directories with and without UI", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
 	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
 	const missing = join(agentDir, "missing");
+	const messages: string[] = [];
+	const originalConsoleError = console.error;
 	try {
 		await createAddDirConfigStore(agentDir).save({ directories: [missing, cwd] });
 		const notifications: Array<{ message: string; level: string }> = [];
@@ -834,23 +815,10 @@ test("warns and preserves missing or overlapping global directories", async () =
 		await handlers.get("session_start")!({}, interactiveContext(cwd, () => [], { notifications }));
 		assert.equal(notifications.filter(({ level }) => level === "warning").length, 2);
 		assert.deepEqual(savedGlobalDirectories(agentDir), [missing, cwd]);
-	} finally {
-		await rm(agentDir, { recursive: true, force: true });
-		await rm(cwd, { recursive: true, force: true });
-	}
-});
-
-test("writes skipped-directory warnings to stderr without UI", async () => {
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-add-dir-agent-"));
-	const cwd = await mkdtemp(join(tmpdir(), "pi-add-dir-project-"));
-	const missing = join(agentDir, "missing");
-	const messages: string[] = [];
-	const originalConsoleError = console.error;
-	try {
 		await createAddDirConfigStore(agentDir).save({ directories: [missing] });
 		console.error = (...args: unknown[]) => messages.push(args.map(String).join(" "));
-		const { handlers } = loadExtension({ agentDir });
-		await handlers.get("session_start")!({}, extensionContext(cwd, () => []));
+		const noninteractive = loadExtension({ agentDir });
+		await noninteractive.handlers.get("session_start")!({}, extensionContext(cwd, () => []));
 		assert.deepEqual(messages, [`pi-add-dir: Skipped global external directory ${missing}: directory does not exist.`]);
 	} finally {
 		console.error = originalConsoleError;

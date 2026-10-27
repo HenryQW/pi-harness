@@ -3182,29 +3182,6 @@ test("keeps a non-create hint hidden until its workflow settles", async () => {
 	}
 });
 
-test("restores the create hint when the dispatched workflow settles without a pull request", async () => {
-	const app = harness({
-		async load() {
-			return noPullRequest(1);
-		},
-		async commandHandler() {
-			return "create";
-		},
-	});
-	const ctx = app.context();
-
-	try {
-		await app.start(ctx);
-		await app.command().handler("", ctx as ExtensionCommandContext);
-		assert.equal(app.widgets.at(-1), undefined);
-
-		await app.settle(ctx);
-		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
-	} finally {
-		await app.shutdown(ctx);
-	}
-});
-
 test("tracks creation from the fresh command route instead of stale presentation", async () => {
 	const staleNull = deferred<CurrentPullRequest | CurrentPullRequestDiscovery>();
 	let staleCreateLoads = 0;

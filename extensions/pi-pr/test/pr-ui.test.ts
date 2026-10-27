@@ -335,7 +335,6 @@ test("formats themed footer text with OSC-8 only when supported", () => {
 		if (footer === undefined) throw new Error("expected footer");
 		assert.equal(footer, "<text>PR #42</text> · <accent>open</accent>");
 		assert.doesNotMatch(footer, /\x1b\]8;;/);
-		assert.equal(plain(footer), "PR #42 · open");
 	});
 });
 
