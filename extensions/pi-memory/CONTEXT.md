@@ -26,7 +26,7 @@ An independent model assessment of a proposed addition against live agent-global
 An overlap or contradiction between a candidate and existing memory or agent-global instructions that needs user resolution.
 
 **Queued conflict**:
-An unsaved candidate awaiting review and possible user resolution after the current response settles. A queued conflict is not a successful write.
+A complete mutation held in the private review inbox until the user runs `/memory-review`. It is not a successful memory write.
 
 **Remember request**:
 A user instruction for an independent model to turn into one suitable memory candidate, or decline.
@@ -36,3 +36,6 @@ A user-approved transfer of a general invariant rule from memory into agent-glob
 
 **Memory qualification**:
 The current session agent's decision that a newly learned fact belongs in cross-session memory rather than repository docs or task progress.
+
+**Review group**:
+The canonical common Git directory for linked worktrees, or the canonical starting directory for a non-Git session. It selects which inbox candidates the session shows.

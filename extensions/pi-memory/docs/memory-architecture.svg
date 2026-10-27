@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="memory-architecture-title memory-architecture-desc" id="memory-architecture-root">
       <title id="memory-architecture-title">How pi-memory writes reviewed memory</title>
-      <desc id="memory-architecture-desc">/remember prepares one candidate or declines before preflight, the memory tool enters preflight directly, adds need review unless they are exact duplicates, replace/remove go directly to locked storage, and session start creates a frozen prompt snapshot.</desc>
+      <desc id="memory-architecture-desc">/remember prepares one candidate or declines before preflight, the memory tool enters preflight directly, adds need review unless they are exact duplicates, automatic conflicts wait in a durable group inbox for explicit review, replace/remove go directly to locked storage, and session start creates a frozen prompt snapshot.</desc>
       <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #memory-architecture-root { --paper: #f0eee9;
@@ -58,7 +58,7 @@
       <path d="M664 208 H708" fill="none" stroke="#4c5665" stroke-width="1.2" marker-end="url(#memory-architecture-memory-arrow)"/>
       <path d="M892 208 H960" fill="none" stroke="#1d4ed8" stroke-width="1.2" marker-end="url(#memory-architecture-memory-arrow-accent)"/>
 
-      <!-- Conflict path: approved choices are reviewed again before writing -->
+      <!-- Conflicts: automatic calls use the inbox; explicit requests can ask directly. -->
       <path d="M800 256 V376" fill="none" stroke="#4c5665" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#memory-architecture-memory-arrow)"/>
       <rect x="808" y="308" width="72" height="12" rx="2" fill="#f0eee9"/>
       <text x="844" y="316" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">CONFLICT</text>
@@ -121,10 +121,10 @@
       <rect x="708" y="376" width="184" height="96" rx="8" fill="#f0eee9"/>
       <rect x="708" y="376" width="184" height="96" rx="8" fill="#101828" stroke="#101828" stroke-width="1" stroke-dasharray="4,4" fill-opacity="0.02" stroke-opacity="0.28"/>
       <rect x="720" y="388" width="32" height="16" rx="2" fill="#101828" fill-opacity="0.06"/>
-      <text x="736" y="400" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">UI</text>
-      <text x="800" y="428" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Conflict choice</text>
-      <text x="800" y="448" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">ask_question</text>
-      <text x="800" y="460" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">approved · re-review</text>
+      <text x="736" y="400" fill="#4c5665" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">USER</text>
+      <text x="800" y="428" fill="#101828" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Inbox or explicit request</text>
+      <text x="800" y="448" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">/memory-review · /remember</text>
+      <text x="800" y="460" fill="#6a7282" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">live review · user approval</text>
       <text x="480" y="536" fill="#4c5665" font-size="12" font-style="italic" font-family="'Instrument Serif', serif">Invalid or changed review sources block adds.</text>
 
       <!-- Nodes: durable state -->

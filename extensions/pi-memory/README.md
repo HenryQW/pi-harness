@@ -29,6 +29,7 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/remember <instruction>` | command | For humans: request compact durable memory. |
+| `/memory-review` | command | For humans: review pending candidates for the current repository or starting directory. |
 | `/dream` | command | For humans: promote invariant memory instructions into agent-global `SYSTEM.md`, or `APPEND_SYSTEM.md` when `SYSTEM.md` is absent. |
 | `memory` | tool | For agents: add, replace, remove, or batch-edit entries. |
 | `pi-memory/reviewCandidate` | model task | For humans: assign a profile in `/task-models`. The task reviews additions. |
@@ -39,7 +40,7 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 
 ### Candidate review
 
-`pi-memory/reviewCandidate` independently reviews single adds and batches containing adds. It defaults to `balanced`, tries configured Pi registry primary then fallback routes, and never substitutes the session model. Only verified bounded JSON evidence is accepted.
+`pi-memory/reviewCandidate` independently reviews single adds and batches containing adds. It defaults to `balanced`, tries configured Pi registry primary then fallback routes, and never substitutes the session model. Only verified, size-limited JavaScript Object Notation (JSON) evidence is accepted.
 
 ![/remember prepares a candidate before preflight. The memory tool enters preflight directly. Adds need review; exact duplicates skip it. Replace/remove go directly to locked storage. Session snapshots stay fixed.](./docs/memory-architecture.svg)
 
@@ -47,23 +48,37 @@ Review sends live agent-global `SYSTEM.md`, `MEMORY.md`, and `USER.md` snapshots
 
 Conflict-free additions save immediately. Exact duplicate single adds and duplicate-only add batches are idempotent and skip review.
 
-Conflict prompts offer **Merge with existing entries**, **Discard the new entry, keep current**, **Replace current entry**, and **Something else.** The recommended choice comes first: merge for overlap, replace for contradiction, discard for SYSTEM conflicts. Candidate review never edits SYSTEM.md.
+Automatic conflicts enter a private, durable review inbox. They never open a dialog, even after the response ends. The tool returns `queued: true`, `saved: false`: the candidate is in the inbox, not in `MEMORY.md` or `USER.md`. The agent must continue its response without a retry or a question.
 
-An approved merge or replacement requires a single add conflicting with exactly one same-store entry. Review checks it against other sources again; saving requires unchanged sources. Discard writes nothing. Custom answers, cross-target or ambiguous conflicts, conflicting batches, cancellation, and non-interactive UI leave candidates unwritten. SYSTEM.md conflicts cannot be resolved here.
+### Review inbox
+
+Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and runs candidate review again before it shows each complete mutation. Approval applies the complete mutation, not selected parts of a batch.
+
+For a single add with one same-store conflict, the command offers replacement, discard, and merge when the reviewer supplies an exact merge. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
+
+**Review later** is selected by default. Press Esc to stop and retain the candidate. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
+
+Discard removes the candidate without a memory write. Approval removes it only after the memory write succeeds. Changed sources, cancellation, invalid review output, and write failures retain the candidate. A saved mutation with a failed inbox removal is reported separately; inspect live memory before another review.
+
+A count-only widget shows pending candidates for the current group and is hidden at zero. It contains no candidate text. A short reminder appears after each response while candidates remain. Other sessions' inbox writes refresh the widget. If file watching fails, Pi reports it and refreshes counts at response and review boundaries. Non-terminal modes receive plain-text reminders; they cannot approve candidates.
+
+Linked Git worktrees share the canonical common Git directory as their group. Outside Git, the group is the canonical session starting directory, not a later shell directory. Session changes select the new group's count. Restart, cancellation, and shutdown do not delete inbox candidates. Each item also records the memory directory; review stops if that directory no longer matches the active configuration. Restore that configuration before review.
+
+The inbox is `~/.pi/agent/config/pi-memory/review-inbox.json`, outside the possibly synced memory directory. Locked updates preserve concurrent additions and removals. New files use mode `0600`; the containing directory uses mode `0700`. On Windows, access follows the operating system's permission rules.
+
+The complete inbox has a 65,536-byte limit. A full, malformed, or unwritable inbox rejects additions without a partial batch or a false success message. Existing candidates stay intact. Review pending items to free space; preserve a damaged inbox before repair.
 
 ### `/remember` and queued work
 
-![Remember requests and conflicts wait in separate queues; after settlement, conflicts run first, then requests, with live-source checks before review and writes](./docs/remember-queue-flow.svg)
+![Automatic conflicts enter a durable group inbox. Only /memory-review opens their approval questions. Busy remember requests wait for settlement; restart clears those requests, not the inbox.](./docs/remember-queue-flow.svg)
 
 `/remember` uses bounded `pi-memory/prepareCandidate` proposals: one exact entry and target, or a decline for unsuitable, project-specific, temporary, or trivial content. It requires the configured `balanced` route, unchanged sources, and candidate review. It never sends open-ended instructions to the session agent.
 
-Active responses queue trimmed `/remember` requests and interactive conflict questions separately. Queued conflicts return `queued: true`, `saved: false`; nothing is saved. The agent must finish replying without retrying or asking the user itself.
+An explicit `/remember` can ask about a conflict immediately. Custom answers do not apply changes. Busy responses queue trimmed remember requests until settlement, then process them in arrival order while idle. Results and failures use notifications, not new agent turns.
 
-After settlement, conflicts run first, then remember requests: FIFO within each queue, only while idle. Each item re-reads live sources; remaining conflicts use `ask_question`. Idle requests can ask immediately. Deferred results and failures use UI notifications, not new agent turns.
+Cancellation, shutdown, reload, and session replacement clear these temporary requests. They do not clear the durable inbox. A cancelled explicit request is not saved to the inbox; issue `/remember` again if needed.
 
-Cancellation drops both queues before further preparation, dialogs, or writes, even without a context cancellation signal. Shutdown, reload, or session replacement also clears queues. Dropped requests never return; completed writes remain saved. Issue a new `/remember` if needed.
-
-`/remember` rejects writes if another response starts, the session shuts down or changes, or the model changes during review. This applies without an idle cancellation signal; retry in the current session.
+`/remember` rejects writes if another response starts, the session shuts down or changes, or the model changes during review. Non-interactive conflicts remain unwritten. This also applies without a cancellation signal; retry in the current session.
 
 ### `/dream`
 
@@ -118,8 +133,9 @@ Fix invalid config, then start a new session.
 | --- | --- |
 | `MEMORY.md` | Cross-project agent notes. Put repository facts in repository docs. |
 | `USER.md` | User profile. |
+| `review-inbox.json` | Private global review inbox, divided by repository or session starting directory. |
 
-Files hold entries separated by `§`. Each session captures both stores once; later edits change live memory, not the injected session snapshot.
+The two Markdown stores hold entries separated by `§`. Each session captures both stores once; later edits change live memory, not the injected session snapshot.
 
 pi-memory tracks stores proven present during the session, including invalid UTF-8, oversized, and symlinked files. If one disappears, writes stop until restoration. Unconfirmed paths can be repaired and created normally; new sessions reset presence tracking. Inspect live state at `<directory>/MEMORY.md` and `<directory>/USER.md`.
 

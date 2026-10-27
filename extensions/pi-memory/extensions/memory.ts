@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { watch, type FSWatcher } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, opendir, realpath, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -24,6 +26,7 @@ import { Container, matchesKey, ScrollView, SelectList, Spacer, Text } from "@ea
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
+import { reviewGroup, reviewInboxStore, type InboxItem, type MemoryMutation } from "../src/inbox.ts";
 import {
 	ENTRY_DELIMITER,
 	isEnoent,
@@ -64,7 +67,7 @@ export const MEMORY_PREPARE_TASK = {
 	purpose: "Decide whether a remember request is durable and propose one exact entry and target.",
 	defaultProfile: "balanced",
 } as const satisfies ModelTask;
-const MEMORY_REVIEW_NOTICE = "Adds are independently reviewed against live SYSTEM.md, MEMORY.md, and USER.md. Exact duplicate adds skip review; conflicts ask the user after the current response settles. Queued conflicts are not saved yet; continue replying without retrying or asking the user yourself. Do not review them yourself or repeat a successful write.";
+const MEMORY_REVIEW_NOTICE = "Adds are independently reviewed against live SYSTEM.md, MEMORY.md, and USER.md. Exact duplicate adds skip review; conflicts enter a private review inbox for /memory-review. Queued candidates are not saved to memory; continue replying without retrying or asking the user yourself. Do not review them yourself or repeat a successful write.";
 const MEMORY_CHECK = "MEMORY CHECK: Before replying, save newly learned durable user identity/preferences/corrections to user and stable cross-project environment/workflow facts to memory. Inferred habits need two independent signals. Skip project-specific, task-local, temporary, or trivial facts. Use the memory tool.";
 const REMEMBER_USAGE = "Usage: /remember <instruction>";
 const DREAM_TASK = {
@@ -103,11 +106,6 @@ type SystemSource =
 	| { state: "oversized"; bytes: number };
 type ReviewStoreSource = { state: "ok" | "absent"; raw: string; entries: string[] };
 type ReviewSnapshot = { system: Extract<SystemSource, { raw: string }>; stores: Record<Target, ReviewStoreSource> };
-type MutationOperation = {
-	action?: string;
-	content?: string;
-	old_text?: string;
-};
 type ValidatedMutation =
 	| { kind: "single"; operation: MemoryOperation }
 	| { kind: "batch"; operations: [MemoryOperation, ...MemoryOperation[]] };
@@ -115,14 +113,6 @@ type ReviewSource = "system" | Target;
 type CandidateReview =
 	| { verdict: "distinct"; explanation: string }
 	| { verdict: "overlap" | "contradiction"; explanation: string; source: ReviewSource; evidence: string; proposedMerge?: string };
-type MemoryMutation = {
-	action?: "add" | "replace" | "remove";
-	target?: Target;
-	content?: string;
-	old_text?: string;
-	operations?: MutationOperation[];
-};
-
 class MemoryReviewError extends Error {}
 
 async function readSystemSource(path: string): Promise<SystemSource> {
@@ -450,55 +440,41 @@ function dreamSystemText(snapshot: DreamSnapshot, proposal: DreamProposal): stri
 	return updated;
 }
 
-async function confirmDream(ctx: ExtensionContext, prompt: DreamSnapshot["prompt"], updated: string, proposal: DreamProposal, signal?: AbortSignal): Promise<boolean> {
-	const { filename, path, source: { raw: old, state } } = prompt;
+type ApprovalView = {
+	container: Container;
+	choices: { value: string; label: string; description?: string }[];
+};
+
+async function chooseApproval(ctx: ExtensionContext, build: (theme: ExtensionContext["ui"]["theme"]) => ApprovalView, signal?: AbortSignal): Promise<string | undefined> {
 	let onAbort: (() => void) | undefined;
 	try {
-		return await ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
-			onAbort = () => done(false);
+		return await ctx.ui.custom<string | undefined>((tui, theme, _keybindings, done) => {
+			onAbort = () => done(undefined);
 			signal?.addEventListener("abort", onAbort, { once: true });
 			if (signal?.aborted) onAbort();
-			const container = new Container();
-			const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
-			container.addChild(border());
-			container.addChild(new Text(`${theme.fg("accent", theme.bold(`Promote memory to ${filename}`))} ${theme.fg("dim", escapeDisplayControls(path))}`, 1, 0));
-			container.addChild(new Text(theme.fg("muted", `Why: ${escapeDisplayControls(proposal.reason)}`), 1, 1));
-			if (updated !== old) container.addChild(new Text(renderDiff(generateDiffString(escapeDisplayControls(old), escapeDisplayControls(updated)).diff), 1, 0));
-			for (const [target, file] of [["memory", "MEMORY.md"], ["user", "USER.md"]] as const) {
-				if (!proposal.remove[target].length) continue;
-				container.addChild(new Spacer(1));
-				container.addChild(new Text(theme.bold(`Remove from ${file} (now covered by ${filename}):`), 1, 0));
-				for (const entry of proposal.remove[target]) container.addChild(new Text(theme.fg("toolDiffRemoved", `- ${escapeDisplayControls(entry)}`), 1, 0));
-			}
-			const changes = [updated !== old && `${state === "absent" ? "create" : "update"} ${filename}`, ...(["memory", "user"] as const).map((target) => {
-				const count = proposal.remove[target].length;
-				return count && `delete ${count} ${count === 1 ? "entry" : "entries"} from ${target === "memory" ? "MEMORY.md" : "USER.md"}`;
-			})].filter(Boolean).join(", ");
-			const list = new SelectList([
-				{ value: "reject", label: "Reject", description: "Change no files" },
-				{ value: "approve", label: "Approve", description: changes.charAt(0).toUpperCase() + changes.slice(1) },
-			], 2, getSelectListTheme());
-			list.onSelect = (item) => done(item.value === "approve");
-			list.onCancel = () => done(false);
+			const { container, choices } = build(theme);
+			const list = new SelectList(choices, choices.length, getSelectListTheme());
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done(undefined);
 			const scroll = new ScrollView(container);
 			const footer = new Container();
 			footer.addChild(list);
-			footer.addChild(new Text(theme.fg("dim", "PgUp/PgDn scroll • Home/End • ↑↓ navigate • enter select • esc reject"), 1, 0));
-			footer.addChild(border());
+			footer.addChild(new Text(theme.fg("dim", "PgUp/PgDn scroll • Home/End • ↑↓ navigate • enter select • esc cancel"), 1, 0));
+			footer.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 			let canReview = true;
 			return {
 				render: (width: number) => {
 					const controls = footer.render(width);
 					const height = tui.terminal.rows - controls.length;
 					canReview = height > 0;
-					if (!canReview) return new Text("Enlarge terminal to review; Esc rejects.", 0, 0).render(width).slice(0, tui.terminal.rows);
+					if (!canReview) return new Text("Enlarge terminal to review; Esc cancels.", 0, 0).render(width).slice(0, tui.terminal.rows);
 					const lines = scroll.render(width);
 					scroll.updateLayout(lines.length, height, () => tui.requestRender());
 					return [...lines.slice(scroll.scrollTop, scroll.scrollTop + height), ...controls];
 				},
 				invalidate: () => { scroll.invalidate(); footer.invalidate(); },
 				handleInput: (data: string) => {
-					if (!canReview) { if (matchesKey(data, "escape")) done(false); return; }
+					if (!canReview) { if (matchesKey(data, "escape")) done(undefined); return; }
 					if (matchesKey(data, "pageUp")) scroll.scrollBy(-scroll.viewportHeight);
 					else if (matchesKey(data, "pageDown")) scroll.scrollBy(scroll.viewportHeight);
 					else if (matchesKey(data, "home")) scroll.scrollToStart();
@@ -511,6 +487,32 @@ async function confirmDream(ctx: ExtensionContext, prompt: DreamSnapshot["prompt
 	} finally {
 		if (onAbort) signal?.removeEventListener("abort", onAbort);
 	}
+}
+
+async function confirmDream(ctx: ExtensionContext, prompt: DreamSnapshot["prompt"], updated: string, proposal: DreamProposal, signal?: AbortSignal): Promise<boolean> {
+	const { filename, path, source: { raw: old, state } } = prompt;
+	return await chooseApproval(ctx, (theme) => {
+		const container = new Container();
+		const border = () => new DynamicBorder((text: string) => theme.fg("accent", text));
+		container.addChild(border());
+		container.addChild(new Text(`${theme.fg("accent", theme.bold(`Promote memory to ${filename}`))} ${theme.fg("dim", escapeDisplayControls(path))}`, 1, 0));
+		container.addChild(new Text(theme.fg("muted", `Why: ${escapeDisplayControls(proposal.reason)}`), 1, 1));
+		if (updated !== old) container.addChild(new Text(renderDiff(generateDiffString(escapeDisplayControls(old), escapeDisplayControls(updated)).diff), 1, 0));
+		for (const [target, file] of [["memory", "MEMORY.md"], ["user", "USER.md"]] as const) {
+			if (!proposal.remove[target].length) continue;
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.bold(`Remove from ${file} (now covered by ${filename}):`), 1, 0));
+			for (const entry of proposal.remove[target]) container.addChild(new Text(theme.fg("toolDiffRemoved", `- ${escapeDisplayControls(entry)}`), 1, 0));
+		}
+		const changes = [updated !== old && `${state === "absent" ? "create" : "update"} ${filename}`, ...(["memory", "user"] as const).map((target) => {
+			const count = proposal.remove[target].length;
+			return count && `delete ${count} ${count === 1 ? "entry" : "entries"} from ${target === "memory" ? "MEMORY.md" : "USER.md"}`;
+		})].filter(Boolean).join(", ");
+		return { container, choices: [
+			{ value: "reject", label: "Reject", description: "Change no files" },
+			{ value: "approve", label: "Approve", description: changes.charAt(0).toUpperCase() + changes.slice(1) },
+		] };
+	}, signal) === "approve";
 }
 
 function validateEntryContent(content: string): string | undefined {
@@ -528,7 +530,7 @@ function validateEntryContent(content: string): string | undefined {
 	return undefined;
 }
 
-function validateMutation(mutation: MemoryMutation): ValidatedMutation {
+export function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 	const bytes = Buffer.byteLength(JSON.stringify(mutation), "utf8");
 	if (bytes > MAX_FILE_BYTES) {
 		throw new Error(`Complete serialized memory mutation is ${bytes.toLocaleString()} UTF-8 bytes; the limit is ${MAX_FILE_BYTES.toLocaleString()} bytes.`);
@@ -582,41 +584,56 @@ function validateMutation(mutation: MemoryMutation): ValidatedMutation {
 	return { kind: "batch", operations: validated as [MemoryOperation, ...MemoryOperation[]] };
 }
 
+type ReviewDecision = { action: "discard" | "defer" } | { action: "apply"; operation?: Extract<MemoryOperation, { action: "replace" }> };
+
 async function resolveReviewConflict(
-	review: Exclude<CandidateReview, { verdict: "distinct" }>,
+	review: CandidateReview,
 	candidate: ValidatedMutation,
 	target: Target,
 	snapshot: ReviewSnapshot,
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
-): Promise<Extract<MemoryOperation, { action: "replace" }> | undefined> {
-	const merge = { label: "Merge with existing entries", description: review.proposedMerge ? `Suggested resolution: ${escapeDisplayControls(review.proposedMerge)}` : undefined };
+	pending: boolean,
+): Promise<ReviewDecision> {
 	const discard = { label: "Discard the new entry, keep current" };
+	const later = { label: pending ? "Review later" : "Cancel request" };
+	const save = { label: "Save complete mutation" };
+	const merge = { label: "Merge with existing entries", description: review.verdict !== "distinct" && review.proposedMerge ? `Suggested resolution: ${escapeDisplayControls(review.proposedMerge)}` : undefined };
 	const replace = { label: "Replace current entry" };
-	const options = review.source === "system" ? [discard, merge, replace]
-		: review.verdict === "contradiction" ? [replace, merge, discard] : [merge, discard, replace];
-	const answer = await askQuestion({
-		question: `Memory review found a ${review.verdict} with ${review.source.toUpperCase()}.\n\nExisting evidence:\n${escapeDisplayControls(review.evidence)}\n\n${escapeDisplayControls(review.explanation)}${review.source === "system" ? "\n\nSYSTEM.md cannot be changed by pi-memory." : ""}`,
-		options,
-	}, ctx, signal);
+	const matches = review.verdict !== "distinct" && review.source === target
+		? snapshot.stores[target].entries.filter((entry) => entry.includes(review.evidence)) : [];
+	const canReplace = matches.length === 1 && candidate.kind === "single" && candidate.operation.action === "add";
+	const options = review.verdict === "distinct" ? [save, discard, later]
+		: review.source === "system" ? [discard, later]
+		: canReplace ? review.proposedMerge ? review.verdict === "contradiction" ? [replace, merge, discard] : [merge, discard, replace] : [replace, discard, later]
+		: [save, discard, later];
+	const proposal = JSON.stringify(candidate.kind === "single" ? candidate.operation : candidate.operations, null, 2);
+	const summary = review.verdict === "distinct" ? review.explanation
+		: `Memory review found a ${review.verdict} with ${review.source.toUpperCase()}.\n\nExisting evidence:\n${review.evidence}\n\n${review.explanation}${review.source === "system" ? "\n\nCandidate review cannot edit SYSTEM.md. Discard or review later." : ""}`;
+	const question = `${escapeDisplayControls(summary)}\n\nComplete candidate for ${target}:\n${escapeDisplayControls(proposal)}`;
+	const answer = pending ? {
+		answer: await chooseApproval(ctx, (theme) => {
+			const container = new Container();
+			container.addChild(new Text(theme.bold("Pending memory review"), 1, 1));
+			container.addChild(new Text(question, 1, 0));
+			if (options.includes(merge) && merge.description) container.addChild(new Text(merge.description, 1, 1));
+			return { container, choices: [later, ...options.filter((option) => option !== later)].map(({ label }) => ({ value: label, label })) };
+		}, signal),
+		error: undefined,
+		wasCustom: false,
+	} : await askQuestion({ question: `${question}\n\nEsc cancels this request without saving it.`, options }, ctx, signal);
 	signal?.throwIfAborted();
-	if (answer.error) throw new MemoryReviewError(`Memory add blocked: ${answer.error}. Ask for an explicit resolution, then retry.`);
-	if (!answer.answer) throw new MemoryReviewError("Memory add blocked: user cancelled semantic-conflict resolution. Nothing was written; ask for an explicit resolution.");
-	if (answer.wasCustom) {
-		throw new MemoryReviewError(`Memory add blocked: user supplied a custom resolution (${JSON.stringify(answer.answer)}). Nothing was written; reissue an explicit memory mutation if appropriate.`);
-	}
-	if (answer.answer === discard.label) return;
-	if (review.source === "system") throw new MemoryReviewError("Memory add blocked: pi-memory cannot edit SYSTEM.md. Resolve it explicitly outside pi-memory.");
-	if (review.source !== target || candidate.kind !== "single" || candidate.operation.action !== "add") {
-		throw new MemoryReviewError("Memory add blocked: this conflict spans targets or a batch. Nothing was written; resolve it with an explicit mutation.");
-	}
-	const matches = snapshot.stores[target].entries.filter((entry) => entry.includes(review.evidence));
-	if (matches.length !== 1) throw new MemoryReviewError("Memory add blocked: conflicting evidence does not identify exactly one entry. Nothing was written.");
-	const content = answer.answer === merge.label ? review.proposedMerge : candidate.operation.content;
-	if (!content) throw new MemoryReviewError("Memory add blocked: reviewer provided no exact merged entry. Nothing was written; propose an explicit replacement.");
+	if (answer.error) throw new MemoryReviewError(`Memory review blocked: ${answer.error}. Nothing was written.`);
+	if (!answer.answer || answer.answer === later.label) return { action: "defer" };
+	if (answer.wasCustom) throw new MemoryReviewError(`Custom resolution not applied. ${pending ? "The candidate stays in the inbox." : "The candidate was not saved."} Use an explicit mutation.`);
+	if (answer.answer === discard.label) return { action: "discard" };
+	if (answer.answer === save.label && options.includes(save)) return { action: "apply" };
+	if (!canReplace || review.verdict === "distinct" || review.source === "system") throw new MemoryReviewError("Invalid review decision; nothing was written.");
+	const content = answer.answer === merge.label ? review.proposedMerge : candidate.kind === "single" && candidate.operation.action === "add" ? candidate.operation.content : undefined;
+	if (!content) throw new MemoryReviewError("No exact replacement is available; nothing was written.");
 	const error = validateEntryContent(content);
 	if (error) throw new MemoryReviewError(`Memory add blocked: proposed entry is invalid: ${error}`);
-	return { action: "replace", old_text: matches[0]!, content };
+	return { action: "apply", operation: { action: "replace", old_text: matches[0]!, content } };
 }
 
 async function withMemoryLock<T>(store: MemoryStore, run: () => Promise<T>): Promise<T> {
@@ -737,7 +754,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	registerModelTask(pi, MEMORY_PREPARE_TASK);
 	registerModelTask(pi, DREAM_TASK);
 	const configStore = memoryConfigStore();
-	const configReporter = registerConfigReporting(pi, [configStore]);
+	const inbox = reviewInboxStore(validateMutation);
+	const configReporter = registerConfigReporting(pi, [configStore, inbox]);
 	reportTaskModels = registerTaskModelsConfigReporting(pi);
 	const state: {
 		config?: MemoryConfig;
@@ -746,10 +764,75 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		initError?: string;
 		observedReviewSystem: boolean;
 		rememberQueue: string[];
-		conflictQueue: { mutation: MemoryMutation; signal?: AbortSignal }[];
+		group?: string;
+		groupError?: string;
 		sessionGeneration: number;
-	} = { promptSection: "", observedReviewSystem: false, rememberQueue: [], conflictQueue: [], sessionGeneration: 0 };
+	} = { promptSection: "", observedReviewSystem: false, rememberQueue: [], sessionGeneration: 0 };
 	let clearDreamActivity: (() => void) | undefined;
+	let inboxWatcher: FSWatcher | undefined;
+
+	const readInbox = (ctx: ExtensionContext): InboxItem[] => {
+		const loaded = inbox.loadSync();
+		configReporter.report(ctx, inbox, loaded);
+		if (loaded.status === "disabled" || loaded.issues.length) throw new MemoryReviewError(`Review inbox is unavailable (${inbox.path}); no candidates were removed.`);
+		return loaded.value.items;
+	};
+	const notifyInbox = (ctx: ExtensionContext, message: string, level: "info" | "warning") => {
+		if (ctx.hasUI) ctx.ui.notify(message, level);
+		else process.stderr.write(`${message}\n`);
+	};
+	const refreshInbox = async (ctx: ExtensionContext, remind = false) => {
+		try {
+			if (!state.group) throw new MemoryReviewError(state.groupError ?? "Memory review group is unavailable.");
+			const count = readInbox(ctx).filter((item) => item.group === state.group).length;
+			const message = `${count} memory review${count === 1 ? "" : "s"} pending for this group. Run /memory-review.`;
+			if (ctx.hasUI) {
+				if (!count) ctx.ui.setWidget("pi-memory-review", undefined);
+				else if (ctx.mode === "tui") ctx.ui.setWidget("pi-memory-review", (_tui, theme) => new Text(`${theme.fg("warning", "!")} Memory: ${count} pending · /memory-review`, 0, 0));
+				else ctx.ui.setWidget("pi-memory-review", [message]);
+			}
+			if (count && remind) notifyInbox(ctx, message, "info");
+		} catch (error) {
+			if (ctx.hasUI) ctx.ui.setWidget("pi-memory-review", undefined);
+			notifyInbox(ctx, `Cannot show pending memory reviews: ${error instanceof Error ? error.message : String(error)}`, "warning");
+		}
+	};
+	const removePending = async (item: InboxItem) => {
+		await inbox.update((current) => {
+			const existing = current.items.find((entry) => entry.id === item.id);
+			if (!existing || JSON.stringify(existing) !== JSON.stringify(item)) throw new MemoryReviewError("Inbox candidate changed or was already resolved.");
+			return { items: current.items.filter((entry) => entry.id !== item.id) };
+		});
+	};
+	let reviewing = false;
+	pi.registerCommand("memory-review", {
+		description: "Review pending memory candidates for this repository or starting directory",
+		handler: async (args, ctx) => {
+			if (args.trim()) { ctx.ui.notify("Usage: /memory-review", "warning"); return; }
+			if (ctx.mode !== "tui" || !ctx.isIdle() || reviewing) {
+				notifyInbox(ctx, "Memory review needs an idle interactive terminal and no other active review.", "warning");
+				return;
+			}
+			reviewing = true;
+			const generation = state.sessionGeneration;
+			try {
+				if (!state.group) throw new MemoryReviewError(state.groupError ?? "Memory review group is unavailable.");
+				const items = readInbox(ctx).filter((item) => item.group === state.group);
+				if (!items.length) { ctx.ui.notify("No pending memory reviews for this group.", "info"); return; }
+				for (const item of items) {
+					if (generation !== state.sessionGeneration || !ctx.isIdle()) throw new MemoryReviewError("Session changed or became busy; remaining candidates retained.");
+					const result = await memoryTool.execute("memory-review", item.mutation, ctx.signal, undefined, ctx, generation, item);
+					ctx.ui.notify(result.details.status, "info");
+					if ("queued" in result.details && result.details.queued) break;
+				}
+			} catch (error) {
+				notifyInbox(ctx, `Cannot complete memory review: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			} finally {
+				reviewing = false;
+				if (generation === state.sessionGeneration) await refreshInbox(ctx);
+			}
+		},
+	});
 
 	const loadLiveEntries = async (command: string, isIdle: () => boolean, warn: (message: string) => void, onUnusable?: () => void): Promise<boolean> => {
 		if (state.initError) {
@@ -806,7 +889,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		const current = await loadReviewSnapshot(state.config!, state.stores!, state);
 		if (!sameReviewSnapshot(snapshot, current)) throw new MemoryReviewError("Memory changed during /remember preparation. Retry with the latest entries.");
 		signal?.throwIfAborted();
-		const result = await memoryTool.execute("remember", { action: "add", ...proposal }, signal, undefined, ctx, generation);
+		const result = await memoryTool.execute("remember", { action: "add", ...proposal }, signal, undefined, ctx, generation, "remember");
 		ctx.ui.notify((result.details as { status?: string } | undefined)?.status ?? "Remembered.", "info");
 	};
 
@@ -923,31 +1006,16 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", async (event, ctx) => {
+		await refreshInbox(ctx, true);
 		if (event.aborted) {
-			state.conflictQueue = [];
 			state.rememberQueue = [];
 			return;
 		}
 		const sessionGeneration = state.sessionGeneration;
-		if (!ctx.isIdle()) return;
 		const isCurrent = () => state.sessionGeneration === sessionGeneration && ctx.isIdle() && !ctx.signal?.aborted;
-		while (isCurrent() && state.conflictQueue.length) {
-			const pending = state.conflictQueue.shift()!;
-			if (pending.signal?.aborted) {
-				ctx.ui.notify("Memory conflict cancelled; nothing was written.", "info");
-				continue;
-			}
-			try {
-				// Re-review live sources, not the snapshot from the active response.
-				const result = await memoryTool.execute("deferred-conflict", pending.mutation, pending.signal ?? ctx.signal, undefined, ctx, sessionGeneration);
-				if (isCurrent()) ctx.ui.notify(result.details.status, "info");
-			} catch (error) {
-				if (isCurrent()) ctx.ui.notify(`Cannot resolve memory conflict: ${error instanceof Error ? error.message : String(error)}`, "warning");
-			}
-		}
 		while (isCurrent() && state.rememberQueue.length) {
 			const ready = await loadLiveEntries("remember", ctx.isIdle, (message) => {
-				if (state.sessionGeneration === sessionGeneration) ctx.ui.notify(message, "warning");
+				if (isCurrent()) ctx.ui.notify(message, "warning");
 			}, () => {
 				if (isCurrent()) state.rememberQueue.shift();
 			});
@@ -964,23 +1032,32 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		state.sessionGeneration++;
 	});
 
-	pi.on("session_shutdown", () => {
+	pi.on("session_shutdown", (_event, ctx) => {
+		inboxWatcher?.close();
+		inboxWatcher = undefined;
+		if (ctx.hasUI) ctx.ui.setWidget("pi-memory-review", undefined);
+		state.group = undefined;
 		clearDreamActivity?.();
 		state.sessionGeneration++;
 		state.rememberQueue = [];
-		state.conflictQueue = [];
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		inboxWatcher?.close();
+		inboxWatcher = undefined;
 		clearDreamActivity?.();
 		state.sessionGeneration++;
 		state.rememberQueue = [];
-		state.conflictQueue = [];
 		state.config = undefined;
 		state.stores = undefined;
 		state.promptSection = "";
 		state.initError = undefined;
 		state.observedReviewSystem = false;
+		state.group = undefined;
+		state.groupError = undefined;
+		try { state.group = await reviewGroup(ctx.sessionManager.getCwd()); }
+		catch (error) { state.groupError = error instanceof Error ? error.message : String(error); }
+		await refreshInbox(ctx, true);
 		try {
 			const loaded = configStore.loadSync();
 			configReporter.report(ctx, configStore, loaded);
@@ -996,6 +1073,18 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			}
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			await mkdir(config.directory, { recursive: true });
+			try {
+				inboxWatcher = watch(extensionConfigDir("pi-memory"), { persistent: false }, (_event, filename) => {
+					if (filename === "review-inbox.json") void refreshInbox(ctx);
+				});
+				inboxWatcher.on("error", () => {
+					inboxWatcher?.close();
+					inboxWatcher = undefined;
+					notifyInbox(ctx, "Memory review watcher failed; counts refresh after responses and review commands.", "warning");
+				});
+			} catch {
+				notifyInbox(ctx, "Cannot watch the memory review inbox; counts refresh after responses and review commands.", "warning");
+			}
 			// The runtime contract keeps backups OUTSIDE the memory directory; reject
 			// overlap (equal, ancestor, descendant) so backup cleanup can never eat
 			// the store and .bak files can't be mistaken for memory files. Both dirs
@@ -1106,7 +1195,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		}, { additionalProperties: false }),
 		executionMode: "sequential",
 
-		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext, expectedGeneration = state.sessionGeneration) {
+		async execute(_toolCallId, params, signal, _onUpdate, ctx: ExtensionContext, expectedGeneration = state.sessionGeneration, origin?: "remember" | InboxItem) {
 			const args = params as MemoryMutation;
 			if (state.initError) throw new Error(`Memory extension failed to initialize and is disabled: ${state.initError}`);
 			if (!state.config || !state.stores) throw new Error("Memory extension is not initialized.");
@@ -1124,6 +1213,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				})),
 			};
 			const validated = validateMutation(mutation);
+			const pending = typeof origin === "object" ? origin : undefined;
+			if (pending && (pending.group !== state.group || pending.directory !== await realpath(state.config.directory))) {
+				throw new MemoryReviewError("Review group or memory directory changed; candidate retained.");
+			}
 			const needsReview = validated.kind === "single"
 				? validated.operation.action === "add"
 				: validated.operations.some((operation) => operation.action === "add");
@@ -1147,8 +1240,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			});
 			const write = async (resolved?: MemoryOperation) => {
 				signal?.throwIfAborted();
-				if (expectedGeneration !== state.sessionGeneration) {
-					throw new MemoryReviewError("Session changed during memory review; nothing was written.");
+				if (expectedGeneration !== state.sessionGeneration || (origin && !ctx.isIdle())) {
+					throw new MemoryReviewError("Session changed or became busy during memory review; nothing was written.");
 				}
 				const result = resolved ? await store.apply(resolved) : validated.kind === "single"
 					? await store.apply(validated.operation)
@@ -1192,33 +1285,58 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					}),
 				};
 			});
-			if (duplicate) return duplicate;
+			if (duplicate && !pending) return duplicate;
 
-			const review = await reviewMutation(mutation, snapshot, ctx, signal);
+			const review: CandidateReview = duplicate ? { verdict: "distinct", explanation: "The complete addition already exists; approval adds no duplicate." } : await reviewMutation(mutation, snapshot, ctx, signal);
 			signal?.throwIfAborted();
 			if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
 			let resolved: Extract<MemoryOperation, { action: "replace" }> | undefined;
-			if (review.verdict !== "distinct") {
-				if (ctx.mode === "tui" && !ctx.isIdle()) {
-					state.conflictQueue.push({ mutation, signal });
-					const status = "Conflict resolution queued until the response settles; nothing was written yet. Continue replying without retrying or asking the user yourself.";
+			if (review.verdict !== "distinct" && !origin) {
+				if (!state.group) throw new MemoryReviewError(`${state.groupError ?? "Memory review group is unavailable"} Candidate was not saved to the inbox or memory.`);
+				try {
+					const item: InboxItem = { id: randomUUID(), group: state.group, directory: await realpath(state.config.directory), mutation };
+					await inbox.update((current) => {
+						if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed; candidate was not saved.");
+						return { items: [...current.items, item] };
+					});
+				} catch (error) {
+					throw new MemoryReviewError(`Cannot save candidate to the review inbox; nothing was saved to memory. ${error instanceof Error ? error.message : String(error)}`);
+				}
+				await refreshInbox(ctx);
+				const status = "Candidate saved to the review inbox, not memory. Run /memory-review to decide. Continue replying without retrying or asking the user yourself.";
+				return {
+					content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, queued: true, saved: false, message: status }) }],
+					details: { status, entries: [], queued: true },
+				};
+			}
+			if (review.verdict !== "distinct" || pending) {
+				if (ctx.mode !== "tui") throw new MemoryReviewError("Memory review needs an interactive terminal; nothing was written.");
+				const decision = await resolveReviewConflict(review, validated, target, snapshot, ctx, signal, !!pending);
+				if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
+				if (decision.action !== "apply") {
+					if (decision.action === "discard" && pending) await withMemoryLock(store, async () => {
+						const current = await loadReviewSnapshot(state.config!, state.stores!, state);
+						if (!sameReviewSnapshot(snapshot, current)) throw new MemoryReviewError("Review sources changed; candidate retained.");
+						signal?.throwIfAborted();
+						if (expectedGeneration !== state.sessionGeneration || !ctx.isIdle()) throw new MemoryReviewError("Session changed or became busy; candidate retained.");
+						await removePending(pending);
+					});
+					const status = decision.action === "discard" ? "User discarded the candidate; nothing was written." : pending ? "Review deferred; candidate retained in the inbox." : "Request cancelled; candidate was not saved.";
 					return {
-						content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, queued: true, saved: false, message: status }) }],
-						details: { status, entries: [], queued: true },
+						content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, saved: false, message: status }) }],
+						details: { status, entries: [], queued: decision.action === "defer" && !!pending },
 					};
 				}
-				resolved = await resolveReviewConflict(review, validated, target, snapshot, ctx, signal);
-				if (!resolved) return {
-					content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, message: "User discarded the candidate; nothing was written." }) }],
-					details: { status: "User discarded the candidate; nothing was written.", entries: [] },
-				};
-				const oldEntry = resolved.old_text;
-				const staged: ReviewSnapshot = {
-					...snapshot,
-					stores: { ...snapshot.stores, [target]: { ...snapshot.stores[target], entries: snapshot.stores[target].entries.filter((entry) => entry !== oldEntry) } },
-				};
-				const followUp = await reviewMutation({ target, action: "add", content: resolved.content }, staged, ctx, signal);
-				if (followUp.verdict !== "distinct") throw new MemoryReviewError("Memory add blocked: proposed replacement conflicts with another live entry or SYSTEM.md. Nothing was written.");
+				resolved = decision.operation;
+				if (resolved) {
+					const oldEntry = resolved.old_text;
+					const staged: ReviewSnapshot = {
+						...snapshot,
+						stores: { ...snapshot.stores, [target]: { ...snapshot.stores[target], entries: snapshot.stores[target].entries.filter((entry) => entry !== oldEntry) } },
+					};
+					const followUp = await reviewMutation({ target, action: "add", content: resolved.content }, staged, ctx, signal);
+					if (followUp.verdict !== "distinct") throw new MemoryReviewError("Memory add blocked: proposed replacement conflicts with another live entry or SYSTEM.md. Nothing was written.");
+				}
 			}
 			return withMemoryLock(store, async () => {
 				const current = await loadReviewSnapshot(state.config!, state.stores!, state);
@@ -1226,7 +1344,15 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 					throw new MemoryReviewError("Memory add blocked: review sources changed while waiting. Nothing was written; retry to review current state.");
 				}
 				signal?.throwIfAborted();
-				return write(resolved);
+				if (pending && !readInbox(ctx).some((item) => item.id === pending.id && JSON.stringify(item) === JSON.stringify(pending))) {
+					throw new MemoryReviewError("Inbox candidate changed or was already resolved; nothing was written.");
+				}
+				const result = await write(resolved);
+				if (pending) {
+					try { await removePending(pending); }
+					catch (error) { throw new MemoryReviewError(`Memory was saved, but inbox removal failed; candidate retained. ${error instanceof Error ? error.message : String(error)}`); }
+				}
+				return result;
 			});
 		},
 
