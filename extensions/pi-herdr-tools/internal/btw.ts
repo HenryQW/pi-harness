@@ -47,7 +47,7 @@ import { HELP_TEXT, parseBtwCommand } from "./router.ts";
 import { configuredTaskRoutes } from "./task-models.ts";
 
 export const BTW_TASK = {
-	id: "pi-herdr-btw/btw",
+	id: "pi-herdr-tools/btw",
 	label: "BTW side thread",
 	purpose: "Launch an isolated Herdr side thread.",
 	defaultProfile: "fast",

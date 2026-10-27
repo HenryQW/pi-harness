@@ -43,10 +43,10 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | `/rename` | command | Generate a title from up to five recent user messages. |
 | Rename progress and result widgets | ui | Show `renaming...`, then `renamed to <title>` for two seconds on success. |
 | First real user prompt | ui | Start titles in new, untitled conversations. |
-| `pi-herdr-rename/rename` | model task | Title model profile. |
+| `pi-herdr-tools/rename` | model task | Title model profile. |
 | Idle recap widget | ui | Show the goal, current state, and next action after four idle minutes. |
 | `pi-herdr-tools/recap` | model task | Idle recap model profile. |
-| `pi-herdr-btw/btw` | model task | Side-thread model profile. |
+| `pi-herdr-tools/btw` | model task | Side-thread model profile. |
 | Dialog blocked status | ui | Show `Input required` in Herdr during interactive TUI dialogs. |
 
 ### Background commands
@@ -196,6 +196,10 @@ Missing fields use defaults. Invalid fields and malformed files produce config w
 See [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for profile defaults, assignments, and config errors.
 
 Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged. Idle recaps use the same route order and never substitute the current session model.
+
+### Move task-profile assignments
+
+There is no automatic move or legacy fallback. The extension does not read the old `pi-herdr-btw/btw` and `pi-herdr-rename/rename` keys. Without an assignment, each task uses the `fast` profile. To keep an existing assignment, edit `tasks` in `~/.pi/agent/config/pi-task-models/config.json`: rename `pi-herdr-btw/btw` to `pi-herdr-tools/btw` and `pi-herdr-rename/rename` to `pi-herdr-tools/rename`. Then restart Pi.
 
 ## State and storage
 
