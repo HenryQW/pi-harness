@@ -7,6 +7,7 @@ import test, { after } from "node:test";
 import { formatPrFooter, projectPrDisplay } from "../extensions/pr-ui.ts";
 import {
 	GitHubRateLimitError,
+	GitHubRepositoryLookupError,
 	linkInferredPullRequest,
 	loadCurrentPullRequest as discoverCurrentPullRequest,
 	loadNamedPullRequest,
@@ -1604,6 +1605,42 @@ test("rejects credential-bearing and authority-confused push URLs before exposin
 	}
 });
 
+test("reports repository lookup failures without treating them as invalid inferred targets", async () => {
+	for (const pushResult of [result("\n"), result("fork/feature/pr\n")]) {
+		for (const failure of [result("", 1, "network error with secret"), result("", 1, "", true)]) {
+			const app = harness({ pushResult, remoteNames: ["fork"], pushRepositoryResult: failure });
+			await assert.rejects(discoverCurrentPullRequest(app.pi, app.context), (error: unknown) =>
+				error instanceof GitHubRepositoryLookupError && !error.message.includes("secret"));
+			assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false);
+		}
+	}
+});
+
+test("reports fetch repository command exceptions during inferred discovery", async () => {
+	const app = harness({ pushResult: result("\n"), remoteNames: ["fork"], fetchUrl: "git@github.com:acme/other.git" });
+	const pi = { exec: async (command: string, args: string[], options?: CommandCall["options"]) => {
+		if (command === "gh" && args[2] === "github.com/acme/other") throw new Error("secret");
+		return app.pi.exec(command, args, options);
+	} };
+	await assert.rejects(discoverCurrentPullRequest(pi, app.context), (error: unknown) =>
+		error instanceof GitHubRepositoryLookupError && /Read fetch repository failed: command threw/.test(error.message));
+	assert.equal(app.calls.some(({ command, args }) => command === "git" && args[0] === "ls-remote"), false);
+});
+
+test("blocks invalid inferred remote authority without looking up or changing the remote ref", async () => {
+	for (const options of [
+		{ pushUrl: "https://user:secret@github.com/acme/fork.git" },
+		{ pushRepositoryResult: result(JSON.stringify({ nameWithOwner: "acme/other", url: "https://github.com/acme/other" })) },
+		{ pushRepositoryResult: result("not JSON") },
+	]) {
+		const app = harness({ ...options, pushResult: result("\n"), remoteNames: ["fork"] });
+		assert.deepEqual(await discoverCurrentPullRequest(app.pi, app.context), {
+			kind: "blocked", issue: { kind: "target-invalid" },
+		});
+		assert.equal(app.calls.some(({ command, args }) => command === "git" && ["ls-remote", "fetch", "push"].includes(args[0]!)), false);
+	}
+});
+
 test("requires the credential-free locator and GitHub response to identify the same repository", async () => {
 	const { pi, context, calls } = harness({
 		pushRepositoryResult: result(JSON.stringify({ nameWithOwner: "acme/other", url: "https://github.com/acme/other" })),
@@ -1908,17 +1945,14 @@ test("propagates GitHub API rate-limit failures during optional remote inference
 	);
 });
 
-test("keeps ordinary optional remote-authority failures as a blocked target", async () => {
+test("reports optional remote-authority permission failures as lookup failures", async () => {
 	const { pi, context } = harness({
 		pushResult: result("\n"),
 		remoteNames: ["fork"],
 		pushRepositoryResult: result("", 1, "GraphQL: permission denied\n"),
 	});
 
-	assert.deepEqual(await discoverCurrentPullRequest(pi, context), {
-		kind: "blocked",
-		issue: { kind: "target-invalid" },
-	});
+	await assert.rejects(discoverCurrentPullRequest(pi, context), GitHubRepositoryLookupError);
 });
 
 test("fails visibly when remote push-ref authority errors or is malformed", async () => {
