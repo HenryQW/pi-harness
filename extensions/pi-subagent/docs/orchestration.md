@@ -418,9 +418,11 @@ The report lists removed, skipped, and failed resources. After complete cleanup,
 
 ### Prune leftover worktrees
 
+Each `/subagent prune` call first runs [Subagent Collection](../README.md#subagent-collection), which closes only verified completed worker tabs and keeps their evidence. This separate action has no tab-count requirement and runs even if worktree review fails or has no candidates. It does not grant permission to delete worktrees or branches. A later cancellation does not reopen collected tabs.
+
 Run `/subagent prune` to scan leftover worker and integration checkouts under `.worktrees/`. In interactive mode, the command starts a background scan, shows progress, and returns without waiting. It inspects at most four candidates at once. Candidates that share one checkout, including path aliases, are inspected one at a time. The results stay sorted and include every blocker.
 
-When the scan is ready, the command sends a notification. It does not open a dialog. Run `/subagent prune` again to review that plan. Repeated commands during a scan, review, or cleanup show its status; they do not start another operation. All selection and confirmation dialogs stay in the foreground, including the review of whole owning requests. After confirmation, cleanup runs in the background. It removes items one at a time and reports removed, skipped, and failed items.
+When the scan is ready, the command sends a notification. It does not open a dialog. Run `/subagent prune` again to review that plan. Repeated commands during a scan, review, or cleanup show its status; they do not start another worktree operation. Tab collection remains independent. All selection and confirmation dialogs stay in the foreground, including the review of whole owning requests. After confirmation, cleanup runs in the background. It removes items one at a time and reports removed, skipped, and failed items.
 
 Use `/subagent prune cancel` to cancel a scan, ready plan, or cleanup. Cancellation stops new removal steps. An active step can finish; completed removals are not undone. The final cleanup report includes completed steps and partial removal, such as a removed checkout whose branch was kept. Wait for the active step to finish before starting another scan.
 
@@ -451,7 +453,7 @@ The list shows removable items first. The command never cuts a long list silentl
 
 The command checks each item again immediately before removal and skips an item that changed. It checks ownership, the productive lease, Herdr panes, checkout state, the branch tip, ignored entries, and the launching session. The command deletes a branch only if it still points at the reviewed tip. It does not run automatic request-abort cleanup, because that separate workflow can remove other resources. If an aborted request still shows retained resources, inspect `subagent_status` and repeat `subagent_abort` to reconcile its saved cleanup state.
 
-Without interactive UI, the command waits for the scan and only reports. It never removes items in this mode.
+Without an interactive user interface, the command still collects eligible tabs. It then waits for the worktree scan and reports its results. It never deletes worktrees or branches in this mode.
 
 A non-regular or unreadable state entry can block every item because its resource ownership is unknown. State files never change directly.
 

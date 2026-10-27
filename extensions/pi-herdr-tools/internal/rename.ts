@@ -20,7 +20,7 @@ const TITLE_SHAPE = `{"kind":"<one lowercase English word, at most ${SEMANTIC_TY
 const TITLE_PROMPT = `You label a coding session with one short English title. Reply with one JSON object and nothing else: ${TITLE_SHAPE}. Use English even when the user writes in another language. Example reply: {"kind":"fix","subject":"login crash"}`;
 const TITLE_REPAIR_PROMPT = `Your previous reply was rejected. Reply only with one JSON object shaped ${TITLE_SHAPE}, where kind is one lowercase English word of at most ${SEMANTIC_TYPE_MAX_CHARS} letters and subject is 2 or 3 lowercase English words of letters and digits with single spaces, at most ${DISPLAY_MAX_CHARS} characters.`;
 export const RENAME_TASK = {
-	id: "pi-herdr-rename/rename",
+	id: "pi-herdr-tools/rename",
 	label: "Conversation rename",
 	purpose: "Generate a short conversation title.",
 	defaultProfile: "fast",

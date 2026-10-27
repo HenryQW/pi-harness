@@ -44,10 +44,10 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | `/main-tab` | command | Select this tab as main and copy its existing meaningful label to the workspace. |
 | Rename progress and result widgets | ui | Show `renaming...`, then `renamed to <title>` for two seconds on success. |
 | First real user prompt | ui | Start titles in new, untitled conversations. |
-| `pi-herdr-rename/rename` | model task | Title model profile. |
+| `pi-herdr-tools/rename` | model task | Title model profile. |
 | Idle recap widget | ui | Show the goal, current state, and next action after four idle minutes. |
 | `pi-herdr-tools/recap` | model task | Idle recap model profile. |
-| `pi-herdr-btw/btw` | model task | Side-thread model profile. |
+| `pi-herdr-tools/btw` | model task | Side-thread model profile. |
 | Dialog blocked status | ui | Show `Input required` in Herdr during interactive TUI dialogs. |
 
 ### Background commands
@@ -62,7 +62,7 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
-Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged JavaScript runner uses Node to execute `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment. Named Pi-agent launches do not change.
+Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged JavaScript runner uses Node to execute `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment.
 
 Launch needs a free checkout. A writer keeps checkout admission until its runner proves termination. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
 
@@ -157,7 +157,7 @@ Cleanup runs `git worktree remove <checkout>`, closes other tabs in the current 
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home. Side-thread settings are under `btw`; command limits remain at the root.
+Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home. Side-thread settings are under `btw`; command limits are at the root.
 
 ```json
 {
@@ -185,10 +185,6 @@ File and fields are optional. Launch reports unknown keys and invalid values, us
 
 `/btw config reset` replaces only `btw` with defaults and preserves command limits. It can correct invalid settings under `btw`. Reset refuses malformed files and issues outside `btw`; correct those manually first. If the file changes during a repair, reset refuses the write. Read the file and retry.
 
-### Move existing side-thread settings
-
-There is no automatic move or legacy fallback. The old `~/.pi/agent/config/pi-herdr-btw/config.json` is not read. Back up both files before you edit them. Move the old `autoSubmit`, `tools`, and `split` values into the `btw` object in `pi-herdr-tools/config.json`. Preserve existing command limits and check any existing `btw` values before you replace them. Run `/btw config show` to check the values, then remove the old file when you no longer need it.
-
 ### Command policy
 
 | Name | Description | Values | Default |
@@ -202,7 +198,7 @@ Missing fields use defaults. Invalid fields and malformed files produce config w
 
 ### Model profiles
 
-See [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) for profile defaults, assignments, and config errors.
+All three model tasks default to `fast`. Use `/task-models` to change their profiles.
 
 Side threads select the first authenticated viable route before launch. Titles use the primary route, then fallback, with configured thinking; they never substitute the current session model. An invalid title gets one repair request before fallback. Without a viable route, titles remain unchanged. Idle recaps use the same route order and never substitute the current session model.
 
@@ -228,7 +224,7 @@ Herdr assigns number 1 to the first-created tab. The extension uses that number 
 
 The extension checks the lifetime token immediately before each workspace rename and Git branch mutation. An independent client can still clear metadata or change Herdr state after that check. Herdr cannot make the token check and mutation one atomic operation.
 
-Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved `pi-herdr-rename/title` entries restore display titles and semantic branches without another model request. Older titles get no migration.
+Clones are separate session files in the Pi-selected session directory. Each contains only the active path. Pi names the clone file for a saved source session; otherwise, the extension creates and names it. Saved titles restore display titles and semantic branches without another model request.
 
 ## Limits and recovery
 
@@ -247,7 +243,7 @@ Clones are separate session files in the Pi-selected session directory. Each con
 | Handoff start or prompt failure | Resources remain. Errors identify worktree, branch, workspace, tab, pane, and agent. No automatic cleanup occurs. |
 | `agent_blocked` or `agent_prompt_stalled` | Prompt delivery failed. Inspect the agent before retrying. |
 
-Timed-out prompts can still arrive. Check `herdr agent get` and `herdr agent read`; resend with `herdr agent prompt` only if absent. Alternatively, run `/done` in the new worktree. Remove personal `handoff-worktree.md` copies to resolve package-prompt name collisions.
+Timed-out prompts can still arrive. Check `herdr agent get` and `herdr agent read`; resend with `herdr agent prompt` only if absent. Alternatively, run `/done` in the new worktree.
 
 After a failed primary update, the removed worktree stays removed. Correct primary-checkout changes or divergence, then run `git -C <primary-checkout> pull --ff-only`.
 

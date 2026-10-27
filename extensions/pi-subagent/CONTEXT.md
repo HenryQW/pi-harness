@@ -56,6 +56,9 @@ The guarded transfer of a validated integration generation into unchanged, clean
 **Release**:
 Main's explicit cleanup of an exact rejected worker or superseded generation after proving that it is no longer selected. Release does not discard dirty, conflicted, or uncertain work.
 
+**Subagent Collection**:
+Tab-only cleanup of verified completed workers. It preserves sessions, leases, worktrees, candidates, and recovery records. A workspace with more than 10 tabs triggers an automatic attempt; `/subagent prune` attempts it at any count. Live isolated revision workers are not completed resources.
+
 **Discard**:
 The user-confirmed deletion of owned isolated resources from `/subagent`, including committed, uncommitted, and ignored content. Unlike Release, only the user can trigger it.
 

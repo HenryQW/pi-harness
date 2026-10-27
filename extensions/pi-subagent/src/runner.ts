@@ -254,6 +254,8 @@ export interface HostRuntime {
 	cleanupHost(input: {
 		requestId: ExecuteRequest["id"];
 		kind: HostCleanupKind;
+		/** Tab-only collection keeps all session and lease evidence. */
+		collection?: { current(): boolean };
 		task: TaskRequest;
 		attempt: TaskAttempt;
 	}, context: OperationContext): Promise<{ outcome: "completed" | "absent" } | { outcome: "blocked"; failure: string }>;
@@ -977,6 +979,46 @@ export class IsolatedRunner {
 				status: state.tasks.find((item) => item.taskId === task.id)!.status,
 			})),
 		})) };
+	}
+
+	/** Collect only already terminated worker tabs. Do not change saved state or candidate resources. */
+	async collectTabs(root: string, eligible: (workspaceId: string) => Promise<boolean>, current: () => boolean): Promise<string[]> {
+		root = realpathSync.native(root);
+		const candidates = (states: RunState[]) => states.flatMap((state) => state.tasks.flatMap((task) => task.kind !== "changeset" ? []
+			: task.attempts.flatMap((attempt) => {
+				const workspace = allocationByKind(attempt, "workspace");
+				return attempt.termination?.status === "terminated" && workspace?.status === "owned" && workspace.workspaceId
+					&& !attempt.cleanup.some((step) => step.kind === "worker_tab" && step.status === "completed")
+					? [{ state, task, attempt, workspaceId: workspace.workspaceId }] : [];
+			})));
+		const listed = await this.listRequests(root);
+		const report = listed.invalidIds.map((id) => `Retained unreadable isolated request ${id}.`);
+		const workspaces = new Set<string>();
+		for (const id of new Set(candidates(listed.states).map(({ workspaceId }) => workspaceId))) {
+			if (!current()) return report;
+			if (await eligible(id)) workspaces.add(id);
+		}
+		if (!workspaces.size || !current()) return report;
+		try {
+			return await this.withProductiveRun(root, async (lifecycle) => await this.store.withLock(root, async () => {
+				// Reload under the productive lease; the earlier inventory grants no mutation authority.
+				for (const { state, task, attempt, workspaceId } of candidates((await this.listRequests(root)).states)) {
+					if (!current()) return report;
+					if (!workspaces.has(workspaceId)) continue;
+					const scope = new DeadlineScope(this.coordinatorRuntime.now() + CLEANUP_SAFETY_BUDGET_MS, () => this.coordinatorRuntime.now());
+					try {
+						const result = await scope.call((context) => this.hostRuntime.cleanupHost({
+							requestId: state.request.id, kind: "worker_tab", task: changesetTaskRequest(state, task.taskId), attempt, collection: { current },
+						}, context));
+						if (result.outcome !== "absent") report.push(`${state.request.id}/${task.taskId}/${attempt.number}: ${result.outcome === "blocked" ? `retained: ${result.failure}` : "worker tab collected"}.`);
+					} finally { scope.close(); }
+				}
+				return report;
+			}, { productiveRunLease: lifecycle.lease }));
+		} catch (error) {
+			if (!(error instanceof ProductiveRunLeaseBusyError)) throw error;
+			return ["Isolated tabs retained: a productive run owns this checkout. Retry after it finishes."];
+		}
 	}
 
 	/** True while a live productive run holds this root's lease; the lease does not name its request. */

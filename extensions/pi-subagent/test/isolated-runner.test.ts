@@ -3501,3 +3501,37 @@ test("discard closes all reviewed workers before deleting any checkout", async (
 	assert.ok(results.every((item) => item.outcome === "removed"), JSON.stringify(results));
 	assert.equal((await runner.listRequests(root)).requests[0]!.status, "aborted");
 });
+
+test("collection retains candidates and saved state, skips unproved termination, and respects the productive lease", async (t) => {
+	const { root, runtime, runner, store } = await harness(t);
+	const ready = await runner.execute(request("collection", [changesetTask("change")]), root);
+	assert.deepEqual(await runner.collectTabs(root, async () => true, () => true), [], "a pending candidate keeps its live revision worker");
+	const candidate = ready.state.integration.candidates[0]!;
+	await runner.stage({ id: "collection", action: "reject", taskId: "change", attempt: 1,
+		candidate: candidate.tip, generation: 1, expectedTip: ready.state.main }, root);
+	const path = store.statePath(root, "collection");
+	const saved = await readFile(path, "utf8");
+	const before = runtime.cleanupCalls.length;
+	assert.deepEqual(await runner.collectTabs(root, async () => false, () => true), []);
+	assert.equal(runtime.cleanupCalls.length, before);
+	const reports = await runner.collectTabs(root, async () => true, () => true);
+	assert.match(reports.join("\n"), /worker tab collected/);
+	assert.deepEqual(runtime.cleanupCalls.slice(before), ["worker_tab"]);
+	assert.equal(await readFile(path, "utf8"), saved, "readiness, candidates, worktrees, and recovery evidence are unchanged");
+	await store.withProductiveRunLease(root, async () => {
+		assert.match((await runner.collectTabs(root, async () => true, () => true)).join("\n"), /productive run owns/);
+	});
+	assert.equal(runtime.cleanupCalls.length, before + 1);
+	assert.deepEqual(await runner.collectTabs(root, async () => true, () => false), []);
+	await store.withLock(root, async () => {
+		const handle = await store.load(root, "collection");
+		const task = changesetState(handle.state, "change");
+		const attempt = task.attempts[0]!;
+		attempt.termination = { status: "unknown", workerId: attempt.termination!.workerId,
+			candidate: attempt.termination!.candidate, failure: "Termination proof unavailable" };
+		task.status = "needs_attention";
+		await handle.save();
+	});
+	assert.deepEqual(await runner.collectTabs(root, async () => true, () => true), []);
+	assert.equal(runtime.cleanupCalls.length, before + 1);
+});

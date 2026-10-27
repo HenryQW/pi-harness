@@ -37,6 +37,7 @@ import { applyRulesetBypass, deriveNamedPullRequestVerdict, isRulesetBypassCandi
 import { createPrPolicyStore, DEFAULT_PR_POLICY, PrRun, type PrPolicy } from "./pr-run.ts";
 import {
 	GitHubRateLimitError,
+	GitHubRepositoryLookupError,
 	loadCurrentPullRequest,
 	loadNamedPullRequest,
 	readRulesetBypass,
@@ -410,7 +411,7 @@ export default function pullRequestExtension(
 		pollDelay = POLL_MIN_MS;
 	};
 
-	// Idle sessions get no refresh events, so poll only while the footer shows a transient PR state.
+	// Idle sessions get no refresh events; poll transient status and repository lookup failures.
 	const schedulePoll = (): void => {
 		if (pollTimer !== undefined) clearTimeout(pollTimer);
 		const generation = sessionGeneration;
@@ -954,8 +955,11 @@ export default function pullRequestExtension(
 						ctx.ui.setStatus(UI_KEY, formatPrFooter(unavailable, ctx.ui.theme));
 						displayEstablished = true;
 					}
-					// Back off on a stale transient footer; quota failures already stopped polling.
+					// Retry repository lookup failures even when no transient footer was established.
+					if (error instanceof GitHubRepositoryLookupError && pollKey === undefined) pollKey = "repository-lookup";
+					else if (!(error instanceof GitHubRepositoryLookupError) && pollKey === "repository-lookup") stopPolling();
 					if (pollKey !== undefined) schedulePoll();
+					if (error instanceof GitHubRateLimitError) queued = false;
 					reportRefreshFailure(error);
 				}
 				return;

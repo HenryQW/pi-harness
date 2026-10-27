@@ -191,7 +191,7 @@ Background discovery starts with the session. It refreshes after local commits, 
 
 While Pi is idle and an open PR shows running CI, running Codex review, or pending mergeability, the footer also refreshes on a timer. The first refresh occurs after 30 seconds. The interval doubles to a maximum of 5 minutes and resets when the status changes. A busy agent delays the refresh. The timer stops when the status is final, the PR merges or closes, an API quota failure occurs, or the session ends.
 
-The UI stays silent outside Git or without a supported GitHub remote. A repository with no remotes has no pull-request footer item, even before its first commit. Lookup failures show `PR · status unavailable`. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying.
+The UI stays silent outside Git or without a supported GitHub remote. A repository with no remotes has no pull-request footer item, even before its first commit. Lookup failures show `PR · status unavailable` or retain the last footer, without an action hint. A failed GitHub repository lookup retries while Pi is idle, starting after 30 seconds and doubling to a maximum of 5 minutes. Invalid remote configuration stays blocked and is not retried on this timer. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying on the timer.
 
 After creation, `HERDR_ENV=1` with non-empty `HERDR_WORKSPACE_ID` enables the workspace prefix `#<number> • `. The branch name stays unchanged. Failure shows `Herdr workspace rename failed: <error>`; the PR and UI remain usable.
 

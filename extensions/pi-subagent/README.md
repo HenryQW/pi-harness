@@ -33,7 +33,7 @@ Commands, prompts, and UI are for you. Tools and the packaged skill are for Main
 | --- | --- | --- |
 | `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. **Select multiple…** applies one action to many rows. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
-| `/subagent prune` | command | Start a background scan of leftover branches and worktrees. Run it again when ready to review and confirm removal. While busy, show progress. Requires a running Herdr server; without interactive UI, wait for the scan and only report. |
+| `/subagent prune` | command | Collect eligible completed worker tabs, then scan leftover branches and worktrees. Run it again when ready to review and confirm deletion. Requires a running Herdr server. Without an interactive user interface, collect tabs and report worktrees without deleting them. |
 | `/subagent prune cancel` | command | Cancel the scan, ready plan, or cleanup. An active removal step can finish; completed removals are not undone. |
 | `/review [target] [focus]` | prompt | Tell Main to review a change with parallel `reviewer` tasks and give one ship verdict. See [Review a change](#review-a-change). |
 | `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
@@ -271,7 +271,7 @@ The executor accepts concurrency, turn/token, idle/hard-runtime limits, and abor
 
 Private durable state lives under `config/pi-subagent/state/`. Isolated worker sessions use mode `0600` under `config/pi-subagent/leases/`; worker umask stays unchanged. Reads stop at 16 MiB. Larger sessions require inspection and cannot prove completion.
 
-Sessions are removed only after exact worker-tab cleanup. They can contain prompts and answers: do not share them. State v5 rejects v4 and older files without migration. Preserve old state and recover its work manually.
+Sessions are removed only after exact worker-tab cleanup. Subagent Collection keeps them. They can contain prompts and answers: do not share them. State v5 rejects v4 and older files without migration. Preserve old state and recover its work manually.
 
 ## Limits and recovery
 
@@ -282,6 +282,20 @@ For uncertain direct termination, open `/subagent`, select the exact workflow, a
 Unverified tab allocations retain evidence but offer no Close action. Reconcile them manually against Herdr; do not recreate tabs, guess IDs, or restart to bypass admission. See [Direct contract](./docs/orchestration.md#direct-contract).
 
 After coordinator interruption, restart Pi and run `/subagent recover` in the canonical repository. Use `subagent_status` for exact evidence; never take over a live productive lease or replay uncertain prompts, merges, or promotion. See [Recover after interruption](./docs/orchestration.md#recover-after-interruption) and [Recovery and state](./docs/orchestration.md#recovery-and-state).
+
+### Subagent Collection
+
+Subagent Collection closes only verified completed worker tabs. It keeps saved sessions, process leases, worktrees, candidates, and recovery records. It never closes a workspace or its root tab.
+
+Automatic collection checks each relevant workspace after direct `delegate_task` launches, after direct or isolated workflows finish, and when Main settles. More than 10 tabs in that workspace triggers collection. Ten is a trigger, not a maximum. Collection can close all eligible tabs, even after the count falls below 10. User tabs count toward the trigger but are never collection targets. There is no timer: changes from other clients wait for the next check.
+
+Direct collection uses exact records on the current Pi session branch, in the current checkout and Herdr workspace. It requires the recorded final session turn. If the exact agent remains, it must be idle or done. Active local tasks, continued sessions, unverified allocations, and uncertain identities stay open. Pane absence and two empty process-lease scans must pass before an empty tab can close. Saved conversations remain available for `continueFrom`.
+
+Isolated collection uses saved requests in the current checkout. It requires saved termination proof, then verifies agent and pane absence and two empty process-lease scans again. A live productive lease blocks collection. **Ready candidates keep their live workers because Main can still request a revision.** Workspaces, root tabs, orphaned requests, and requests in other checkouts stay unchanged. Use their existing recovery or cleanup actions.
+
+Every `/subagent prune` call tries collection without the tab-count trigger, including calls while a worktree scan is busy. Collection runs before worktree review and does not require deletion approval. Collection failure does not prevent that review. Worktree and branch deletion still require the existing review and confirmation. `/subagent prune cancel` stops new collection steps; a dispatched close can finish.
+
+### Worktree pruning
 
 Run `/subagent prune` to scan leftovers in the background. It inspects at most four candidates at once and never inspects the same checkout twice at once. When notified, run the command again to review the plan; no dialog opens automatically. All reviews and confirmations stay in the foreground. Confirmed cleanup runs in the background and removes items one at a time with fresh safety checks.
 

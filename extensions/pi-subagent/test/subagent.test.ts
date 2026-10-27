@@ -395,7 +395,7 @@ function harness(options: {
 			if (customType === "subagent-direct-result") messageRenderer = renderer;
 		},
 		registerEntryRenderer() {},
-		appendEntry(customType: string, data: unknown) { sessionEntries.push({ type: "custom", customType, data }); },
+		appendEntry(customType: string, data: unknown) { sessionEntries.push({ id: `entry-${sessionEntries.length}`, type: "custom", customType, data }); },
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
 			sentMessages.push({ message, options: deliveryOptions });
@@ -526,6 +526,8 @@ Do bounded work.
 function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined | Promise<string | undefined> = (prompt) => prompt.includes("Write-access completion:") ? JSON.stringify({ outcome: "succeeded", answer: "exact answer" }) : "exact answer", waitGate?: Promise<void>, promptStatus = "working", waitTimeout = false) {
 	const calls: string[][] = [];
 	const closed = new Set<string>();
+	const tabs = new Map<string, string>();
+	let extraTabs = 0;
 	let probeToken = "";
 	const sessions = new Map<string, { path: string; prompt?: string; pane: string; tab: string }>();
 	let next = 1;
@@ -547,13 +549,26 @@ function fakeHerdr(cwd: string, answer: (prompt: string) => string | undefined |
 	};
 	return {
 		calls,
+		setExtraTabs(count: number) { extraTabs = count; },
 		async exec(args: string[]) {
 			calls.push(args);
 			if (args[0] === "pane" && args[1] === "current") return response({ type: "pane_current", pane: { pane_id: "w-test:p1", workspace_id: "w-test" } });
 			if (args[0] === "tab" && args[1] === "create") {
 				const tab = `w-test:t${++next}`;
+				tabs.set(tab, `w-test:p${next}`);
 				return response({ type: "tab_created", tab: { tab_id: tab, workspace_id: "w-test", focused: false },
 					root_pane: { pane_id: `w-test:p${next}`, tab_id: tab, workspace_id: "w-test", cwd, focused: false } });
+			}
+			if (args[0] === "tab" && args[1] === "list") return response({ type: "tab_list", tabs: [
+				...Array.from({ length: extraTabs + 1 }, (_, index) => ({ tab_id: `user-${index}`, workspace_id: "w-test" })),
+				...[...tabs.keys()].map((tab_id) => ({ tab_id, workspace_id: "w-test" })),
+			] });
+			if (args[0] === "tab" && args[1] === "get") return tabs.has(args[2]!)
+				? response({ type: "tab_info", tab: { tab_id: args[2], workspace_id: "w-test", pane_count: closed.has(tabs.get(args[2]!)!) ? 0 : 1 } })
+				: { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "tab_not_found" } }) };
+			if (args[0] === "tab" && args[1] === "close") {
+				assert.ok(tabs.has(args[2]!), "cannot close a user tab");
+				tabs.delete(args[2]!); return response({ type: "ok" });
 			}
 			if (args[0] === "agent" && args[1] === "list") return response({ type: "agent_list", agents: [...sessions.keys()].filter((name) => !closed.has(sessions.get(name)!.pane)).map((name) => agent(name, "done")) });
 			if (args[0] === "pane" && args[1] === "list") return response({ type: "pane_list", panes: [...sessions.keys()].filter((name) => !closed.has(sessions.get(name)!.pane)).map((name) => agent(name, "done")) });
@@ -2048,5 +2063,37 @@ test("bad config never stops the extension: launch warns on a typo, and invalid 
 		await writeFile(path, JSON.stringify({ maxTokens: 1_000 }));
 		await assert.rejects(() => launchedDisabled.tool.execute("repaired", { role: "scout", name: "Repaired", task: "inspect", access: "read" }, undefined, undefined, launchedDisabled.ctx),
 			/was disabled when the session started; run \/reload/);
+	});
+});
+
+test("automatic collection uses the workspace trigger and skips locally active workers and user tabs", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			let finish!: (answer: string) => void;
+			const waiting = new Promise<string>((resolve) => { finish = resolve; });
+			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("wait") ? waiting : "finished");
+			fake.setExtraTabs(8); // Root plus eight user tabs plus one worker equals ten.
+			const app = harness({ cwd, ui: true, herdr: fake.exec, lsof: async () => ({ code: 1, stdout: "", stderr: "" }) });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			await app.tool.execute("first", { role: "worker", name: "First", task: "finish", access: "read" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1 && fake.calls.some(([kind, action]) => kind === "tab" && action === "list"));
+			assert.equal(fake.calls.some(([, action]) => action === "close"), false);
+			const source = app.sessionEntries[0]!.data;
+			const session = await readFile(source.sessionFile, "utf8");
+			await app.tool.execute("second", { role: "worker", name: "Second", task: "wait", access: "read" }, undefined, undefined, app.ctx);
+			await waitFor(() => fake.calls.some(([kind, action, id]) => kind === "tab" && action === "close" && id === source.tabId));
+			const active = app.sessionEntries[1]!.data;
+			assert.equal(fake.calls.some(([, action, id]) => action === "close" && (id === active.paneId || id === active.tabId)), false);
+			assert.equal(await readFile(source.sessionFile, "utf8"), session);
+			assert.equal(await readFile(source.leasePath, "utf8"), "");
+			finish("finished too");
+			await waitFor(() => app.sentMessages.length === 2);
+			// Collection reduced this workspace to ten tabs; manual prune still collects the second worker.
+			await app.commands.get("subagent")!.handler("prune", { ...app.ctx, hasUI: false });
+			assert.ok(fake.calls.some(([kind, action, id]) => kind === "tab" && action === "close" && id === active.tabId));
+			assert.ok((await readFile(active.sessionFile, "utf8")).includes("finished too"));
+			await app.handlers.get("session_shutdown")!({}, app.ctx);
+		});
 	});
 });

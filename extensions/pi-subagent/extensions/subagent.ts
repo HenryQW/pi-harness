@@ -11,6 +11,7 @@ import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { compactCost, compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
 import { checkoutNote, DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, snapshotCheckout, writesCheckout, type CheckoutSnapshot, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
+import { workspaceNeedsCollection } from "../dist/collection.js";
 import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, directTaskReader, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
@@ -252,6 +253,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		policy: initialPolicy,
 		currentPolicy,
 		beforeRoleLaunch,
+		onFinished: (ctx) => automaticCollection(ctx),
 	});
 	let directSequence = 0;
 	const directTasks = new Map<string, {
@@ -269,6 +271,66 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			&& tab.paneId === saved.paneId && tab.sessionFile === saved.sessionFile;
 	});
 	let sessionEpoch = 0;
+	let collectionEpoch = 0;
+	let collecting: Promise<string[]> | undefined;
+	let pendingCollection: (() => void) | undefined;
+	pi.on("session_tree", () => { collectionEpoch++; });
+	const collectTabs = async (ctx: ExtensionContext, manual: boolean, current: () => boolean): Promise<string[]> => {
+		while (collecting) await collecting;
+		if (!current()) return [];
+		const work = async () => {
+			const report: string[] = [];
+			let triggered = manual;
+			const workspaces = new Map<string, Promise<boolean>>();
+			const eligible = (id: string) => {
+				if (!workspaces.has(id)) workspaces.set(id, manual ? Promise.resolve(true) : workspaceNeedsCollection(pi, ctx.cwd, id).then((due) => { triggered ||= due; return due; }));
+				return workspaces.get(id)!;
+			};
+			const records = ctx.sessionManager.getBranch().flatMap((entry) => entry.type === "custom" && entry.customType === DIRECT_TAB_TYPE
+				? [entry.data as DirectTabRecord] : []);
+			const seen = new Set<string>();
+			for (const tab of records) {
+				if (!current()) break;
+				if (!tab.turn || !tab.workspaceId || !tab.cwd || seen.has(tab.tabId)) continue;
+				seen.add(tab.tabId);
+				const unowned = () => current() && !directTasks.has(tab.taskId)
+					&& ![...directTasks.values()].some((task) => task.continues?.has(tab.sessionFile));
+				if (!unowned()) continue;
+				try {
+					if (!await eligible(tab.workspaceId) || !unowned()) continue;
+					const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
+					if (await herdr.collect(tab as DirectTab, unowned)) report.push(`${tab.tabId}: direct worker tab collected.`);
+				} catch (error) { report.push(`${tab.tabId}: retained: ${boundedError(error).message}`); }
+			}
+			if (current()) {
+				try { report.push(...await isolatedSurface.collectTabs(ctx.cwd, eligible, current)); }
+				catch (error) { report.push(`Isolated tabs retained: ${boundedError(error).message}`); }
+			}
+			return triggered ? report : [];
+		};
+		collecting = work();
+		try { return await collecting; } finally {
+			collecting = undefined;
+			const pending = pendingCollection;
+			pendingCollection = undefined;
+			pending?.();
+		}
+	};
+	const automaticCollection = (ctx: ExtensionContext) => {
+		if (process.env.HERDR_ENV !== "1") return;
+		const epoch = sessionEpoch;
+		const tree = collectionEpoch;
+		const session = ctx.sessionManager.getSessionId();
+		const branch = ctx.sessionManager.getBranch().map((entry) => entry.id);
+		const existing = new Set(ctx.sessionManager.getEntries().map((entry) => entry.id));
+		const current = () => epoch === sessionEpoch && tree === collectionEpoch && session === ctx.sessionManager.getSessionId()
+			&& branch.every((id, index) => ctx.sessionManager.getBranch()[index]?.id === id)
+			&& ctx.sessionManager.getBranch().slice(branch.length).every((entry) => !existing.has(entry.id));
+		if (collecting) { pendingCollection = () => { if (current()) automaticCollection(ctx); }; return; }
+		void collectTabs(ctx, false, current).then((report) => {
+			if (current() && report.length && ctx.hasUI) ctx.ui.notify(capOutput(`Subagent Collection: closes only verified completed worker tabs.\n${report.join("\n")}`), "info");
+		}).catch((error) => { if (current() && ctx.hasUI) ctx.ui.notify(`Subagent Collection failed: ${boundedError(error).message}`, "warning"); });
+	};
 	pi.events.on("pi-subagent:pending-result", (data) => {
 		if (!data || typeof data !== "object" || !("sessionId" in data) || typeof data.sessionId !== "string"
 			|| !("pending" in data) || typeof data.pending !== "boolean") return;
@@ -352,6 +414,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (!current() || !local?.stopWorker || !sameTabs(task, local.tabs)) throw new Error("Direct task ownership changed; reopen /subagent.");
 			await local.stopWorker.stop(entryId, current);
 			return "Worker stopped; pane absence and empty lease scans proved. Other workers continue; Main receives one result when the workflow finishes.";
+		},
+		async collect(ctx, current) {
+			const report = await collectTabs(ctx, true, current);
+			return capOutput(`Subagent Collection: closes only verified completed worker tabs.\n${report.length ? report.join("\n") : "No eligible tabs to close."}\nSessions, worktrees, candidates, and recovery evidence kept. Worktree deletion requires separate review and confirmation.`);
 		},
 		isolated: isolatedSurface.inventory,
 		recover: (cwd) => isolatedSurface.recover(cwd),
@@ -601,6 +667,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("agent_settled", (_event, ctx) => {
 		latestCtx = ctx;
+		automaticCollection(ctx);
 	});
 
 	const reportDirect = (
@@ -866,6 +933,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				handles.push(handle);
 				handleByEntry.set(entry.id, handle);
 				if (widgetItems.has(entry.id)) tokenHandles.set(entry.id, handle);
+				if (launchEpoch === sessionEpoch) automaticCollection(ctx);
 				return handle;
 			};
 			// The first tab is verified before returning a handle; subsequent independent
@@ -961,6 +1029,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					local.pendingResult = undefined;
 					if (!controller.signal.aborted) reportDirect(launchEpoch, taskId, ref, workflow.mode, [...states.values()], tabs, local.recovery);
 					resolveSettled();
+					if (launchEpoch === sessionEpoch) automaticCollection(ctx);
 				}
 			})();
 			return {
