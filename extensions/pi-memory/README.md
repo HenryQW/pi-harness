@@ -29,7 +29,7 @@ Run `/remember I prefer concise release notes.` Pi proposes and reviews an entry
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/remember <instruction>` | command | For humans: request compact durable memory. |
-| `/dream` | command | For humans: promote invariant memory instructions into agent-global `~/.pi/agent/SYSTEM.md`. |
+| `/dream` | command | For humans: promote invariant memory instructions into agent-global `SYSTEM.md`, or `APPEND_SYSTEM.md` when `SYSTEM.md` is absent. |
 | `memory` | tool | For agents: add, replace, remove, or batch-edit entries. |
 | `pi-memory/reviewCandidate` | model task | For humans: assign a profile in `/task-models`. The task reviews additions. |
 | `pi-memory/prepareCandidate` | model task | For humans: assign a profile in `/task-models`. The task proposes a `/remember` entry and target, or declines. |
@@ -69,17 +69,21 @@ Cancellation drops both queues before further preparation, dialogs, or writes, e
 
 Pi recommends `/dream` for non-empty memory with no recorded dream, or one at least 30 days old. It also recommends it when either store reaches 70% and the last dream was at least 7 days ago.
 
-`/dream` requires an interactive UI, a configured `balanced` route, and existing, readable, non-symlink `~/.pi/agent/SYSTEM.md`. Create that file deliberately and completely: a partial SYSTEM replaces Pi's default prompt. SYSTEM edits take effect in a new session.
+`/dream` requires an interactive terminal and a configured `balanced` route. It selects agent-global `~/.pi/agent/SYSTEM.md` when that file exists. When `SYSTEM.md` is absent, it selects `~/.pi/agent/APPEND_SYSTEM.md`. It can create the append file after approval. Append rules keep Pi's default prompt; `/dream` never creates a partial `SYSTEM.md` that replaces those defaults.
+
+An unreadable, oversized, or symlink target stops the command. An invalid `SYSTEM.md` does not cause a fallback to the append file. Prompt edits take effect in a new session. A trusted project's `.pi/APPEND_SYSTEM.md` overrides the agent-global append file; the two files do not combine.
 
 `/dream` shows `Dream running…` in Pi's bordered loading widget, as `/rename` does, before it reads files or requests a model proposal. The status clears when the command ends, is cancelled, or the session or model changes.
 
-`pi-memory/promoteEntries` proposes one exact SYSTEM edit and the whole memory entries it represents. The approval screen fits the current terminal size. It shows the reason, a colored SYSTEM diff with line numbers, and all entries to remove from each store. Use Page Up and Page Down to scroll; Home and End go to the start and end. The approval controls stay visible. If the terminal is too small, enlarge it or press Esc to reject.
+`pi-memory/promoteEntries` proposes one exact edit to the selected prompt file and the whole memory entries it represents. The approval screen fits the current terminal size. It names the selected file and shows the reason, exact edit with line numbers, and all entries to remove from each store. Approval states whether it will create or update the prompt file.
+
+Use Page Up and Page Down to scroll; Home and End go to the start and end. The approval controls stay visible. If the terminal is too small, enlarge it or press Esc to reject.
 
 Use Up and Down to select a control, then Enter to confirm. `Reject` is selected by default. Select `Approve` to proceed; `Reject` or Esc changes nothing.
 
-After approval, pi-memory checks that SYSTEM and both stores remain unchanged. It writes SYSTEM first, then removes entries. A failed SYSTEM write removes nothing. If removal fails, run `/dream` again to reconcile; the timestamp does not advance. Successful runs record time in `~/.pi/agent/config/pi-memory/dream.json`.
+After approval, pi-memory checks the target selection, file state, contents, and both stores. Concurrent creation of `SYSTEM.md` or the selected append file stops the command, as do deletion and source changes. It writes the selected prompt first, then removes entries. A failed prompt write removes nothing. If removal fails, run `/dream` again to reconcile; the timestamp does not advance. Successful runs record time in `~/.pi/agent/config/pi-memory/dream.json`.
 
-Commands stop before writes when Pi supplies a cancellation signal that aborts. Idle Pi can supply no signal. After a SYSTEM edit saves, entry removal continues even on cancellation, so a retry can reconcile it.
+Commands stop before writes when Pi supplies a cancellation signal that aborts. Idle Pi can supply no signal. After a prompt edit saves, entry removal continues even on cancellation, so a retry can reconcile it.
 
 ### Per-turn memory check
 
