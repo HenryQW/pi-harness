@@ -349,6 +349,31 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			}
 			requireCurrent();
 		},
+		/** Collection preserves the saved conversation and private lease for continuation and recovery. */
+		async collect(tab: DirectTab, current: () => boolean): Promise<boolean> {
+			if (tab.workspaceId !== workspaceId || tab.cwd !== workingDir || !current()) throw new Error("Direct collection scope changed.");
+			const before = await herdr.exec(["tab", "get", tab.tabId], options());
+			if (!before.killed && hasHerdrErrorCode(before, "tab_not_found")) return false;
+			if (before.code !== 0 || before.killed) throw new Error("Direct collection tab presence is uncertain.");
+			const original = object(result(JSON.parse(before.stdout), "tab_info").tab, "collection tab");
+			if (original.tab_id !== tab.tabId || original.workspace_id !== workspaceId || ![0, 1].includes(original.pane_count as number)) {
+				throw new Error("Direct collection tab identity or pane count changed.");
+			}
+			await assertSettledDirectSession(tab.sessionFile, tab.turn);
+			await this.stop(tab, current, true);
+			const response = await herdr.exec(["tab", "get", tab.tabId], options());
+			if (!response.killed && hasHerdrErrorCode(response, "tab_not_found")) return true;
+			if (response.code !== 0 || response.killed) throw new Error("Direct collection tab presence is uncertain.");
+			const saved = object(result(JSON.parse(response.stdout), "tab_info").tab, "collection tab");
+			if (saved.tab_id !== tab.tabId || saved.workspace_id !== workspaceId || saved.pane_count !== 0) {
+				throw new Error("Direct collection requires the exact empty worker tab.");
+			}
+			if (!current()) throw new Error("Direct collection scope changed.");
+			result(await herdr.json(["tab", "close", tab.tabId], options()), "ok");
+			const after = await herdr.exec(["tab", "get", tab.tabId], options());
+			if (after.killed || !hasHerdrErrorCode(after, "tab_not_found")) throw new Error("Direct collection tab absence is unproved.");
+			return true;
+		},
 		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
 		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
 			const reader = directTaskReader(task, launch.tools);
