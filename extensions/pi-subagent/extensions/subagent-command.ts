@@ -77,6 +77,8 @@ export interface SubagentCommandAdapter {
 	stopDirect(task: DirectTask, entryId: string, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
+	/** Tab collection is independent of worktree deletion review and confirmation. */
+	collect(ctx: ExtensionContext, current: () => boolean): Promise<string>;
 	/** Read-only review of pi-subagent worktrees and branches in the canonical repository. */
 	prunePlan(cwd: string, current?: () => boolean, progress?: PruneProgress): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
@@ -415,6 +417,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 	};
 	let pruneJob: PruneJob | undefined;
 	let generation = 0;
+	let collectionGeneration = 0;
 	const clearPruneStatus = (job: PruneJob) => {
 		if (job.indicator) job.ctx.ui.setStatus("subagent-prune", undefined);
 		job.indicator = false;
@@ -476,10 +479,21 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				const notify = (message: string) => ctx.hasUI ? ctx.ui.notify(message, "info") : deliver(ctx, textReport("info", message));
 				if (pruneJob && !pruneJob.current()) cancelPrune(pruneJob);
 				if (command === "prune cancel") {
+					collectionGeneration++;
 					const job = pruneJob;
 					if (job) cancelPrune(job);
 					notify(job ? "Prune cancelled. An active step can finish; completed removals are not undone." : "No prune operation is active.");
 					return;
+				}
+				const collection = collectionGeneration;
+				const collectionCurrent = () => current() && collection === collectionGeneration;
+				try {
+					const report = await adapter.collect(ctx, collectionCurrent);
+					if (!collectionCurrent()) return;
+					deliver(ctx, textReport("info", report), "pi-subagent-collection");
+				} catch (error) {
+					if (!collectionCurrent()) return;
+					deliver(ctx, textReport("warning", `Subagent Collection failed: ${errorText(error)}. Worktree review remains separate.`));
 				}
 				if (pruneJob && pruneJob.state.kind !== "ready") {
 					notify(pruneJob.cancelled ? "Prune is stopping; wait for the active step." : `${pruneJob.status}. Use /subagent prune cancel to stop.`);
@@ -500,7 +514,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 							} else {
 								job.state = { kind: "ready", plan };
 								pruneStatus(job, "Prune ready · /subagent prune");
-								ctx.ui.notify("Prune scan ready. Run /subagent prune to review it. No items were removed.", "info");
+								ctx.ui.notify("Prune scan ready. Run /subagent prune to review it. No worktrees or branches were removed.", "info");
 							}
 						} catch (error) {
 							if (job.current() && !job.cancelled) deliver(ctx, textReport("error", `Prune scan failed: ${errorText(error)}`));

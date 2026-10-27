@@ -2746,3 +2746,42 @@ test("cleanup refuses mismatched or decoy resources and ambiguous close response
 	assert.deepEqual(await decoyHost.cleanupHost({ requestId: REQUEST_ID, kind: "workspace", task, attempt: decoyAttempt }, context()), { outcome: "completed" });
 	decoyScript.done();
 });
+
+for (const scenario of ["collected", "active", "stale", "occupied"] as const) test(`tab collection preserves isolated evidence: ${scenario}`, async (t) => {
+	const fixture = await paths(t);
+	const script = new ScriptedProcess();
+	const host = runtime(fixture, script);
+	const { attempt, leasePath } = await fullAttempt(fixture, host, script);
+	attempt.termination = { status: "terminated", workerId: AGENT_NAME, candidate: changedIdentity() };
+	await privateLease(leasePath);
+	await writeFile(`${leasePath}.session.jsonl`, "saved conversation\n", { mode: 0o600 });
+	let current = true;
+	script.push({ command: "herdr", args: ["agent", "list"], result: success({ type: "agent_list", agents: scenario === "active" ? [agentInfo("working", true, { cwd: fixture.worktree })] : [] }) });
+	if (scenario === "active") script.push(
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: success({ type: "pane_info", pane: { pane_id: WORKER_PANE_ID } }) },
+		{ command: "herdr", args: ["pane", "process-info", "--pane", WORKER_PANE_ID], result: success({ type: "pane_process_info", process_info: { pane_id: WORKER_PANE_ID } }) },
+	);
+	else script.push(
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+		lsof(leasePath), lsof(leasePath), repositoryIdentityStep(fixture),
+		{ command: "herdr", args: ["pane", "get", WORKER_PANE_ID], result: failure("pane_not_found") },
+		{ command: "herdr", args: ["workspace", "get", WORKSPACE_ID], result: success({ type: "workspace_info", workspace: workspaceInfo(fixture) }) },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: () => {
+			if (scenario === "stale") current = false;
+			return success({ type: "tab_info", tab: tabInfo({ pane_count: scenario === "occupied" ? 1 : 0 }) });
+		} },
+	);
+	if (scenario === "collected") script.push(
+		{ command: "herdr", args: ["tab", "close", WORKER_TAB_ID], result: success({ type: "ok" }) },
+		{ command: "herdr", args: ["tab", "get", WORKER_TAB_ID], result: failure("tab_not_found") },
+	);
+	const saved = structuredClone(attempt);
+	const before = script.calls.length;
+	const result = await host.cleanupHost({ requestId: REQUEST_ID, kind: "worker_tab", task, attempt, collection: { current: () => current } }, context());
+	assert.equal(result.outcome, scenario === "collected" ? "completed" : "blocked");
+	assert.deepEqual(attempt, saved);
+	assert.ok((await stat(leasePath)).isFile());
+	assert.equal((await stat(`${leasePath}.session.jsonl`)).size, Buffer.byteLength("saved conversation\n"));
+	assert.deepEqual(script.calls.slice(before).filter(({ args }) => args[1] === "close").map(({ args }) => args), scenario === "collected" ? [["tab", "close", WORKER_TAB_ID]] : []);
+	script.done();
+});

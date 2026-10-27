@@ -519,6 +519,7 @@ export interface IsolatedSurface {
 	plan(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof formatExecutePlan>>;
 	execute(request: ExecuteRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolResult>>;
 	inventory(cwd: string, current?: () => boolean): Promise<IsolatedInventory>;
+	collectTabs(cwd: string, eligible: (workspaceId: string) => Promise<boolean>, current: () => boolean): Promise<string[]>;
 	recover(cwd: string): Promise<string>;
 	prunePlan(cwd: string, current?: () => boolean, progress?: PruneProgress): Promise<PrunePlan>;
 	discardPlan(cwd: string, request: IsolatedRequest): Promise<DiscardPlan>;
@@ -537,6 +538,8 @@ export interface RegisterIsolatedOptions {
 	/** Report new config issues, and throw when the config now blocks delegation, before each deferred Role launch. */
 	beforeRoleLaunch?(ctx: ExtensionContext): void;
 	componentsFactory?: CreateIsolatedComponents;
+	/** Notification after productive work releases its lease. */
+	onFinished?(ctx: ExtensionContext): void;
 }
 
 /** Register lifecycle surfaces; delegate_task remains the only start tool. */
@@ -725,6 +728,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 					return;
 				}
 				deliver("terminal", `${response.text}\n\nState: ${JSON.stringify(publicState(response.state, PUBLIC_EVIDENCE_MAX_BYTES))}`, response);
+				if (canDeliver()) options.onFinished?.(ctx);
 			},
 			(error: unknown) => {
 				finish();
@@ -735,6 +739,7 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 					return;
 				}
 				deliver("terminal", `Pi Subagent ${id} stopped: ${boundedPublicText(error instanceof Error ? error.message : String(error))}. Use subagent_status to inspect the durable request before choosing an explicit recovery action.`);
+				if (canDeliver()) options.onFinished?.(ctx);
 			},
 		);
 		const state = await durable;
@@ -851,6 +856,11 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			const orphans = await getComponents().runner.listOrphanRequests(root);
 			const leaseLive = await getComponents().runner.hasProductiveRunLease(root);
 			return { root, leaseLive, requests: [...requests, ...orphans.requests], invalidIds: [...new Set([...invalidIds, ...orphans.invalidIds])] };
+		},
+		async collectTabs(cwd, eligible, current) {
+			const root = await lookupRoot(cwd);
+			requireCurrent(current);
+			return await getComponents().runner.collectTabs(root, eligible, () => current() && !sessionClosed);
 		},
 		async recover(cwd) {
 			const root = await lookupRoot(cwd);

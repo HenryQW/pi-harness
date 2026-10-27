@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { appendFile, mkdtemp, open, realpath, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, readFile, realpath, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDirectHerdr, createDirectSessionReader, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
+import { workspaceNeedsCollection } from "../src/collection.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -270,5 +271,61 @@ test("stop accepts native unnamed unrelated agents without authorizing mutations
 		const stopping = createDirectHerdr({ exec }, cwd, 1000).stop(tab);
 		if (paneId === "owned-pane") await assert.rejects(stopping, /one exact owned agent/);
 		else await stopping;
+	}
+});
+
+test("collection triggers above ten tabs, not at ten, and rejects foreign or duplicate inventory", async () => {
+	for (const count of [10, 11, 15]) {
+		const tabs = Array.from({ length: count }, (_, id) => ({ tab_id: `tab-${id}`, workspace_id: "owned" }));
+		const exec: ExtensionAPI["exec"] = async (_command, args) => {
+			assert.deepEqual(args, ["tab", "list", "--workspace", "owned"]);
+			return { code: 0, stdout: JSON.stringify({ result: { type: "tab_list", tabs } }), stderr: "", killed: false };
+		};
+		assert.equal(await workspaceNeedsCollection({ exec }, "/tmp", "owned"), count > 10);
+		tabs[0]!.workspace_id = "other";
+		await assert.rejects(workspaceNeedsCollection({ exec }, "/tmp", "owned"), /uncertain workspace/);
+		tabs[0] = tabs[1]!;
+		await assert.rejects(workspaceNeedsCollection({ exec }, "/tmp", "owned"), /uncertain workspace/);
+	}
+});
+
+test("direct collection closes only completed exact workers and keeps session and lease evidence", async (t) => {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-collection-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const previous = { ...process.env };
+	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "owned", HERDR_PANE_ID: "caller" });
+	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
+		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+	} });
+	const tab = { name: "worker", tabId: "tab", paneId: "pane", workspaceId: "owned", cwd,
+		turn: "unique", sessionFile: join(cwd, "session.jsonl"), leasePath: join(cwd, "process.lease") };
+	await writeFile(tab.leasePath, "", { mode: 0o600 });
+	for (const scenario of ["completed", "working", "identity", "unfinished", "extra-pane", "lease-holder", "stale"] as const) {
+		let paneClosed = false, tabClosed = false, scans = 0, current = true;
+		const session = lines(scenario === "unfinished" ? [] : [{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [] } }]);
+		await writeFile(tab.sessionFile, session);
+		const exec: ExtensionAPI["exec"] = async (command, args) => {
+			if (command === "lsof") { scans++; return { code: scenario === "lease-holder" ? 0 : 1, stdout: scenario === "lease-holder" ? "p123\n" : "", stderr: "", killed: false }; }
+			let result: unknown;
+			if (args[0] === "tab" && args[1] === "get") {
+				if (tabClosed) return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "tab_not_found" } }), killed: false };
+				result = { type: "tab_info", tab: { tab_id: "tab", workspace_id: "owned", pane_count: scenario === "extra-pane" ? 2 : paneClosed ? 0 : 1 } };
+			} else if (args[0] === "agent") {
+				if (scenario === "stale") current = false;
+				result = { type: "agent_list", agents: [{ name: scenario === "identity" ? "replacement" : "worker", pane_id: "pane", tab_id: "tab", workspace_id: "owned", cwd, agent_status: scenario === "working" ? "working" : "done" }] };
+			} else if (args[0] === "pane" && args[1] === "list") result = { type: "pane_list", panes: [] };
+			else if (args[1] === "close") {
+				if (args[0] === "pane") paneClosed = true; else tabClosed = true;
+				result = { type: "ok" };
+			} else throw new Error(`Unexpected call ${args}`);
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+		};
+		const collecting = createDirectHerdr({ exec }, cwd, 1000).collect(tab, () => current);
+		if (scenario === "completed") { assert.equal(await collecting, true); assert.equal(scans, 2); }
+		else await assert.rejects(collecting);
+		assert.equal(tabClosed, scenario === "completed", scenario);
+		assert.equal(paneClosed, scenario === "completed" || scenario === "lease-holder", scenario);
+		assert.equal(await readFile(tab.sessionFile, "utf8"), session);
+		assert.equal(await readFile(tab.leasePath, "utf8"), "");
 	}
 });
