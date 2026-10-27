@@ -750,7 +750,8 @@ test("write-access parallel tasks serialize and invalid completion releases only
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			const fake = fakeHerdr(cwd, (prompt) => prompt.startsWith("first") ? JSON.stringify({ outcome: "succeeded", answer: "done" }) : "", gate);
-			const app = harness({ cwd, herdr: fake.exec });
+			let scans = 0;
+			const app = harness({ cwd, herdr: fake.exec, lsof: async () => { scans++; return { code: 1, stdout: "", stderr: "" }; } });
 			await app.handlers.get("session_start")!({}, app.ctx);
 			const params = { mode: "direct", tasks: [
 				{ role: "writer", name: "First", task: "first", access: "write" },
@@ -769,6 +770,7 @@ test("write-access parallel tasks serialize and invalid completion releases only
 			await waitFor(() => app.sentMessages.length === 1);
 			assert.deepEqual(app.sentMessages[0]!.message.details.entries.map((entry: any) => entry.status), ["succeeded", "rejected", "rejected"]);
 			assert.match(app.sentMessages[0]!.message.content, /Previous direct task did not complete exactly/);
+			assert.equal(scans, 4, "each worker needs two empty lease scans");
 			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx), undefined);
 			assert.equal(app.sessionEntries.length, 2, "retain exact recovery identities");
 		});

@@ -2,8 +2,8 @@
 // pi-deps-managed-hook
 
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const installMode = "--pi-deps-install";
@@ -18,8 +18,41 @@ function errorMessage(error) {
 	return error instanceof Error ? error.message : String(error);
 }
 
+// Reject checkout-controlled links before any write or permission change. This is not a
+// sandbox against a same-user process that changes paths during these checks.
+function checkPath(path, directory) {
+	try {
+		const stat = lstatSync(path);
+		if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1)) {
+			throw new Error(`Unsafe state path is preserved: ${path}`);
+		}
+	} catch (error) {
+		if (error.code !== "ENOENT") throw error;
+	}
+}
+
+function prepareState(stateDir, create = false) {
+	for (const path of [dirname(dirname(stateDir)), dirname(stateDir), stateDir]) {
+		checkPath(path, true);
+		if (create) {
+			try { mkdirSync(path, { mode: 0o700 }); } catch (error) { if (error.code !== "EEXIST") throw error; }
+		}
+	}
+	for (const file of ["status.json", "install.log"]) checkPath(join(stateDir, file), false);
+	if (create) chmodSync(stateDir, 0o700);
+}
+
+function privateFile(path, append) {
+	const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW |
+		(append ? constants.O_APPEND : constants.O_TRUNC), 0o600);
+	fchmodSync(fd, 0o600);
+	return fd;
+}
+
 function writeStatus(stateDir, status) {
-	writeFileSync(join(stateDir, "status.json"), `${JSON.stringify(status)}\n`);
+	prepareState(stateDir, true);
+	const fd = privateFile(join(stateDir, "status.json"), false);
+	try { writeFileSync(fd, `${JSON.stringify(status)}\n`); } finally { closeSync(fd); }
 }
 
 // Installer child: runs the frozen installs detached and records the outcome for watchers.
@@ -94,20 +127,28 @@ function installCommands() {
 
 try {
 	const commands = installCommands();
-	const git = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-dir"], { encoding: "utf8" });
-	if (git.error) throw new Error(`Cannot locate Git directory: ${git.error.message}`);
+	const git = spawnSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" });
+	if (git.error) throw new Error(`Cannot locate worktree: ${git.error.message}`);
 	if (git.status !== 0) {
-		throw new Error(`Cannot locate Git directory: ${(git.stderr || "").trim() || `exit code ${git.status}`}`);
+		throw new Error(`Cannot locate worktree: ${(git.stderr || "").trim() || `exit code ${git.status}`}`);
 	}
-	const stateDir = join(git.stdout.trim(), "pi-deps");
+	const stateDir = join(git.stdout.trim(), ".context", "pi-harness", "pi-deps");
 	const statusPath = join(stateDir, "status.json");
+	prepareState(stateDir);
+	try {
+		const status = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(readFileSync(statusPath)));
+		if (!status || !["running", "ok", "error"].includes(status.state) ||
+			(status.message !== undefined && typeof status.message !== "string")) throw new Error("invalid status");
+	} catch (error) {
+		if (error.code !== "ENOENT") throw new Error(`Invalid or unreadable status is preserved at ${statusPath}: ${errorMessage(error)}`);
+	}
 	if (commands.length === 0) {
 		rmSync(statusPath, { force: true }); // stale outcome from an earlier run
 		process.exit(0);
 	}
-	mkdirSync(stateDir, { recursive: true });
+	prepareState(stateDir, true);
+	const log = privateFile(join(stateDir, "install.log"), true);
 	writeStatus(stateDir, { state: "running" });
-	const log = openSync(join(stateDir, "install.log"), "a");
 	spawn(process.execPath, [fileURLToPath(import.meta.url), installMode, stateDir, JSON.stringify(commands)], {
 		detached: true,
 		stdio: ["ignore", log, log],

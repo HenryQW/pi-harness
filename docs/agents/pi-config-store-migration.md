@@ -6,7 +6,7 @@ This is the single migration source of truth. Do not add a second `MIGRATION.md`
 
 **Status:** complete. The store contract and every consumer below use the 4.x field contract. Every consumer depends on `@henryqw/pi-config-store` `^4.0.0`, and every `@henryqw/pi-task-models` consumer depends on `^9.0.0`. Use this page as the reference for a new config or a change to an existing one.
 
-The earlier one-time move to Extension Config Homes is complete. Runtime code reads only `config/<extension-id>/`.
+The earlier one-time move to Extension Config Homes is complete. Runtime code reads migrated config-home files only from `config/<extension-id>/`.
 
 ## Invariants
 

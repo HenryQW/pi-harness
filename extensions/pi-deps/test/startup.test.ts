@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -10,13 +10,14 @@ import depsExtension from "../extensions/deps.ts";
 async function fixture(t: TestContext, status: object = { state: "running" }) {
 	const gitDir = await mkdtemp(join(tmpdir(), "pi-deps-startup-"));
 	t.after(() => rm(gitDir, { recursive: true, force: true }));
-	const stateDir = join(gitDir, "pi-deps");
+	const stateDir = join(gitDir, ".context", "pi-harness", "pi-deps");
 	const statusPath = join(stateDir, "status.json");
-	await mkdir(stateDir);
+	await mkdir(stateDir, { recursive: true });
 	await writeFile(statusPath, JSON.stringify(status));
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void> | void>();
 	const ready = Promise.withResolvers<void>();
 	const cleared = Promise.withResolvers<void>();
+	const notified = Promise.withResolvers<void>();
 	const statuses: (string | undefined)[] = [];
 	const widgets: string[][] = [];
 	const notices: string[] = [];
@@ -36,12 +37,12 @@ async function fixture(t: TestContext, status: object = { state: "running" }) {
 				else cleared.resolve();
 			},
 			setWidget: (_key: string, content: string[]) => widgets.push(content),
-			notify: (message: string) => notices.push(message),
+			notify: (message: string) => { notices.push(message); notified.resolve(); },
 		},
 	} as unknown as ExtensionContext;
 	const shutdown = () => handlers.get("session_shutdown")!({}, ctx);
 	t.after(shutdown);
-	return { statusPath, statuses, widgets, notices, ctx, ready: ready.promise, cleared: cleared.promise,
+	return { statusPath, statuses, widgets, notices, ctx, notified: notified.promise, ready: ready.promise, cleared: cleared.promise,
 		start: () => handlers.get("session_start")!({}, ctx), shutdown };
 }
 
@@ -98,4 +99,35 @@ test("the ten-minute watch limit clears the spinner and explains how to check th
 	await run.cleared;
 	assert.match(run.widgets[0]![0]!, /stopped waiting.*ten minutes.*check the log/);
 	assert.match(run.widgets[0]![1]!, /install\.log$/);
+	assert.equal(JSON.parse(await readFile(run.statusPath, "utf8")).state, "running");
+	// The detached installer can finish after the watcher has timed out.
+	await writeFile(run.statusPath, JSON.stringify({ state: "error", message: "late failure" }));
+	await setImmediate();
+	assert.equal(JSON.parse(await readFile(run.statusPath, "utf8")).message, "late failure");
+});
+
+test("malformed status is preserved after the watch limit", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"] });
+	const run = await fixture(t);
+	await writeFile(run.statusPath, "{ invalid");
+	await run.start();
+	await run.ready;
+	t.mock.timers.tick(10 * 60_000);
+	await run.cleared;
+	await setImmediate();
+	assert.equal(await readFile(run.statusPath, "utf8"), "{ invalid");
+	assert.match(run.notices[0]!, /Invalid status is preserved/);
+});
+
+
+test("watcher refuses a status symlink without consuming its target", async (t) => {
+	const run = await fixture(t);
+	const target = join(run.ctx.cwd, "outside-status.json");
+	await writeFile(target, '{"state":"ok"}');
+	await rm(run.statusPath);
+	await symlink(target, run.statusPath);
+	await run.start();
+	await run.notified;
+	assert.match(run.notices[0]!, /Unsafe state path is preserved/);
+	assert.equal(await readFile(target, "utf8"), '{"state":"ok"}');
 });

@@ -221,7 +221,65 @@ Missing or malformed files use defaults without changes to the file. Unknown/inv
 
 The session stores a PR identity observation: URL, number, host, head identity, and target identity, not mutable CI/review conditions. Discovery validates it against GitHub; there is no repository cache.
 
+The handled-feedback marker is `<worktree>/.context/pi-harness/pi-pr/feedback-<agent-id>.json`. The agent identity is the hash of the normalized absolute `<agent-dir>/config/pi-pr` path. Each agent directory keeps its own reviewed decisions for the canonical checkout; another agent directory cannot acknowledge its blocked items. `/pr` uses this marker to detect feedback that needs a sweep, including before merge.
+
+The marker can make the Git worktree dirty, which blocks clean-worktree operations, including `/pr` merge and sweep publication. The extension does not change ignore rules. Choose and manage any Git exclusion yourself; inspect state before you share or stage it. Removing the worktree removes this marker.
+
+Mutation locks retain their original scope: one canonical checkout and one agent directory. Before finalization writes the marker, it checks fresh feedback against the sweep's reviewed snapshot and thread state. Changed feedback stops finalization and preserves recovery. Resume and refresh through the existing sweep workflow; new or changed items need review. Blocked items remain outside the marker fingerprint, so they still require attention before merge.
+
+The marker must be untracked: tracked or staged repository content, including files in checked-out submodules, cannot acknowledge feedback. The extension preserves tracked markers and reports an error before it reads or writes them. Inspect the file and arrange its removal from version control before you use a local marker; the extension never changes tracking or ignore rules.
+
+State directory components must not be symbolic links; the marker must be a regular file without extra hard links. Unsafe paths remain unchanged and produce an error. These checks do not protect against a hostile same-user process that swaps paths during use.
+
 Private recovery uses `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json` and `<agent-dir>/config/pi-pr/update-branch/`. Run `/pr` to resume matching verified recovery. Mismatched or malformed records remain unchanged and block routing. Never delete them to force continuation.
+
+### Migration to version 11
+
+This cutover is manual. There is no legacy-path fallback. Stop all old Pi sessions before you copy the marker, and do not start them again after the copy. Complete active sweeps or retain their recovery records in the agent directory for verified recovery after the cutover.
+
+If you also use pi-deps, stop its old copied hook and wait for detached installs. Follow its version 4 migration before you upgrade or reinstall the hook.
+
+Repeat this procedure in each worktree, with `AGENT_DIR` set to the absolute agent directory used by the old session. The default is `$HOME/.pi/agent`; an old session can use a different `PI_CODING_AGENT_DIR`.
+
+Repeat for every agent directory that has a marker for that worktree; each gets a separate destination. Keep the same agent-directory path when you restart Pi. A different path selects a different marker. Never overwrite a destination. Missing a marker can cause a repeat sweep. Preserve malformed markers and investigate them; they block routing.
+
+The copy leaves the old marker unchanged and does not preserve broad legacy permissions. In `set -euC`, `-e` stops on failure, `-u` rejects unset variables, and `-C` prevents file replacement. `umask 077` removes group and other access; `mkdir -m` sets the directory mode. In the tests, `-e` checks existence, `-L` checks symbolic links, `-f` checks regular files, and `-d` checks directories.
+
+```bash
+AGENT_DIR="$HOME/.pi/agent" # Change this if the old session used another agent directory.
+(
+  set -euC
+  umask 077
+  root=$(git rev-parse --show-toplevel)
+  root=$(cd "$root" && pwd -P)
+  id=$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$root")
+  agent_id=$(node -e 'process.stdout.write(require("node:crypto").createHash("sha256").update(require("node:path").resolve(process.argv[1], "config", "pi-pr")).digest("hex"))' "$AGENT_DIR")
+  old="$AGENT_DIR/config/pi-pr/feedback/$id.json"
+  new="$root/.context/pi-harness/pi-pr/feedback-$agent_id.json"
+  if [ -e "$old" ] || [ -L "$old" ]; then
+    if [ -L "$old" ] || [ ! -f "$old" ]; then
+      echo "Unsafe source: $old" >&2; exit 1
+    fi
+    for dir in "$root/.context" "$root/.context/pi-harness" "$(dirname "$new")"; do
+      if [ -L "$dir" ] || { [ -e "$dir" ] && [ ! -d "$dir" ]; }; then
+        echo "Unsafe directory: $dir" >&2; exit 1
+      fi
+      if [ ! -d "$dir" ]; then mkdir -m 700 "$dir"; fi
+    done
+    chmod 700 "$(dirname "$new")"
+    if [ -e "$new" ] || [ -L "$new" ]; then
+      echo "Destination exists: $new" >&2; exit 1
+    fi
+    cat "$old" > "$new"
+    cmp "$old" "$new"
+    echo "Verified: $new"
+  else
+    echo "No old marker: $old"
+  fi
+)
+```
+
+The commands reject symbolic links. After you verify it, upgrade pi-pr and resume with new Pi sessions only.
 
 [Sweep recovery](./skills/pi-pr-comment-sweep/references/recovery.md) covers manual publication, base movement, committed-scope adoption, legacy records, and interrupted commits or replies. Unrelated or unclear scope blocks publication. Unknown local checks need a later `/pr` and explicit safe-repeat confirmation; this never permits replay of uncertain pushes or GitHub changes.
 

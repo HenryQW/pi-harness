@@ -10,7 +10,7 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 
 - Compatibility covers each package's documented public contract, not its internals or undocumented behavior. Breaking internal changes need no major release.
 - Use Pi's effective skill and model registries and model metadata as authority. Resolve resources at launch; store names or classes, not paths or copied catalogs.
-- Extension config follows [ADR 018](docs/adr/018-extension-config-homes.md) for config homes and [ADR 004](docs/adr/004-extension-config-safety.md) for warn and disable rules. Locate files with `extensionConfigDir` and `extensionConfigPath`, load user-edited config with `createConfigStore` (`fields` or `entries`), and report issues with `registerConfigReporting`; never parse config files directly. Preserve malformed files and write only after explicit user action. [The config-store reference](docs/agents/pi-config-store-migration.md) lists the contract and consumers.
+- Extension config follows [ADR 018](docs/adr/018-extension-config-homes.md) for config homes and [ADR 004](docs/adr/004-extension-config-safety.md) for warn and disable rules. Locate config-home files with `extensionConfigDir` and `extensionConfigPath`, load user-edited config with `createConfigStore` (`fields` or `entries`), and report issues with `registerConfigReporting`; never parse config files directly. Preserve malformed files and write only after explicit user action. [The config-store reference](docs/agents/pi-config-store-migration.md) lists the contract and consumers.
 
 ## Checks
 
