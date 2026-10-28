@@ -53,11 +53,9 @@ Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 | --- | --- | --- | --- |
 | `autoSwitchOn429` | Switch slots after HTTP 429. Set `false` to disable this switching. | Boolean. | `true` |
 
-Edit config manually; changes apply at the next session start. The extension never writes it; missing files use the default.
+Edit config manually; changes apply at the next session start. The extension never writes it.
 
-Startup warnings identify unknown keys, invalid values, and file paths. Unknown keys are ignored. Non-boolean or misspelled `autoSwitchOn429`, such as `autoswitchOn429`, disables HTTP 429 switching for the session.
-
-Malformed JSON, invalid UTF-8, files above 64 KiB, read errors, and non-object roots also disable this switching with warnings. Fix the unchanged file and start a new session.
+An invalid or misspelled `autoSwitchOn429`, or a file problem, disables HTTP 429 switching for the session. Fix the file and start a new session. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ## State and storage
 

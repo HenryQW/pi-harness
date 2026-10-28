@@ -91,9 +91,7 @@ Edit this file yourself; only `/cron` Enable or Disable changes a job's `enabled
 
 Invalid jobs are ignored without stopping other jobs. Problems include unknown keys, both or neither schedule, unknown time zones, relative paths, invalid routes, and repeated IDs.
 
-Unknown top-level or `limits` keys warn and are ignored. Invalid limits use defaults. If effective `maxMinutes` is not greater than `idleMinutes`, all limits use defaults. Malformed JSON stops all jobs until you fix it.
-
-Warnings include the path and reasons, once per session, with stderr delivery without a UI. The extension never rewrites files for recovery. Enable and Disable cannot write while the file has problems.
+If effective `maxMinutes` is not greater than `idleMinutes`, all limits use defaults. A file problem, such as malformed JSON, stops all jobs until you fix it. Enable and Disable cannot write while the file has problems. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 Do not store secrets here. Use `env` to point to a private file, or export secrets in the shell that starts Pi.
 

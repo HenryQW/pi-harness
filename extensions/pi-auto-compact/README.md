@@ -57,9 +57,7 @@ Package-owned: `~/.pi/agent/config/pi-auto-compact/config.json`
 | --- | --- | --- | --- |
 | `autoCompactThreshold` | Context-use percentage above which compaction starts. | Number from 25 inclusive to below 100. | `70` |
 
-Missing files and invalid thresholds use the default. Reading never creates or changes the file. Unknown keys, including misspelled or obsolete model keys, are ignored.
-
-At startup, one warning gives the path and reasons for malformed JSON, invalid thresholds, and unknown keys. Without a UI, warnings go to stderr.
+Problems show at startup. A file problem uses the default threshold. Obsolete model keys are unknown keys, so the extension ignores them. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 Only `/auto-compact` writes config. It rereads and reports problems when opened. Writes are atomic. Valid-file updates preserve concurrent changes. Replacing a problem file removes unknown keys and invalid values, but fails without writing if another session changed it during input.
 

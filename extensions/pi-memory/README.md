@@ -108,7 +108,7 @@ Use the tool immediately for qualifying facts. Inferred habits need two independ
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this optional file; pi-memory never creates or rewrites it. It reads config at session start. Missing fields or files use defaults; restart the session after changes.
+Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this file; pi-memory never writes it. It reads config at session start; restart the session after changes.
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -116,14 +116,12 @@ Package-owned: `~/.pi/agent/config/pi-memory/config.json`. You write this option
 | `memoryCharLimit` | Character cap for `MEMORY.md`. | Safe integer from 1 to 100000. | `8800` |
 | `userCharLimit` | Character cap for `USER.md`. | Safe integer from 1 to 100000. | `5500` |
 
-Warnings and errors give the path and each problem:
+For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files). Results for pi-memory:
 
 | Problem | Result |
 | --- | --- |
-| Unknown key or invalid limit | Warn; ignore unknown keys and use defaults for invalid limits. |
-| Misspelled key near a missing key | Treat that field as invalid; `memoryCharLimt` uses the default `memoryCharLimit`. |
 | Invalid `directory`, including `directroy` without `directory` | Disable persistent memory; never substitute the default directory. |
-| Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root | Disable persistent memory. |
+| File problem, such as malformed JSON | Disable persistent memory. |
 
 Fix invalid config, then start a new session.
 

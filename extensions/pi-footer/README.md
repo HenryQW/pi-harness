@@ -84,7 +84,7 @@ Local Git data comes from `git status --porcelain=v2 --branch --untracked-files=
 
 ## Config
 
-Package-owned paths under `getAgentDir()` (normally `~/.pi/agent`):
+Package-owned paths:
 
 - `~/.pi/agent/config/pi-footer/config.json`: footer colors.
 - `~/.pi/agent/config/pi-open-in/config.json`: open command.
@@ -94,7 +94,7 @@ Package-owned paths under `getAgentDir()` (normally `~/.pi/agent`):
 | `colors` | Footer-owned colors by role. | Object mapping roles to theme tokens, `#RGB`, `#RRGGBB`, `oklch(...)`, `okhsl(...)`, or ANSI indices `0` to `255`. | Built-in colors. |
 | `command` | Command for `/open`. | Non-empty string. | `"code"` |
 
-Colors load at session start; run `/reload` after edits. Missing files or roles keep built-in colors. Unknown keys, unknown roles, and invalid colors produce warnings with the path and reason. Invalid roles use built-in colors independently; malformed files use all built-in colors. The footer never rewrites the file.
+Colors load at session start; run `/reload` after edits. A role with a missing or invalid color keeps its built-in color; other roles are not affected. A file problem gives all built-in colors. The footer never writes the colors file. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ### Footer color roles
 
@@ -159,7 +159,7 @@ Open commands split on whitespace. Quoting and tokens with spaces are unsupporte
 
 `/open` reads config on each run. Missing config silently uses `code`. Only `/set-open-in` writes the file, atomically.
 
-Open config must be a JSON object with one non-empty string `command`. Unknown keys, invalid commands, or malformed files produce warnings at session start or the next `/open`, including footer-only installations. Each issue shows once per session, never during rendering. Invalid commands and malformed files use `code` without changing the file.
+Open config problems show at session start or the next `/open`, including footer-only installations, never during rendering. An invalid `command` or a file problem gives `code`.
 
 Fix config or run `/set-open-in <command>` to replace it; the command reports new issues before replacement. If the command fails, Pi reports its error output or exit code. Fix the command and retry `/open`.
 

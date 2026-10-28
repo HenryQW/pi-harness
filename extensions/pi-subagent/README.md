@@ -196,7 +196,7 @@ See [Status widgets](./docs/orchestration.md#status-widgets) for reference numbe
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. Missing files silently use defaults. No key is required; the extension preserves the file and never rewrites it automatically.
+Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. The extension never writes it. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -210,12 +210,11 @@ Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. Missing files silen
 
 `roleDefaults` entries precede Role entries; merging removes duplicates before resource resolution. Use it for a provider extension that every child needs. Limits come only from this file. Requests cannot override or replenish them. Durable requests keep recorded policy; a lower current correction limit can tighten recovery. There is no whole-run timeout.
 
-The extension reports each new problem once per session. It reads config at launch, `delegate_task`, later direct workers, isolated Role launches, `/subagent roles`, and status inspection.
+The extension reads config at launch, `delegate_task`, later direct workers, isolated Role launches, `/subagent roles`, and status inspection.
 
-- Unknown keys warn and are ignored. A likely misspelling, such as `maxToken` for missing `maxTokens`, counts as invalid for that key.
 - Invalid `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` values warn and use finite defaults. If maximum timeout does not exceed idle timeout, the whole `timeout` uses defaults.
 - Unknown or invalid `roleDefaults` keys warn; only those keys are ignored, so Roles receive fewer default resources.
-- Invalid or misspelled `maxTokens` blocks delegation. Malformed JSON, invalid UTF-8, files above 64 KiB, and unreadable files also block delegation. The extension does not fall back to unlimited tokens.
+- An invalid or misspelled `maxTokens`, or a file problem, blocks delegation. The extension does not fall back to unlimited tokens.
 
 `/subagent` remains available during a block. Correct the file to enable delegation. The next worker or isolated Role launch fails while the block remains; running workers retain their original limits. If the problem existed at session start, also run `/reload`, because that session took default execution limits.
 

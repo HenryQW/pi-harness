@@ -58,7 +58,7 @@ pi install npm:@henryqw/<package>
 
 <Describe the user-visible sequence and important transitions.>
 
-<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. Do not present shared config or generated state as this package's config. Do not repeat a flat config table as JSON; a nested JSON example may explain structure. Every Config section must include the exact four-column primary table below: Name, Description, Values, and Default. Put genuinely conditional requirements briefly in Description. Keep explanation in Description and type, range, enum, or structural constraints in Values. State effective omitted behavior in Default. Use — when no default exists. -->
+<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. State only what differs from the root README Config files section; do not repeat its shared load rules. Do not present shared config or generated state as this package's config. Do not repeat a flat config table as JSON; a nested JSON example may explain structure. Every Config section must include the exact four-column primary table below: Name, Description, Values, and Default. Put genuinely conditional requirements briefly in Description. Keep explanation in Description and type, range, enum, or structural constraints in Values. State effective omitted behavior in Default. Use — when no default exists. -->
 ## Config
 
 Package-owned: `~/.pi/agent/config/<package>/config.json`
@@ -68,7 +68,7 @@ Package-owned: `~/.pi/agent/config/<package>/config.json`
 | `<setting-a>` | <What it controls. Required when <condition>.> | <Type, range, enum, or structural constraint.> | — |
 | `<setting-b>` | <What it controls.> | <Type, range, enum, or structural constraint.> | <Effective behavior when omitted.> |
 
-<After the table, explain invalid or missing config, who writes it, when changes reload, and recovery.>
+<After the table, state only what differs from [Config files](https://pi.henry.wang/overview#config-files): who writes the file, when edits apply, settings that disable a feature or block an action, what a file problem does, and recovery. Link Config files.>
 
 <!-- Optional: document public library or owner APIs only. For two or more comparable exports, use exactly this table. A single API may use concise prose or code. -->
 ## API

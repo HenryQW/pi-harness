@@ -92,7 +92,7 @@ You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps 
 
 Replace placeholders with exact references from `/task-models`. Omit `fallback` to remove it; omit the whole profile to keep its routes. Names must be non-empty, without surrounding whitespace or control characters. The picker sorts names alphabetically.
 
-The file must be valid UTF-8 JSON, at most 64 KiB. Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
+Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
 
 Saving refuses any preset-file problem and preserves that file. It reads the latest active profiles, including concurrent changes, before saving. It creates a missing preset file with a private atomic write. An open confirmation prompt does not block other sessions. Saves wait briefly for another save. If another session saves the same new name first, the save reports the conflict and writes nothing; try again.
 
@@ -140,13 +140,13 @@ Consumers must not read or write shared config directly. Register `registerTaskM
 
 ## Limits and recovery
 
-Reads never change config. Problems appear at session start and when `/task-models` opens:
+Problems appear at session start and when `/task-models` opens. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 | Problem | Result |
 | --- | --- |
 | Unknown key, misspelled `tasks`, unknown profile name, invalid task ID or task profile | Warn and ignore the entry. Tasks without valid overrides use declared defaults. |
 | Invalid profile or route; `fallback` in `fav` | Warn and ignore the profile. Tasks using it fail with `profile-missing`, including the problem. |
-| Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root or `profiles`, misspelled `profiles` such as `profile` | Disable routing. Every task fails with `config-disabled`. |
+| File problem, non-object `profiles`, misspelled `profiles` such as `profile` | Disable routing. Every task fails with `config-disabled`. |
 
 Repair the file manually, or save a profile with `/task-models`. Problematic config requires confirmation. Saves retain only valid settings, including valid `tasks` when `profiles` is invalid. If the file changed while `/task-models` was open, saving writes nothing; reopen `/task-models`.
 

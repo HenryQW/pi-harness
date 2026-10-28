@@ -209,7 +209,7 @@ If a GitHub CI read fails before the first job-log read, collect stays open for 
 
 ## Config
 
-Package-owned: `<agent-dir>/config/pi-pr/config.json`
+Package-owned: `~/.pi/agent/config/pi-pr/config.json`
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -221,13 +221,13 @@ Package-owned: `<agent-dir>/config/pi-pr/config.json`
 | `mergeMethod` | Direct merge method, subject to repository policy. | `squash`, `merge`, or `rebase` | `squash` |
 | `codexReview` | Require a complete current-head Codex review before merge confirmation, also for named pull requests. Adds at most two GitHub endpoint reads per open-PR discovery. | `true` or `false` | `false` |
 
-Missing or malformed files use defaults without changes to the file. Unknown/invalid keys warn with path and reason, then use their defaults; valid keys remain effective. Each issue appears once per session, at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` reads config once; a later `/pr` or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config.
+The extension never writes this file. Problems show at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` reads config once; a later `/pr` or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ## State and storage
 
 The session stores a PR identity observation: URL, number, host, head identity, and target identity, not mutable CI/review conditions. Discovery validates it against GitHub; there is no repository cache.
 
-The handled-feedback marker is `<worktree>/.context/pi-harness/pi-pr/feedback-<agent-id>.json`. The agent identity is the hash of the normalized absolute `<agent-dir>/config/pi-pr` path. Each agent directory keeps its own reviewed decisions for the canonical checkout; another agent directory cannot acknowledge its blocked items. `/pr` uses this marker to detect feedback that needs a sweep, including before merge.
+The handled-feedback marker is `<worktree>/.context/pi-harness/pi-pr/feedback-<agent-id>.json`. The agent identity is the hash of the normalized absolute `~/.pi/agent/config/pi-pr` path. Each agent directory keeps its own reviewed decisions for the canonical checkout; another agent directory cannot acknowledge its blocked items. `/pr` uses this marker to detect feedback that needs a sweep, including before merge.
 
 The marker can make the Git worktree dirty, which blocks clean-worktree operations, including `/pr` merge and sweep publication. The extension does not change ignore rules. Choose and manage any Git exclusion yourself; inspect state before you share or stage it. Removing the worktree removes this marker.
 
@@ -237,7 +237,7 @@ The marker must be untracked: tracked or staged repository content, including fi
 
 State directory components must not be symbolic links; the marker must be a regular file without extra hard links. Unsafe paths remain unchanged and produce an error. These checks do not protect against a hostile same-user process that swaps paths during use.
 
-Private recovery uses `<agent-dir>/config/pi-pr/sweep/<worktree-id>/state.json` and `<agent-dir>/config/pi-pr/update-branch/`. Run `/pr` to resume matching verified recovery. Mismatched or malformed records remain unchanged and block routing. Never delete them to force continuation.
+Private recovery uses `~/.pi/agent/config/pi-pr/sweep/<worktree-id>/state.json` and `~/.pi/agent/config/pi-pr/update-branch/`. Run `/pr` to resume matching verified recovery. Mismatched or malformed records remain unchanged and block routing. Never delete them to force continuation.
 
 ### Migration to version 11
 
