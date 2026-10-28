@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-ask-question",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "description": "Ask Pi users one question or a list of questions with options or custom answers.",
   "keywords": [
     "pi-package",

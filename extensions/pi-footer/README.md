@@ -2,7 +2,7 @@
 
 Keep footer identity, model usage, agent-work time, and extension status visible in Pi. Enable the footer and open commands independently.
 
-![Pi footer showing repository, pull request, quota, usage, model, and extension status](./example.png)
+![Pi footer showing repository, branch, quota, usage, model, and extension status](./example.png)
 
 ## Install
 

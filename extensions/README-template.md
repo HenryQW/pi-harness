@@ -22,7 +22,7 @@ README contract:
 
 <!-- Optional: when the package was learned from or adapted from another project, add an "Inspired by" sentence here. -->
 
-<!-- Optional: add a product screenshot here. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. -->
+<!-- Optional: add a product screenshot here. Follow docs/screenshot-style.md. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. -->
 
 <!-- Optional: include only when installation has package-specific user information. -->
 ## Install
