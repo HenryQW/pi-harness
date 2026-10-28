@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="codegraph-setup-flow-title codegraph-setup-flow-desc" id="codegraph-setup-flow-root">
   <title id="codegraph-setup-flow-title">CodeGraph worktree index setup</title>
-  <desc id="codegraph-setup-flow-desc">Pi gets primary-index consent, checks copied indexes before synchronization, creates an index if no copy is usable, and starts the MCP watcher.</desc>
+  <desc id="codegraph-setup-flow-desc">Startup or projectPath selects one Git worktree. Pi gets primary-index consent, checks copied indexes before synchronization, and starts a separate Model Context Protocol (MCP) watcher.</desc>
   <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #codegraph-setup-flow-root { color: #101828; }
@@ -41,8 +41,8 @@
     <marker id="codegraph-setup-flow-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#1d4ed8"/></marker>
   </defs>
   <rect width="1280" height="720" fill="#f0eee9"/>
-  <text class="heading" x="40" y="48">Prepare a linked worktree index</text>
-  <text class="note" x="40" y="72">New linked worktree without an index. Existing indexes and lock recovery are described in the README.</text>
+  <text class="heading" x="40" y="48">Prepare a selected linked worktree index</text>
+  <text class="note" x="40" y="72">Resolve the startup directory or query projectPath to its Git worktree. Do not search child repositories. See the README for lock recovery.</text>
 
   <!-- Connectors precede labels and nodes. The copied-index gate runs before sync. -->
   <line class="edge" x1="264" y1="140" x2="320" y2="140"/>
@@ -72,15 +72,15 @@
 
   <!-- Nine nodes: start, primary check, consent, selection, copy, gate, sync, init, watcher. -->
   <rect class="terminal" x="40" y="100" width="224" height="80" rx="20"/>
-  <text class="name" x="152" y="136">Pi starts</text>
-  <text class="detail" x="152" y="156">In a Git checkout</text>
+  <text class="name" x="152" y="136">Startup or query</text>
+  <text class="detail" x="152" y="156">Resolved Git worktree</text>
 
   <polygon class="decision" points="440,80 560,140 440,200 320,140"/>
   <text class="name" x="440" y="136">Primary index</text>
   <text class="name" x="440" y="156">present?</text>
 
   <rect class="node" x="680" y="80" width="360" height="128" rx="6"/>
-  <text class="name" x="860" y="108">TUI consent once per repository</text>
+  <text class="name" x="860" y="108">Text user interface (TUI) consent</text>
   <text class="detail" x="860" y="132">Accept: initialize the primary checkout</text>
   <text class="code" x="860" y="152">codegraph init --yes</text>
   <text class="detail" x="860" y="176">Decline: write the marker and stop</text>
@@ -111,7 +111,7 @@
   <text class="code" x="460" y="532">codegraph init --yes &lt;worktree-root&gt;</text>
 
   <rect class="terminal" x="1008" y="600" width="232" height="72" rx="20"/>
-  <text class="name" x="1124" y="628">MCP watcher keeps it current</text>
+  <text class="name" x="1124" y="628">One watcher per worktree</text>
   <text class="detail" x="1124" y="648">Includes uncommitted edits</text>
 
   <text class="note" x="40" y="680">Dashed path: reject the copy and try the next seed index. Setup failures stop; see Limits and recovery.</text>

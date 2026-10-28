@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { unwatchFile, watchFile } from "node:fs";
 import fs, { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -1664,9 +1665,11 @@ test("private inbox diagnostics stay out of startup, reminders, commands, and to
 });
 
 test("other sessions' inbox writes refresh the count-only widget", async () => {
-	await withReviewFixture({}, async ({ agentDir, ctx, widgets }) => {
+	await withReviewFixture({}, async ({ agentDir, ctx, widgets, handlers }) => {
 		const store = reviewInboxStore(validateMutation, agentDir);
+		await assert.rejects(stat(store.path), { code: "ENOENT" });
 		const group = await reviewGroup(ctx.sessionManager.getCwd());
+		const add = () => store.update(() => ({ items: [{ id: "other-session", group, directory: agentDir, mutation: { target: "memory", action: "add", content: "private content" } }] }));
 		const setWidget = ctx.ui.setWidget;
 		let changed = () => {};
 		ctx.ui.setWidget = ((...args: Parameters<typeof setWidget>) => {
@@ -1683,11 +1686,39 @@ test("other sessions' inbox writes refresh the count-only widget", async () => {
 			try { await Promise.all([update(), displayed]); }
 			finally { clearTimeout(timer!); }
 		};
-		await waitForWidget(() => widgets.at(-1)?.join().includes("1 pending") === true, () => store.update(() => ({ items: [{ id: "other-session", group, directory: agentDir, mutation: { target: "memory", action: "add", content: "private content" } }] })));
+		const hasPending = () => widgets.at(-1)?.join().includes("1 pending") === true;
+		await waitForWidget(hasPending, add);
 		assert.match(widgets.at(-1)!.join(), /1 pending/);
 		assert.doesNotMatch(widgets.at(-1)!.join(), /private content/);
 		await waitForWidget(() => widgets.at(-1) === undefined, () => store.update(() => ({ items: [] })));
 		assert.equal(widgets.at(-1), undefined);
+		await waitForWidget(hasPending, add);
+		await waitForWidget(() => widgets.at(-1) === undefined, () => rm(store.path));
+		await waitForWidget(hasPending, add);
+
+		// Another session's listener must survive both replacement and shutdown.
+		let otherChanges = 0;
+		const onOtherChange = () => { otherChanges++; changed(); };
+		watchFile(store.path, { interval: 250, persistent: false }, onOtherChange);
+		try {
+			const nextCtx = { ...ctx, ui: { ...ctx.ui } };
+			let retiredWrites = 0;
+			ctx.ui.setWidget = () => { retiredWrites++; };
+			await handlers.get("session_start")!({}, nextCtx);
+			const beforeReplacement = otherChanges;
+			await waitForWidget(() => widgets.at(-1) === undefined && otherChanges > beforeReplacement, () => store.update(() => ({ items: [] })));
+			assert.equal(retiredWrites, 0);
+			await waitForWidget(hasPending, add);
+
+			await handlers.get("session_shutdown")!({}, nextCtx);
+			const widgetCount = widgets.length;
+			const beforeShutdown = otherChanges;
+			await waitForWidget(() => otherChanges > beforeShutdown, () => store.update(() => ({ items: [] })));
+			assert.equal(widgets.length, widgetCount);
+			assert.equal(retiredWrites, 0);
+		} finally {
+			unwatchFile(store.path, onOtherChange);
+		}
 	});
 });
 

@@ -60,7 +60,9 @@ For a single add with one same-store conflict, the command offers replacement, d
 
 Discard removes the candidate without a memory write. Approval removes it only after the memory write succeeds. Changed sources, cancellation, invalid review output, and write failures retain the candidate. A saved mutation with a failed inbox removal is reported separately; inspect live memory before another review.
 
-A count-only widget shows pending candidates for the current group and is hidden at zero. It contains no candidate text. A short reminder appears after each response while candidates remain. Other sessions' inbox writes refresh the widget. If file watching fails, Pi reports it and refreshes counts at response and review boundaries. Non-terminal modes receive plain-text reminders; they cannot approve candidates.
+A count-only widget shows pending candidates for the current group and is hidden at zero. It contains no candidate text. A short reminder appears after each response while candidates remain. Non-terminal modes receive plain-text reminders; they cannot approve candidates.
+
+Pi checks the inbox file every 250 milliseconds to detect other sessions' writes, file creation, replacement, and removal. The check stops at session shutdown or replacement without stopping other sessions' listeners. If the check cannot start or the inbox cannot be read, Pi reports the problem. Counts also refresh after responses and review commands.
 
 Linked Git worktrees share the canonical common Git directory as their group. Outside Git, the group is the canonical session starting directory, not a later shell directory. Session changes select the new group's count. Restart, cancellation, and shutdown do not delete inbox candidates. Each item also records the memory directory; review stops if that directory no longer matches the active configuration. Restore that configuration before review.
 
