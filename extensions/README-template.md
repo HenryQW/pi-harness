@@ -40,7 +40,7 @@ pi install npm:@henryqw/<package>
 
 <User-visible sequence and important transitions.>
 
-<!-- Optional: package-owned, user-editable config only. Start with the path and use the four columns below; Default states omitted behavior or a lone dash, and no JSON copy of the table. -->
+<!-- Optional: package-owned, user-editable config only. Start with the path and use the four columns below; Default states omitted behavior or a lone dash, and no JSON copy of the table. State only what differs from the root README Config files section. -->
 ## Config
 
 Package-owned: `~/.pi/agent/config/<package>/config.json`
@@ -50,7 +50,7 @@ Package-owned: `~/.pi/agent/config/<package>/config.json`
 | `<setting-a>` | <What it controls. Required when <condition>.> | <Type, range, enum, or structural constraint.> | — |
 | `<setting-b>` | <What it controls.> | <Type, range, enum, or structural constraint.> | <Effective behavior when omitted.> |
 
-<Invalid or missing config, who writes it, when changes reload, and recovery.>
+<After the table, state only what differs from [Config files](https://pi.henry.wang/overview#config-files): who writes the file, when edits apply, settings that disable a feature or block an action, what a file problem does, and recovery. Link Config files.>
 
 <!-- Optional: public library or owner APIs only. Use this table for two or more exports. -->
 ## API

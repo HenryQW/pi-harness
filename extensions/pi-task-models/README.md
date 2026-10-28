@@ -81,7 +81,7 @@ Task defaults belong to consumer declarations. Existing overrides equal to those
 
 You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps preset names to any subset of the four profiles, each in the `profiles.<profile>` format above. The picker sorts names alphabetically.
 
-The file must be valid UTF-8 JSON, at most 64 KiB. Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
+Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
 
 Saving never overwrites a preset file that has problems; a conflict message asks you to try again.
 
@@ -115,13 +115,13 @@ Consumers must not read or write shared config; call `report(ctx)` before resolu
 
 ## Limits and recovery
 
-Reads never change config. Problems appear at session start and when `/task-models` opens. Resolution throws `TaskRouteError` with a `taskRouteCode`:
+Problems appear at session start and when `/task-models` opens. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files). Resolution throws `TaskRouteError` with a `taskRouteCode`:
 
 | Problem | Code | Recovery |
 | --- | --- | --- |
 | Unknown key, misspelled `tasks`, unknown profile name, invalid task ID or task profile. | None | None needed. Tasks without valid overrides use declared defaults. |
 | Config is absent. | `config-missing` | Run `/task-models` to create it. |
-| Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root or `profiles`, misspelled `profiles` such as `profile`. Routing is disabled for every task. | `config-disabled` | Repair the file or save through `/task-models`. |
+| File problem, non-object `profiles`, misspelled `profiles` such as `profile`. Routing is disabled for every task. | `config-disabled` | Repair the file or save through `/task-models`. |
 | Profile is absent, or Pi warns and ignores an invalid profile, route, or `fallback` in `fav`. | `profile-missing` | Configure the profile in `/task-models`. |
 | No available route. | `no-route` | Choose an available model and thinking level in `/task-models`. |
 

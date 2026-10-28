@@ -66,11 +66,9 @@ Package-owned: `~/.pi/agent/config/pi-prompt-creator/config.json`
 | `automatic` | Starts automatic analysis after enough user inputs. | Boolean. | `true` |
 | `inputThreshold` | Required number of non-empty user inputs. | Safe integer from `1` to `9007199254740991`. | `3` |
 
-Edit the file, then run `/reload`. Missing files and omitted fields use defaults. Startup never creates or rewrites the file.
+Edit the file, then run `/reload`. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
-Startup warnings give the file path and each unknown key or invalid value. Unknown keys are ignored. A misspelled key near a missing field, such as `automatc`, makes that field invalid. Invalid `inputThreshold` uses `3`.
-
-Invalid or misspelled `automatic` disables automatic analysis for the session. File-level problems also disable it: malformed JSON, invalid UTF-8, size above 64 KiB, read errors, or a non-object root. The file stays unchanged.
+An invalid or misspelled `automatic`, or a file problem, disables automatic analysis for the session.
 
 Only `/promptor automatic on` and `/promptor automatic off` write config. Each toggle rereads the file and preserves its current `inputThreshold`, including changes from another session. For a file with problems, it reports them, keeps usable values, and removes unknown keys. If another session changes that file before replacement, the toggle writes nothing.
 

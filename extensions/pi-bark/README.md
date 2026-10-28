@@ -158,7 +158,7 @@ Missing config stays missing until a command writes it. `/set-bark` preserves en
 
 Bark and Apple Push Notification service limit payload size. pi-bark never truncates content; oversized messages return a Bark error. `/copyb` waits at most 15 seconds. Failed pushes do not undo the clipboard copy.
 
-Config checks occur at startup and each read, without writing. Each problem shows once per session:
+Config checks occur at startup and each read. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files). Results for pi-bark:
 
 | Problem | Result and recovery |
 | --- | --- |
@@ -166,7 +166,7 @@ Config checks occur at startup and each read, without writing. Each problem show
 | Missing file or invalid/missing `deviceKey` | Disables sending. Run `/set-bark`. |
 | Invalid/missing `serverUrl`, including `serverURL` | Disables sending, never substitutes the public server that would receive your Device Key. Run `/set-bark` with the correct URL. |
 | Invalid/missing `encryption`, including `encyption` | Disables sending, never substitutes unencrypted content. Run `pi-bark-key --force` or `pi-bark-key --disable`. |
-| Malformed JSON or non-object file | Disables sending. Fix or move the file. |
+| File problem, such as malformed JSON | Disables sending. Fix or move the file. |
 
 Disabled pi-bark reports errors. `/set-bark` and `pi-bark-key` remain available; `/bark` reports the problem without writing. Notification settings cannot enable a disabled configuration.
 

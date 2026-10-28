@@ -64,7 +64,7 @@ Git state refreshes after agent runs and branch changes. No model call or remote
 
 ## Config
 
-Package-owned paths under `getAgentDir()` (normally `~/.pi/agent`):
+Package-owned paths:
 
 - `~/.pi/agent/config/pi-footer/config.json`: footer colors.
 - `~/.pi/agent/config/pi-open-in/config.json`: open command.
@@ -74,7 +74,7 @@ Package-owned paths under `getAgentDir()` (normally `~/.pi/agent`):
 | `colors` | Footer-owned colors by role. | Object mapping roles to theme tokens, `#RGB`, `#RRGGBB`, `oklch(...)`, `okhsl(...)`, or ANSI indices `0` to `255`. | Built-in colors. |
 | `command` | Command for `/open`. | Non-empty string. | `"code"` |
 
-Colors load at session start; run `/reload` after edits. Missing files or roles keep built-in colors. Unknown keys, unknown roles, and invalid colors produce warnings with the path and reason. Invalid roles use built-in colors independently; malformed files use all built-in colors. The footer never rewrites the file.
+Colors load at session start; run `/reload` after edits. A role with a missing or invalid color keeps its built-in color; other roles are not affected. A file problem gives all built-in colors. The footer never writes the colors file. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ### Footer color roles
 
@@ -114,7 +114,7 @@ Neither function shows notifications. For `code -n` and `code --new-window`, `co
 
 Open commands split on whitespace. Quoting and tokens with spaces are unsupported; use a wrapper script for executable paths with spaces.
 
-If the open config file is malformed, `/open` reports the problem and opens nothing. Fix the file or run `/set-open-in <command>`.
+`/open` reads config on each run. Only `/set-open-in` writes the file. An invalid `command` or a file problem uses `code`, and `/open` reports the problem. Fix the file or run `/set-open-in <command>`.
 
 With `code` and Pi hyperlink support, the accent-colored branch name links to the current path. `code -n` and `code --new-window` open a new window. Other executables or disabled hyperlinks give plain text.
 

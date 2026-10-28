@@ -161,7 +161,7 @@ Cleanup runs `git worktree remove <checkout>`, closes other tabs in the current 
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi agent directory determines the config home. Side-thread settings are under `btw`; command limits are at the root.
+Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files). Side-thread settings are under `btw`; command limits are at the root.
 
 ```json
 {
@@ -185,7 +185,7 @@ Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. The active Pi ag
 | `btw.tools` | Tools available in the side pane. | `inherit` (Main's active tools), `all`, `read-only` (built-in read-only tools), or `none`. | `inherit` |
 | `btw.split` | Side-pane placement. | `right` or `down`. | `right` |
 
-File and fields are optional. Launch reports unknown keys and invalid values, using field defaults; malformed files use all defaults. `/btw` continues without changing the file. `/btw config show` prints effective side-thread values. Updates preserve command limits but fail while any config issue remains.
+`/btw` continues with defaults when the file has problems. `/btw config show` prints effective side-thread values. Updates preserve command limits but fail while any config issue remains.
 
 `/btw config reset` replaces only `btw` with defaults and preserves command limits. It can correct invalid settings under `btw`. Reset refuses malformed files and issues outside `btw`; correct those manually first. If the file changes during a repair, reset refuses the write. Read the file and retry.
 
@@ -198,7 +198,7 @@ File and fields are optional. Launch reports unknown keys and invalid values, us
 | `concurrency` | Maximum active or unknown jobs in the command store. | Integer, 1 to 16. | `4` |
 | `retainedJobs` | Maximum saved job records before launch is refused. | Integer, 1 to 10000. | `1000` |
 
-Missing fields use defaults. Invalid fields and malformed files produce config warnings and use finite defaults. The extension preserves the file. Edit the file to change policy; each launch loads it again. Existing jobs keep their saved limits. No automatic job queue or retry is provided.
+Edit the file to change policy; each launch loads it again. Existing jobs keep their saved limits. No automatic job queue or retry is provided.
 
 ### Model profiles
 

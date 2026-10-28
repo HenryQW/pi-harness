@@ -152,7 +152,7 @@ Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route
 
 ## Config
 
-Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. Missing files silently use defaults. No key is required; the extension preserves the file and never rewrites it automatically.
+Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. The extension never writes it. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
@@ -166,9 +166,9 @@ Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. Missing files silen
 
 `roleDefaults` entries precede Role entries; merging removes duplicates before resource resolution. Use it for a provider extension that every child needs. Limits come only from this file. Requests cannot override or replenish them. Durable requests keep recorded policy; a lower current correction limit can tighten recovery. There is no whole-run timeout.
 
-The extension reports each new problem once per session. It reads config at launch, `delegate_task`, later direct workers, isolated Role launches, `/subagent roles`, and status inspection.
+The extension reads config at launch, `delegate_task`, later direct workers, isolated Role launches, `/subagent roles`, and status inspection.
 
-Invalid limits warn and use defaults. Invalid or misspelled `maxTokens`, malformed or unreadable files, invalid UTF-8, and files above 64 KiB block delegation, with no fallback to unlimited tokens. Running workers keep their limits; if the problem existed at session start, run `/reload` after you correct the file.
+An invalid or misspelled `maxTokens`, or a file problem, blocks delegation, with no fallback to unlimited tokens. Running workers keep their limits; if the problem existed at session start, run `/reload` after you correct the file.
 
 ### Roles
 

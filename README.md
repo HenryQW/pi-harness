@@ -31,6 +31,22 @@ curl -fsSL https://pi.henry.wang/install.sh | sh -s -- --update
 
 To install one extension, use Pi directly, for example `pi install npm:@henryqw/pi-pr`.
 
+## Config files
+
+An extension that you can configure keeps its files in `~/.pi/agent/config/<package>/`. `~/.pi/agent` is the default Pi agent directory. If you set `PI_CODING_AGENT_DIR`, Pi uses that directory.
+
+Each config file is optional, unless its package guide says otherwise. These rules apply to each file:
+
+- The file must be a JSON object in valid UTF-8, at most 64 KiB.
+- Pi shows each problem one time in each session, with the file path and the reason. Without a UI, the warning goes to stderr.
+- Pi ignores unknown keys.
+- A misspelled key, such as `maxToken` when `maxTokens` is missing, makes that setting invalid.
+- An invalid setting uses its default.
+- A file problem makes the whole file invalid: malformed JSON, invalid UTF-8, a file larger than 64 KiB, an unreadable file, or a non-object root. All settings then use their defaults.
+- Reading a file never changes it. Only the commands that a package guide names write the file.
+
+Some settings disable a feature when they are invalid, and do not use a default. Each package guide gives these settings, what a file problem does, and when edits apply. For the exact rules, see [the pi-config-store load rules](https://pi.henry.wang/packages/pi-config-store#load-rules).
+
 ## Extension dependencies
 
 Each row shows an active extension. A filled square marks a **direct** runtime or peer dependency on the package above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.

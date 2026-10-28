@@ -40,9 +40,7 @@ Package-owned: `~/.pi/agent/config/pi-add-dir/config.json`
 | --- | --- | --- | --- |
 | `directories` | Directories for every workspace. `/dir-add --global` updates this list. | Array of unique absolute paths without control characters. | `[]` |
 
-Missing files use the default. At launch, Pi warns about each unknown key and invalid or duplicate entry, skips them, and loads valid directories. Malformed files or non-array `directories` produce a warning and use the default. The file stays unchanged.
-
-Global additions and removals fail until you fix reported config problems. Reload Pi after manual edits.
+Pi skips invalid or duplicate entries and loads the valid directories. Global additions and removals fail until you fix reported config problems. Reload Pi after manual edits. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ## State and storage
 
