@@ -1,6 +1,6 @@
 # Pi PR
 
-Pi PR identifies the current-branch pull request and selects its highest-priority next step. Local commit and PR publication tools provide narrower authority than the user-run PR command.
+Pi PR identifies the current-branch pull request and selects its highest-priority next step. Local commit, PR publication, and explicit branch-update tools provide narrower authority than the user-run PR command.
 
 ## Language
 
@@ -53,7 +53,7 @@ The highest-priority permitted workflow derived from fresh PR and local state, s
 _Avoid_: Automatic remediation, PR action
 
 **PR helper run**:
-One temporary workflow authority bound to a session, worktree, selected route, and verified PR state. It is not permission to reuse a helper after that authority ends.
+One temporary workflow authority bound to a session, worktree, selected route, and verified PR state. It is not permission to reuse a helper after that authority ends. An ended session-owned run is distinct from a foreign run; a fresh entry needs valid scoped authorization and recovery checks.
 _Avoid_: Reusable token, serialized authority, global workflow context
 
 **PR workflow routing**:
@@ -91,8 +91,16 @@ Scoped commits, validation, and publication of owned local work to an existing P
 _Avoid_: Stash, reset, mutable symbolic push, replaying an uncertain push
 
 **PR branch update workflow**:
-A rebase onto the pinned PR base for a confirmed conflict or required base update, followed by checked publication. It is distinct from local sync onto the PR head.
-_Avoid_: Rebase on a merely stale base GitHub still calls clean, unleased force push
+An update against the pinned PR base for a confirmed conflict or required base update, followed by checked publication. It rebases linear history and merges the base into history with merge commits after the fork point. It is distinct from local sync onto the PR head.
+_Avoid_: Update on a merely stale base GitHub still calls clean, unleased force push
+
+**Branch-update-only authority**:
+An explicit user conflict/base-update order that permits bounded refresh and one branch update with checked publication, then stops. It permits no creation, linking, local sync, unrelated publication, feedback repair, or pull request merge.
+_Avoid_: Full lifecycle authorization, publication-only scope
+
+**Live conflict context**:
+The exact paused branch update, its operation markers, and its original status baseline retained within one live session for user decisions. Idle turns do not renew or replace its authority.
+_Avoid_: Restart recovery, transferable run
 
 **PR feedback sweep workflow**:
 Assessment of a complete feedback snapshot, scoped fixes where needed, and verified replies and thread resolution. Saved progress separates completed decisions from new or changed feedback.

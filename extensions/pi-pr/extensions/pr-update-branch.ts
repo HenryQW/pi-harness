@@ -32,19 +32,21 @@ import {
 	withWorktreeLock,
 } from "./pr-execution.ts";
 
+type UpdateStrategy = "rebase" | "merge";
+
 type UpdateBranchPhase = "ready" | "conflict-awaiting-user" | "verified" | "published" | "blocked";
 
 type UpdateBranchState = {
 	phase: UpdateBranchPhase;
 	verifiedHead?: string;
-	conflict?: { paths: string[]; statusBaseline: string; head: string };
+	conflict?: { paths: string[]; statusBaseline: string; head: string; markers: string[] };
 };
 
 type UpdateBranchResult =
 	| { kind: "verified"; head: string }
-	| { kind: "conflict"; paths: string[] }
+	| { kind: "conflict"; paths: string[]; strategy: UpdateStrategy }
 	| { kind: "published"; head: string }
-	| { kind: "stale"; reason: string; authority: CurrentPullRequest };
+	| { kind: "stale"; reason: string; authority: CurrentPullRequest; aborted?: true };
 
 // Only pre-mutation preflight can authorize a fresh routing snapshot, never a replay.
 class StaleRebaseRoute extends Error {
@@ -114,7 +116,7 @@ function assertVerifiedRecovery(record: RebaseRecovery, pr: CurrentPullRequest, 
 		![record.remote, record.verified].includes(pr.head.oid) || pr.target.remoteOid !== pr.head.oid) {
 		throw new Error(`Branch update recovery authority changed; record preserved at ${path}`);
 	}
-	if (record.phase === "pending") throw new Error(`Branch rebase outcome is unverified; recover manually from ${path}; do not replay it`);
+	if (record.phase === "pending") throw new Error(`Branch update outcome is unverified; recover manually from ${path}; do not replay it`);
 }
 
 export async function inspectVerifiedRebaseRecovery(pr: CurrentPullRequest, options: { cwd: string; agentDir?: string; signal?: AbortSignal }): Promise<boolean> {
@@ -135,6 +137,7 @@ export class PullRequestBranchUpdater {
 	private readonly agentDir?: string;
 	private readonly exec: Exec;
 	private readonly load: Load;
+	private strategy: UpdateStrategy = "rebase";
 	private recovered = false;
 	private recoveredRecord?: RebaseRecovery;
 
@@ -235,16 +238,17 @@ export class PullRequestBranchUpdater {
 	private async abandonRebase(fresh: CurrentPullRequest | undefined): Promise<UpdateBranchResult> {
 		this.state.phase = "blocked";
 		const original = this.authority.head.oid;
-		await runChecked(this.exec, "git", ["rebase", "--abort"], this.execOptions());
+		await runChecked(this.exec, "git", [this.strategy, "--abort"], this.execOptions());
 		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
 		if (branch !== this.authority.target.branch || await readHead(this.exec, this.execOptions()) !== original ||
 			await inspectWorktreeState(this.exec, this.execOptions()) !== "clean") {
-			throw new Error(`Branch rebase authority changed; abort did not restore clean ${original}; recover manually`);
+			throw new Error(`Branch update authority changed; abort did not restore clean ${original}; recover manually`);
 		}
 		await rm(recoveryPath(this.cwd, this.authority, this.agentDir), { force: true });
-		const reason = `Branch rebase authority changed; rebase aborted and ${original} restored before publication`;
+		delete this.state.conflict;
+		const reason = `Branch update authority changed; ${this.strategy} aborted and ${original} restored before publication`;
 		if (!fresh) throw new Error(`${reason}; pull request is no longer current`);
-		return { kind: "stale", reason, authority: cloneCurrentPullRequest(fresh) };
+		return { kind: "stale", reason, authority: cloneCurrentPullRequest(fresh), aborted: true };
 	}
 
 	private async writeRecovery(phase: RebaseRecovery["phase"], verified: string | null): Promise<void> {
@@ -283,9 +287,19 @@ export class PullRequestBranchUpdater {
 
 	private async verifyRebase(): Promise<UpdateBranchResult> {
 		const head = await readHead(this.exec, this.execOptions());
-		if (await inspectWorktreeState(this.exec, this.execOptions()) !== "clean" ||
+		const branch = parseSingleOutputLine((await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout, "current branch");
+		if (branch !== this.authority.target.branch || await inspectWorktreeState(this.exec, this.execOptions()) !== "clean" ||
 			!(await isAncestor(this.exec, this.execOptions(), this.authority.base.oid, head))) {
-			throw new Error("Rebase did not leave a clean branch based on the frozen base");
+			throw new Error("Branch update did not leave the expected clean branch based on the frozen base");
+		}
+		if (this.strategy === "merge") {
+			const parents = parseSingleOutputLine((await runChecked(this.exec, "git", [
+				"rev-list", "--parents", "-n", "1", "HEAD",
+			], this.execOptions())).stdout, "merge parents").split(" ");
+			if (parents.length !== 3 || parents[0] !== head || parents[1] !== this.authority.head.oid ||
+				parents[2] !== this.authority.base.oid) {
+				throw new Error("Branch update did not produce the exact first and second merge parents; recover manually");
+			}
 		}
 		await this.writeRecovery("verified", head);
 		this.state.phase = "verified";
@@ -294,16 +308,61 @@ export class PullRequestBranchUpdater {
 		return { kind: "verified", head };
 	}
 
-	private async captureConflict(): Promise<UpdateBranchResult> {
-		if (await inspectGitOperation(this.exec, this.execOptions()) === null) {
-			throw new Error("Failed rebase did not retain an in-progress Git operation");
+	private async conflictMarkers(): Promise<string[]> {
+		const merge = this.strategy === "merge";
+		if (await inspectGitOperation(this.exec, this.execOptions()) !== (merge ? "MERGE_HEAD" : "rebase-merge")) {
+			throw new Error(`Branch ${this.strategy} context changed`);
 		}
+		const names = merge ? ["MERGE_HEAD", "ORIG_HEAD"] :
+			["rebase-merge/head-name", "rebase-merge/orig-head", "rebase-merge/onto", "REBASE_HEAD"];
+		const markers: string[] = [];
+		for (const name of names) {
+			const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", name], this.execOptions())).stdout, name);
+			try { markers.push(await readFile(resolve(this.cwd, path), "utf8")); }
+			catch (error) { throw new Error(`Branch ${this.strategy} context changed: cannot read ${name}`, { cause: error }); }
+		}
+		const expected = merge ? [this.authority.base.oid, this.authority.head.oid] :
+			[`refs/heads/${this.authority.target.branch}`, this.authority.head.oid, this.authority.base.oid];
+		const branch = (await runChecked(this.exec, "git", ["branch", "--show-current"], this.execOptions())).stdout.trim();
+		if (expected.some((value, index) => markers[index]!.trim() !== value) ||
+			branch !== (merge ? this.authority.target.branch : "") || (!merge && !isOid(markers[3]!.trim()))) {
+			throw new Error(`Branch ${this.strategy} context changed`);
+		}
+		return markers;
+	}
+
+	/** Inspect only operation identity; never replace the original status baseline. */
+	async hasLiveConflict(): Promise<boolean> {
+		if (this.signal?.aborted || this.state.phase !== "conflict-awaiting-user" || !this.state.conflict) return false;
+		try { await this.assertConflictContext(); return true; }
+		catch { return false; }
+	}
+
+	private async assertConflictContext(): Promise<void> {
+		try {
+			const conflict = this.state.conflict!;
+			const markers = await this.conflictMarkers();
+			if (await readHead(this.exec, this.execOptions()) !== conflict.head ||
+				markers.some((value, index) => value !== conflict.markers[index])) {
+				throw new Error(`Branch ${this.strategy} context changed`);
+			}
+		} catch (error) {
+			this.state.phase = "blocked";
+			delete this.state.conflict;
+			throw error;
+		}
+	}
+
+	private async captureConflict(): Promise<UpdateBranchResult> {
+		const markers = await this.conflictMarkers();
 		const paths = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
-		if (!paths.length) throw new Error("git rebase failed without bounded unmerged paths");
+		if (!paths.length) throw new Error(`git ${this.strategy} failed without bounded unmerged paths`);
 		const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
 		this.state.phase = "conflict-awaiting-user";
-		this.state.conflict = { paths, statusBaseline: status.stdout, head: await readHead(this.exec, this.execOptions()) };
-		return { kind: "conflict", paths };
+		const head = await readHead(this.exec, this.execOptions());
+		if (this.strategy === "merge" && head !== this.authority.head.oid) throw new Error("Branch merge context changed");
+		this.state.conflict = { paths, statusBaseline: status.stdout, head, markers };
+		return { kind: "conflict", paths, strategy: this.strategy };
 	}
 
 	async rebase(): Promise<UpdateBranchResult> {
@@ -333,16 +392,19 @@ export class PullRequestBranchUpdater {
 			const mergeCommits = (await runChecked(this.exec, "git", [
 				"rev-list", "--max-count=1", "--min-parents=2", `${mergeBase}..${this.authority.head.oid}`,
 			], this.execOptions())).stdout.trim();
-			if (mergeCommits) throw new Error("Branch update cannot rebase a branch with merge commits; preserve its resolutions manually");
+			this.strategy = mergeCommits ? "merge" : "rebase";
 			await this.freshAuthority(this.authority.head.oid, true, false, true);
 			await this.writeRecovery("pending", null);
-			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.backend=merge", "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase], this.execOptions());
-			if (result.killed) throw new Error("git rebase was killed; its outcome is unknown");
+			const args = this.strategy === "merge"
+				? ["merge", "--no-ff", "--no-edit", "--no-autostash", this.authority.base.oid]
+				: ["-c", "core.editor=true", "-c", "rebase.backend=merge", "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", "--onto", this.authority.base.oid, mergeBase];
+			const result = await this.exec("git", args, this.execOptions());
+			if (result.killed) throw new Error(`git ${this.strategy} was killed; its outcome is unknown`);
 			if (result.code === 0) return await this.verifyRebase();
 			try {
 				return await this.captureConflict();
 			} catch (error) {
-				throw new Error(`git rebase failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
+				throw new Error(`git ${this.strategy} failed: ${result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`}; ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}, { agentDir: this.agentDir, signal: this.signal }).catch((error: unknown) => {
 			if (!(error instanceof StaleRebaseRoute)) throw error;
@@ -361,33 +423,23 @@ export class PullRequestBranchUpdater {
 			throw new Error("Resolved paths must include every original conflict path");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			const assertContext = async () => {
-				const path = parseSingleOutputLine((await runChecked(this.exec, "git", ["rev-parse", "--git-path", "rebase-merge/head-name"], this.execOptions())).stdout, "rebase branch marker");
-				const marker = await readFile(resolve(this.cwd, path), "utf8").catch((error) => {
-					if (error.code === "ENOENT") throw new Error("Branch rebase context changed", { cause: error });
-					throw error;
-				});
-				if (marker.trim() !== `refs/heads/${this.authority.target.branch}` ||
-					await readHead(this.exec, this.execOptions()) !== this.state.conflict!.head) {
-					throw new Error("Branch rebase context changed");
-				}
-			};
-			await assertContext();
-			const discovery = await this.load(this.pi(), { ...this.context(), rebaseBranch: this.authority.target.branch });
-			// Undeclared edits block both continuation and abort, which would reset them.
-			const status = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
-			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, status.stdout, paths);
+			await this.assertConflictContext();
+			const discovery = await this.load(this.pi(), { ...this.context(),
+				...(this.strategy === "rebase" ? { rebaseBranch: this.authority.target.branch } : {}) });
+			await this.assertConflictContext();
 			const fresh = discovery.kind === "current" ? discovery.pullRequest : undefined;
-			if (!fresh || !sameAuthority(this.authority, fresh) || !(await this.baseAdvancedFromFrozen(fresh))) {
-				return await this.abandonRebase(fresh);
-			}
-			await assertContext();
+			const stale = !fresh || !sameAuthority(this.authority, fresh) || !(await this.baseAdvancedFromFrozen(fresh));
+			await this.assertConflictContext();
+			// Undeclared edits block both continuation and abort, which would reset them.
+			const latestStatus = await runChecked(this.exec, "git", ["status", "--porcelain=v2", "-z", "--untracked-files=all"], this.execOptions());
+			assertOnlyDeclaredStatusChanged(this.state.conflict!.statusBaseline, latestStatus.stdout, paths);
+			if (stale) return await this.abandonRebase(fresh);
 			this.state.phase = "blocked";
 			await runChecked(this.exec, "git", ["--literal-pathspecs", "add", "--", ...paths], this.execOptions());
 			const unmerged = parseNulPaths((await runChecked(this.exec, "git", ["diff", "--name-only", "-z", "--diff-filter=U"], this.execOptions())).stdout, "Unmerged paths");
 			if (unmerged.length) throw new Error(`Conflict paths remain unresolved: ${unmerged.join(", ")}`);
-			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.updateRefs=false", "rebase", "--continue"], this.execOptions());
-			if (result.killed) throw new Error("git rebase continuation was killed; its outcome is unknown");
+			const result = await this.exec("git", ["-c", "core.editor=true", "-c", "rebase.updateRefs=false", this.strategy, "--continue"], this.execOptions());
+			if (result.killed) throw new Error(`git ${this.strategy} continuation was killed; its outcome is unknown`);
 			if (result.code === 0) return await this.verifyRebase();
 			return await this.captureConflict();
 		}, { agentDir: this.agentDir, signal: this.signal });

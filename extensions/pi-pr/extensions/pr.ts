@@ -49,7 +49,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { canonicalWorktree, isRecord } from "./pr-execution.ts";
+import { canonicalWorktree, isRecord, UndeclaredConflictEdits } from "./pr-execution.ts";
 import {
 	discoveryIssueDetails,
 	formatPrFooter,
@@ -176,6 +176,7 @@ const WorkActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
 ]);
 const PublicationParameters = Type.Object({
+	scope: Type.Optional(Type.Union([Type.Literal("publication"), Type.Literal("update-branch")])),
 	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
 	allowUpstream: Type.Optional(Type.Boolean()),
 }, CLOSED);
@@ -201,7 +202,7 @@ const ConflictActions = Type.Union([
 	}, CLOSED), { minItems: 1, maxItems: 256 }) }, CLOSED),
 ]);
 
-type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
+type UpdateBranchWorkflow = Pick<PullRequestBranchUpdater, "state" | "hasLiveConflict" | "recoveryLaunchAction" | "rebase" | "continue" | "publish">;
 type CreateWorkflow = Pick<PullRequestCreator, "state" | "prepare" | "inspect" | "commit" | "verify" | "push" | "publish">;
 type SweepWorkflow = Pick<PullRequestCommentSweep, "recoveryLaunchAction" | "start" | "resume" | "show" | "record" | "adopt" | "validate" | "commit" | "publish" | "refresh" | "resolve" | "finalize">;
 type FixCiWorkflow = Pick<PullRequestCiFixer, "collect" | "publish">;
@@ -213,7 +214,7 @@ type WorkflowContextBase = {
 	controller: AbortController;
 	usedSinceSettlement: boolean;
 	queuedPrompt?: WorkflowPromptIdentity;
-	conflictRetained: boolean;
+	failed: boolean;
 	completed: boolean;
 	staleRediscoveries: number;
 	run: PrRun;
@@ -390,6 +391,7 @@ export default function pullRequestExtension(
 	let commandGeneration = 0;
 	let prRun = new PrRun();
 	let workflowContext: WorkflowContext | undefined;
+	const endedRuns = new Map<string, { failed: boolean; scoped: boolean }>();
 	let standaloneCommit: { worktree: string; committer: GitCommitter; controller: AbortController } | undefined;
 	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
 	let widgetKind: "presentation" | "routing" = "presentation";
@@ -444,6 +446,10 @@ export default function pullRequestExtension(
 	const clearWorkflow = (selected: WorkflowContext | undefined): void => {
 		if (!selected || workflowContext !== selected) return;
 		workflowContext = undefined;
+		if (selected.sessionGeneration === sessionGeneration) {
+			endedRuns.set(selected.runId, { failed: selected.failed || selected.controller.signal.aborted ||
+				selected.route === "update-branch" && selected.workflow.state.phase === "blocked", scoped: selected.publication !== undefined });
+		}
 		selected.controller.abort();
 	};
 
@@ -459,7 +465,7 @@ export default function pullRequestExtension(
 			worktree,
 			controller: new AbortController(),
 			usedSinceSettlement: false,
-			conflictRetained: false,
+			failed: false,
 			completed: false,
 			staleRediscoveries: invocation.staleRediscoveries ?? 0,
 			run: invocation.run,
@@ -572,7 +578,16 @@ export default function pullRequestExtension(
 	) => {
 		signal?.throwIfAborted();
 		const selected = workflowContext;
-		if (!selected) throw new Error("No PR workflow is active in this session; run IDs are session-local. Call pi_git_pr only for an authorized new publication workflow, or ask the user to run /pr for the full lifecycle. Do not restart a foreign or stale run automatically; an active parent workflow stays parent-owned.");
+		if (!selected) {
+			const ended = endedRuns.get(runId);
+			throw new Error(ended && !ended.failed
+				? `No PR workflow is active: this session's run ended at settlement. ${ended.scoped
+					? "If the user's authorization still applies, start a fresh pi_git_pr entry with the same scope."
+					: "For scoped publication already authorized by the user's original instruction, start a fresh pi_git_pr entry; no new approval is needed. Ask the user to run /pr for the full lifecycle."} It must inspect recovery before any mutation; never replay an uncertain action.`
+				: ended?.failed
+				? "No PR workflow is active: this session's run failed or was cancelled. Inspect its result and recovery journal before a fresh authorized entry; never replay an uncertain action."
+				: "No PR workflow is active in this session; this runId is foreign or stale. Do not restart it or take over a parent or child run. Ask its owning session to continue.");
+		}
 		if (selected.runId !== runId) throw new Error("PR workflow runId is wrong or stale");
 		if (selected.sessionGeneration !== sessionGeneration) throw new Error("PR workflow session is stale");
 		if (selected.route !== route) throw new Error(`PR workflow route is ${selected.route}, not ${route}`);
@@ -593,7 +608,15 @@ export default function pullRequestExtension(
 			selected.usedSinceSettlement = true;
 			// A guarded action also acknowledges consumption of the exact reserved run.
 			selected.queuedPrompt = undefined;
-			return toolResult(await action(selected as Extract<WorkflowContext, { route: Route }>));
+			const result = await action(selected as Extract<WorkflowContext, { route: Route }>);
+			selected.failed = false;
+			return toolResult(result);
+		} catch (error) {
+			if (!(error instanceof UndeclaredConflictEdits && selected.route === "update-branch" &&
+				selected.workflow.state.phase === "conflict-awaiting-user" && !selected.controller.signal.aborted)) {
+				selected.failed = true;
+			}
+			throw error;
 		} finally {
 			signal?.removeEventListener("abort", abortRun);
 		}
@@ -638,7 +661,9 @@ export default function pullRequestExtension(
 						const result = params.action === "rebase"
 							? await selected.workflow.rebase()
 							: await selected.workflow.continue(params.resolvedPaths);
-						if (result.kind === "stale") {
+						if (result.kind === "stale" && result.aborted) {
+							selected.completed = true; // One attempted update is enough, even if stale authority required an abort.
+						} else if (result.kind === "stale") {
 							selected.replan = result.reason;
 							selected.authority = cloneCurrentPullRequest(result.authority);
 						}
@@ -903,6 +928,7 @@ export default function pullRequestExtension(
 		commandGeneration = 0;
 		prRun = new PrRun();
 		clearWorkflow(workflowContext);
+		endedRuns.clear();
 		activeInvocations.clear();
 		stopRoutingSpinner();
 		stopPolling();
@@ -1016,8 +1042,9 @@ export default function pullRequestExtension(
 
 	pi.on("agent_before_settle", async (event, ctx) => {
 		const selected = workflowContext;
+		if (selected && event.outcome !== "completed") selected.failed = true;
 		const replanning = selected !== undefined && selected.route !== "create" && selected.replan !== undefined;
-		if (event.outcome !== "completed" || !selected ||
+		if (event.outcome !== "completed" || !selected || selected.failed ||
 			(!selected.completed && !selected.queuedPrompt && !replanning) || selected.sessionGeneration !== sessionGeneration) return;
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
@@ -1053,6 +1080,7 @@ export default function pullRequestExtension(
 				} else selected.run.complete(selected.route, selected.entryHead);
 				if (selected.route === "create") pendingWorkspaceRename = true;
 				clearWorkflow(selected);
+				if (selected.completed && selected.publication?.scope === "update-branch") return;
 				activeInvocations.set(invocation, "routing");
 				reconcileWidget(ctx);
 				const next = await commandHandler("", ctx, callback);
@@ -1084,6 +1112,7 @@ export default function pullRequestExtension(
 			};
 		} catch (error) {
 			if (generation === sessionGeneration) {
+				if (workflowContext) workflowContext.failed = true;
 				clearWorkflow(workflowContext);
 				activeInvocations.delete(invocation);
 				ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
@@ -1098,25 +1127,25 @@ export default function pullRequestExtension(
 		}
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		if (!ctx.isIdle()) return;
 		const selected = workflowContext;
 		const helperSettled = selected?.usedSinceSettlement ?? false;
+		if (selected && event.aborted) selected.failed = true;
+		const retainConflict = selected?.route === "update-branch" && !selected.failed &&
+			selected.workflow.state.phase === "conflict-awaiting-user" && !selected.completed && !selected.controller.signal.aborted && await selected.workflow.hasLiveConflict();
+		if (selected !== workflowContext) return;
 		let workflowSettled = false;
 		let createWorkflowSettled = false;
 		for (const [invocation, phase] of activeInvocations) {
 			if (phase !== "workflow" && phase !== "create-workflow") continue;
-			activeInvocations.delete(invocation);
+			if (!retainConflict) activeInvocations.delete(invocation);
 			workflowSettled = true;
 			if (phase === "create-workflow") createWorkflowSettled = true;
 		}
 		if (selected) {
-			const conflictPending = selected.route === "update-branch" &&
-				selected.workflow.state.phase === "conflict-awaiting-user";
-			if (helperSettled && conflictPending && !selected.conflictRetained) {
-				selected.usedSinceSettlement = false;
-				selected.conflictRetained = true;
-			} else clearWorkflow(selected);
+			if (retainConflict) selected.usedSinceSettlement = false;
+			else clearWorkflow(selected);
 		}
 		if (!ctx.hasUI || !context) return;
 		const delegatedRefresh = delegatedWorkPending && lastDiscovery !== "inactive";
@@ -1176,6 +1205,19 @@ export default function pullRequestExtension(
 	};
 	const launch = async (args: string, ctx: ExtensionContext, publication?: PublicationRequest) => {
 			ctx.signal?.throwIfAborted();
+			if (workflowContext?.route === "update-branch" && workflowContext.workflow.state.phase === "conflict-awaiting-user") {
+				const selected = workflowContext;
+				const live = await selected.workflow.hasLiveConflict();
+				if (workflowContext !== selected || selected.sessionGeneration !== sessionGeneration) {
+					throw new Error("PR workflow session changed during conflict inspection");
+				}
+				if (live) {
+					throw new Error(`PR conflict run ${selected.runId} is still active; continue it in its owning session`);
+				}
+				selected.failed = true;
+				clearWorkflow(selected);
+				activeInvocations.clear();
+			}
 			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
 			prRun = new PrRun(loadPolicy(ctx));
@@ -1243,14 +1285,17 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_git_pr",
 		label: "Create or Update PR",
-		description: "Start guarded PR creation or local publication in this session. Requires user create/update authorization. Never repairs feedback/CI, updates the base, or merges. base must match the existing PR or configured/default creation base. Set allowUpstream only with explicit permission to configure the repository-local branch upstream. Read git-pr guidance first.",
+		description: "Start a guarded PR workflow in this session. Default scope publication permits only authorized creation or local publication. Scope update-branch requires an explicit conflict/base-update order and permits only bounded refresh, one base update and its checked publication, then stop. This scope never creates, links, syncs, publishes unrelated local work, repairs feedback/CI, or merges the PR. base must match the current PR or creation base. allowUpstream is only for publication with explicit repository-local upstream consent. Read git-pr guidance first.",
 		parameters: PublicationParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
 		async execute(_id, raw, signal, _update, ctx) {
 			if (!Check(PublicationParameters, raw)) throw new Error("Invalid PR publication request");
+			if (raw.scope === "update-branch" && raw.allowUpstream !== undefined) {
+				throw new Error("Branch update does not permit upstream settings; omit allowUpstream");
+			}
 			return toolResult(await launch("", { ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
-				{ base: raw.base, allowUpstream: raw.allowUpstream === true }));
+				{ base: raw.base, allowUpstream: raw.allowUpstream === true, scope: raw.scope }));
 		},
 	});
 

@@ -71,7 +71,7 @@ export async function syncLocalHead(options: SyncLocalHeadOptions): Promise<Sync
 		if (worktree !== "clean") throw new Error("Local sync cancelled: diverged local commits need a clean worktree");
 		const mergeBase = requiredOid(parseSingleOutputLine((await runChecked(exec, "git", ["merge-base", target, head], execOptions)).stdout, "sync fork point"), "sync fork point");
 		const mergeCommits = (await runChecked(exec, "git", ["rev-list", "--max-count=1", "--min-parents=2", `${mergeBase}..${head}`], execOptions)).stdout.trim();
-		if (mergeCommits) throw new Error("Local sync cannot rebase local merge commits onto the PR head; rebase manually");
+		if (mergeCommits) throw new Error("Local sync cannot rebase local merge commits onto the PR head; reconcile the histories separately and preserve their merge resolutions");
 		const rebase = await exec("git", ["-c", "core.editor=true", "-c", "rebase.updateRefs=false", "rebase", "--no-autostash", target], execOptions);
 		if (rebase.killed) throw new Error("git rebase was killed; its outcome is unknown");
 		if (rebase.code !== 0) {
