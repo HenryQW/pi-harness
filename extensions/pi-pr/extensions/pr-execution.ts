@@ -73,7 +73,7 @@ export async function runChecked(
 }
 
 /**
- * Pushes target the pinned remote URL, which Git never maps to a remote-tracking ref, so ahead counts go stale.
+ * Pushes target the pinned remote URL, which Git before 2.56 never maps to a remote-tracking ref, so ahead counts go stale.
  * Replace only the saved pre-push lease, or create a missing ref. Do not read a new expected value after
  * publication: a concurrent fetch may already have changed it. Cache failure must not fail publication.
  */
