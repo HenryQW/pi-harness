@@ -57,5 +57,10 @@
   "dependencies": {
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "devDependencies": {
+    "@fontsource-variable/geist-mono": "5.3.0",
+    "@xterm/addon-unicode11": "0.8.0",
+    "@xterm/headless": "5.5.0"
   }
 }

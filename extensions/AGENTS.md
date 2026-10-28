@@ -16,6 +16,6 @@ Every registered tool's parameter schema must serialize as a plain object root w
 
 ## README
 
-The root `AGENTS.md` owns README language and validation rules. Use [README-template.md](README-template.md) for every package README: retain only applicable sections in its canonical order, with no placeholders or filler. Add an explanatory diagram for an extension with meaningful flows or relationships; do not add one merely to satisfy a rule. In extension READMEs, start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.
+Follow [README-template.md](README-template.md) for every package README. [website/AGENTS.md](../website/AGENTS.md) owns the local link rule.
 
 Extension READMEs omit routine package and dependency versions; use manifests as the authority. Keep explicit versions only for essential compatibility or migration requirements.
