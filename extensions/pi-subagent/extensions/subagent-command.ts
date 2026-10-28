@@ -344,9 +344,11 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 	}
 	return ctx.ui.custom<T | undefined>((tui, theme, _keys, done) => {
 		const rows = labels.map((label, index) => ({ label, value: String(index) }));
+		// The menu replaces the editor, not the screen; cap its height to leave room for other content.
+		const menuHeight = () => Math.max(1, Math.floor(tui.terminal.rows / 2));
 		const createList = () => {
-			// Reserve title, key hints, and the native scroll indicator. Very short terminals show only the list.
-			const height = tui.terminal.rows;
+			// Reserve title, key hints, and the native scroll indicator. Very short menus show only the list.
+			const height = menuHeight();
 			const list = new SelectList(rows, Math.max(1, height - (height >= 4 ? 3 : 1)), getSelectListTheme());
 			list.setSelectedIndex(selectedIndex);
 			list.onSelectionChange = ({ value }) => { selectedIndex = Number(value); };
@@ -359,7 +361,7 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 			render(width) {
 				list = createList();
 				const lines = list.render(width);
-				if (tui.terminal.rows < 4) return lines.slice(0, tui.terminal.rows);
+				if (menuHeight() < 4) return lines.slice(0, menuHeight());
 				return [truncateToWidth(theme.fg("accent", title), width), ...lines,
 					truncateToWidth([`${keyText("tui.select.up")}/${keyText("tui.select.down")} scroll`,
 						keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel")].join(" · "), width)];
@@ -367,7 +369,7 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 			handleInput(data) { list.handleInput(data); tui.requestRender(); },
 			invalidate() { list.invalidate(); },
 		};
-	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+	});
 }
 
 /** Multi-select on single-choice menus: each pick toggles one row until Continue. Returns chosen values in

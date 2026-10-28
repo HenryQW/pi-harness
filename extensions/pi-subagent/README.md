@@ -142,7 +142,7 @@ Staging, validation, and promotion require clean, unchanged Main. After a defini
 
 ### Inspect work
 
-Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
+Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history. In the terminal, the menu replaces the editor and uses at most half the terminal height. It does not overlay the report or the transcript.
 
 Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. Terminal requests stay hidden until you select **Completed / history**; this filter deletes no records. `/subagent` reports show as transcript entries that the model does not get.
 
