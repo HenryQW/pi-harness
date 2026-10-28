@@ -40,7 +40,7 @@ type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-export type PublicationRequest = { base?: string; allowUpstream: boolean };
+export type PublicationRequest = { base?: string; allowUpstream: boolean; scope?: "publication" | "update-branch" };
 
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
@@ -266,6 +266,15 @@ export function createPrCommandHandler(
 		if (publication?.base && discovery.kind === "current" && publication.base !== discovery.pullRequest.base.ref) {
 			throw new Error(`Requested base ${publication.base} differs from current PR base ${discovery.pullRequest.base.ref}; no retargeting is authorized`);
 		}
+		const updateOnly = publication?.scope === "update-branch";
+		if (updateOnly && discovery.kind === "blocked") {
+			onRouteResolved("blocked");
+			return "blocked";
+		}
+		if (updateOnly && (discovery.kind !== "current" || discovery.pullRequest.lifecycle !== "open" ||
+			discovery.pullRequest.conditions.draft || discovery.pullRequest.target.provenance !== "configured")) {
+			throw new Error("Branch update needs a configured, open, non-draft current PR; resolve discovery or upstream setup separately");
+		}
 		let nextStep = deriveNextStep(discovery);
 		if (discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
@@ -273,7 +282,7 @@ export function createPrCommandHandler(
 			nextStep = "update-branch";
 			onRouteResolved.assertCurrent();
 		}
-		if (nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
+		if (!updateOnly && nextStep !== "update-branch" && discovery.kind === "current" && discovery.pullRequest.lifecycle === "open" &&
 			!discovery.pullRequest.conditions.draft && discovery.pullRequest.target.provenance === "configured" &&
 			await inspectSweepRecovery(discovery.pullRequest, ctx)) {
 			nextStep = "sweep";
@@ -286,7 +295,13 @@ export function createPrCommandHandler(
 			if (await needsFeedback(discovery.pullRequest, { cwd: ctx.cwd, signal: ctx.signal, load })) nextStep = "sweep";
 			onRouteResolved.assertCurrent();
 		}
-		if (publication) {
+		if (updateOnly) {
+			if (!["update-branch", "refresh", "none"].includes(nextStep)) {
+				throw new Error(`Branch-update-only authorization stops before ${nextStep}; ${["sync-local", "publish-work"].includes(nextStep)
+					? "reconcile local work separately, then request the base update"
+					: "no confirmed conflict or required base update remains; request other work separately"}. No other route is authorized`);
+			}
+		} else if (publication) {
 			if ((nextStep === "link-branch" || nextStep === "create" && discovery.kind === "none" && discovery.creationTarget.provenance === "inferred") && !publication.allowUpstream) {
 				throw new Error("Publication needs repository-local upstream configuration; ask for permission, then set allowUpstream: true");
 			}
@@ -390,7 +405,8 @@ export function createPrCommandHandler(
 
 		if (!(nextStep in WORKFLOWS)) throw new Error(`/pr cannot dispatch route ${nextStep}`);
 		const route = nextStep as WorkflowNextStep;
-		if (onRouteResolved.run.hasCompleted(route, discovery.kind === "current" ? discovery.pullRequest.head.oid : null)) {
+		if (onRouteResolved.run.hasCompleted(route, discovery.kind === "current" ? discovery.pullRequest.head.oid : null) ||
+			route === "update-branch" && onRouteResolved.run.hasCompletedRoute(route)) {
 			const codexFindings = discovery.kind === "current" && discovery.pullRequest.conditions.codex?.findings;
 			ctx.ui.notify(route === "sweep" && codexFindings
 				? `PR sweep already ran; ${codexFindings} unresolved Codex P0/P1 findings block the merge prompt`

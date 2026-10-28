@@ -336,8 +336,8 @@ function harness(options: {
 		async beforeSettle(ctx: ExtensionContext, outcome = "completed") {
 			return await handler(agentBeforeSettle, "agent_before_settle")({ outcome, entries: [], context: { canContinue: false } } as never, callbackContext(ctx));
 		},
-		async settle(ctx: ExtensionContext): Promise<void> {
-			await handler(agentSettled, "agent_settled")({} as never, callbackContext(ctx));
+		async settle(ctx: ExtensionContext, aborted = false): Promise<void> {
+			await handler(agentSettled, "agent_settled")({ aborted } as never, callbackContext(ctx));
 		},
 		async tool(event: unknown, ctx: ExtensionContext): Promise<void> {
 			await handler(toolResult, "tool_result")(event, callbackContext(ctx));
@@ -926,8 +926,6 @@ test("a completed helper does not repeat its route when fresh evidence is unchan
 		await app.start(ctx);
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ctx);
-		for (const outcome of ["aborted", "error"]) await app.beforeSettle(ctx, outcome);
-		assert.equal(app.notifications.length, 0, "unsuccessful outcomes must not rediscover or continue");
 		await app.beforeSettle(ctx);
 		assert.equal(app.messages.length, 1);
 		assert.match(app.notifications.at(-1)!.message, /already ran/);
@@ -1141,7 +1139,7 @@ test("releases a stale reservation when replacement wins before dispatch resumes
 			replacementStart = app.start(replacement);
 			return routeRunId;
 		},
-		createBranchUpdater() { reservations += 1; return { async recoveryLaunchAction() { return "rebase" as const; } } as never; },
+		createBranchUpdater() { reservations += 1; return { state: { phase: "ready" }, async recoveryLaunchAction() { return "rebase" as const; } } as never; },
 	});
 	const first = app.context();
 	replacement = app.context();
@@ -1340,7 +1338,7 @@ test("reports an unreadable boundary skill and releases its reserved run without
 	} finally { await app.shutdown(ctx); }
 });
 
-test("keeps an exact conflict context for continuation, then clears it on settlement", async () => {
+test("keeps an exact conflict across idle settlements, then clears the verified context",  async () => {
 	const authority = currentPullRequest({ conditions: { conflict: true } });
 	const calls: string[] = [];
 	const state = {
@@ -1359,8 +1357,9 @@ test("keeps an exact conflict context for continuation, then clears it on settle
 				async rebase() {
 					calls.push("rebase");
 					state.phase = "conflict-awaiting-user";
-					return { kind: "conflict", paths: ["conflicted.ts"] };
+					return { kind: "conflict", paths: ["conflicted.ts"], strategy: "merge" };
 				},
+				async hasLiveConflict() { return state.phase === "conflict-awaiting-user"; },
 				async continue(paths: string[]) {
 					calls.push(`continue:${paths.join(",")}`);
 					state.phase = "verified";
@@ -1377,6 +1376,10 @@ test("keeps an exact conflict context for continuation, then clears it on settle
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
 		await app.settle(ctx);
+		await app.settle(ctx);
+		await app.settle(ctx);
+		await assert.rejects(app.callTool("pi_git_pr", { scope: "update-branch" }, ctx), /conflict run.*still active/);
+		await assert.rejects(app.command().handler("", ctx as ExtensionCommandContext), /conflict run.*still active/);
 		await app.callTool("pi_pr_update_branch", {
 			runId: routeRunId,
 			action: "continue",
@@ -1394,7 +1397,8 @@ test("keeps an exact conflict context for continuation, then clears it on settle
 	}
 });
 
-test("clears a conflict run after one user turn without a valid continuation", async () => {
+for (const ending of ["aborted", "error", "blocked", "shutdown"] as const)
+test(`clears ${ending} conflict context without replay`, async () => {
 	const authority = currentPullRequest({ conditions: { conflict: true } });
 	const state = {
 		phase: "ready",
@@ -1411,8 +1415,9 @@ test("clears a conflict run after one user turn without a valid continuation", a
 				async recoveryLaunchAction() { return "rebase" as const; },
 				async rebase() {
 					state.phase = "conflict-awaiting-user";
-					return { kind: "conflict", paths: ["conflicted.ts"] };
+					return { kind: "conflict", paths: ["conflicted.ts"], strategy: "merge" };
 				},
+				async hasLiveConflict() { return state.phase === "conflict-awaiting-user"; },
 			} as never;
 		},
 	});
@@ -1423,7 +1428,10 @@ test("clears a conflict run after one user turn without a valid continuation", a
 		await app.command().handler("", ctx as ExtensionCommandContext);
 		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
 		await app.settle(ctx);
-		await app.settle(ctx);
+		if (ending === "error") await app.beforeSettle(ctx, "error");
+		if (ending === "blocked") state.phase = "blocked";
+		if (ending === "shutdown") await app.shutdown(ctx);
+		await app.settle(ctx, ending === "aborted");
 
 		await assert.rejects(
 			app.callTool("pi_pr_update_branch", {
@@ -1724,7 +1732,7 @@ test("fresh automatic feedback sweeps rotate route IDs and resume package recove
 	}
 });
 
-test("direct workflow tools without a route tell the caller to run /pr", async () => {
+test("direct workflow tools reject foreign authority without starting another run",  async () => {
 	const app = harness({ async load() { return { kind: "inactive" }; } });
 	const ctx = app.context();
 	const calls = [
@@ -1737,7 +1745,7 @@ test("direct workflow tools without a route tell the caller to run /pr", async (
 	for (const [tool, params] of calls) {
 		await assert.rejects(app.callTool(tool, params, ctx), (error: unknown) => {
 			assert(error instanceof Error);
-			assert.match(error.message, /run \/pr/);
+			assert.match(error.message, /foreign or stale.*owning session/);
 			assert.doesNotMatch(error.message, /\/sweep/);
 			return true;
 		});
@@ -3440,7 +3448,7 @@ test("delegated PR entry rejects a parent's run ID and reserves only child-local
 		await child.start(childCtx);
 		await parent.callTool("pi_git_pr", { base: "main", allowUpstream: true }, parentCtx);
 		await assert.rejects(child.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, childCtx),
-			/No PR workflow is active.*run IDs are session-local.*pi_git_pr.*authorized/);
+			/No PR workflow is active.*foreign or stale.*owning session/);
 		assert.deepEqual(calls, ["parent:reserve"], "foreign IDs must not reserve or mutate a child workflow");
 		assert.equal(child.execCalls.length, 0);
 		await parent.callTool("pi_pr_create", { runId: routeRunId, action: "prepare" }, parentCtx);
@@ -3459,6 +3467,137 @@ test("delegated PR entry rejects a parent's run ID and reserves only child-local
 		await parent.shutdown(parentCtx);
 		await child.shutdown(childCtx);
 	}
+});
+
+for (const scenario of ["create", "link", "behind", "diverged", "ahead", "dirty", "sweep", "fix-ci", "merge", "draft", "closed", "upstream", "base"] as const)
+test(`branch-update-only entry blocks ${scenario}`, async () => {
+	const pr = currentPullRequest({ provenance: scenario === "link" ? "inferred" : "configured",
+		lifecycle: scenario === "closed" ? "closed" : "open",
+		conditions: { draft: scenario === "draft", conflict: !["sweep", "fix-ci", "merge"].includes(scenario),
+			ci: scenario === "fix-ci" ? "failure" : "success", changesRequested: scenario === "sweep" } });
+	if (scenario === "dirty") pr.local.worktree = "dirty";
+	if (scenario === "behind" || scenario === "diverged" || scenario === "ahead") pr.local.head = scenario;
+	const app = harness({ load: async () => scenario === "create" ? noPullRequest(1) : pr,
+		useDefaultCommandHandler: true,
+		inspectSweepRecovery: async () => { throw new Error("must not inspect feedback"); },
+		canonicalWorktree: async () => { throw new Error("must not reserve unauthorized work"); },
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await assert.rejects(app.callTool("pi_git_pr", { scope: "update-branch",
+			...(scenario === "upstream" ? { allowUpstream: false } : {}),
+			...(scenario === "base" ? { base: "release" } : {}),
+		}, ctx), /Branch update|Branch-update-only authorization|differs from current PR base/);
+		assert.equal(app.execCalls.length, 0);
+		assert.equal(app.messages.length, 0);
+	} finally { await app.shutdown(ctx); }
+});
+
+for (const aborted of [false, true]) test(`branch-update-only entry stops after ${aborted ? "abort" : "publication"}, even if the base advances`, async () => {
+	const pr = currentPullRequest({ conditions: { conflict: true } });
+	let busy = true;
+	let reservations = 0;
+	const state = { phase: "ready" };
+	const app = harness({ load: async () => pr, useDefaultCommandHandler: true, isIdle: () => !busy,
+		newRunId: () => routeRunId, canonicalWorktree: async () => "/repo",
+		inspectSweepRecovery: async () => { throw new Error("must not inspect feedback"); },
+		createBranchUpdater: () => {
+			reservations++;
+			return { state, async recoveryLaunchAction() { return "rebase"; },
+				async rebase() {
+					state.phase = aborted ? "blocked" : "verified";
+					if (aborted) return { kind: "stale", reason: "stale authority; original head restored", authority: pr, aborted: true };
+					return { kind: "verified", head: pr.head.oid };
+				},
+				async publish() {
+					state.phase = "published";
+					pr.conditions.conflict = false;
+					pr.conditions.baseUpdateRequired = true;
+					pr.base.oid = "c".repeat(40);
+					pr.head.oid = "d".repeat(40);
+					pr.target.remoteOid = pr.head.oid;
+					return { kind: "published", head: pr.head.oid };
+				},
+			} as never;
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		assert.match(JSON.stringify((await app.callTool("pi_git_pr", { scope: "update-branch" }, ctx)).details), /handoff/);
+		assert.equal((await app.beforeSettle(ctx))?.continue, true);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
+		if (!aborted) await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "publish" }, ctx);
+		assert.equal(await app.beforeSettle(ctx), undefined);
+		busy = false;
+		await app.settle(ctx);
+		assert.equal(reservations, 1);
+		assert.match(app.statuses.at(-1)!, aborted ? /merge conflict/ : /base update required/);
+		await assert.rejects(app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "publish" }, ctx), aborted
+			? /run failed or was cancelled/ : /this session's run ended at settlement.*same scope/);
+	} finally { await app.shutdown(ctx); }
+});
+
+for (const failed of [false, true]) test(`ended local run gives ${failed ? "failure" : "fresh-entry"} guidance, not foreign ownership`, async () => {
+	let run = 0;
+	const app = harness({ load: async () => noPullRequest(1), useDefaultCommandHandler: true,
+		canonicalWorktree: async () => "/repo", newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
+		createPullRequestCreator: () => ({ async prepare() {
+			if (failed) throw new Error("uncertain action; inspect journal");
+			return { kind: "prepared" };
+		} }) as never,
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.callTool("pi_git_pr", { allowUpstream: true }, ctx);
+		const action = () => app.callTool("pi_pr_create", { runId: "11111111-1111-4111-8111-111111111111", action: "prepare" }, ctx);
+		if (failed) await assert.rejects(action(), /uncertain action/);
+		else await action();
+		await app.settle(ctx);
+		await assert.rejects(action(), failed ? /run failed or was cancelled.*recovery journal/ : /run ended at settlement.*fresh pi_git_pr/);
+		await assert.rejects(app.callTool("pi_pr_create", { runId: "33333333-1111-4111-8111-111111111111", action: "prepare" }, ctx), /foreign or stale.*owning session/);
+		if (!failed) {
+			await app.callTool("pi_git_pr", { allowUpstream: true }, ctx);
+			await app.callTool("pi_pr_create", { runId: "22222222-1111-4111-8111-111111111111", action: "prepare" }, ctx);
+			assert.equal(run, 2);
+		}
+	} finally { await app.shutdown(ctx); }
+});
+
+test("new launch clears a stale conflict but preserves unknown-outcome recovery", async () => {
+	const pr = currentPullRequest({ conditions: { conflict: true } });
+	let valid = true;
+	let reserved = false;
+	let signal: AbortSignal | undefined;
+	const state = { phase: "ready" };
+	const app = harness({ load: async () => pr, useDefaultCommandHandler: true,
+		canonicalWorktree: async () => "/repo", newRunId: () => routeRunId,
+		inspectBranchRecovery: async () => {
+			if (reserved && !valid) throw new Error("Branch update outcome is unverified; recover manually; do not replay");
+			return false;
+		},
+		createBranchUpdater(options) {
+			reserved = true;
+			signal = options.signal;
+			return { state, async recoveryLaunchAction() { return "rebase"; },
+				async rebase() { state.phase = "conflict-awaiting-user"; return { kind: "conflict", strategy: "merge", paths: ["file"] }; },
+				async hasLiveConflict() { return valid; },
+			} as never;
+		},
+	});
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		await app.callTool("pi_git_pr", { scope: "update-branch" }, ctx);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
+		await app.settle(ctx);
+		valid = false;
+		await assert.rejects(app.callTool("pi_git_pr", { scope: "update-branch" }, ctx), /unverified.*do not replay/);
+		assert.equal(signal?.aborted, true);
+		await assert.rejects(app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "continue", resolvedPaths: ["file"] }, ctx), /run failed or was cancelled/);
+	} finally { await app.shutdown(ctx); }
 });
 
 test("agent PR entry checks base and upstream consent before reservation", async () => {

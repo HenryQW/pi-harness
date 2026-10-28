@@ -663,6 +663,29 @@ test("re-reads pending GitHub mergeability a bounded number of times", async () 
 	assert.equal(mutationCalls(exhausted.calls).length, 0);
 });
 
+test("branch-update-only routing refreshes within its bound and never enters another route", async () => {
+	const pending = { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" } as const;
+	for (const resolves of [false, true]) {
+		const app = harness({ states: [pending, pending, resolves ? { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" } : pending],
+			refreshAttempts: 2, commands: [packageCommand("skill:pi-pr-update-branch")] });
+		const bounded = Object.assign(invocation(), { publication: { scope: "update-branch" as const, allowUpstream: false } });
+		assert.equal(await app.handler("", app.context, bounded), resolves ? "update-branch" : "none");
+		assert.equal(app.events.filter((event) => event === "load").length, 3);
+		assert.equal(app.reservations.length, resolves ? 1 : 0);
+		assert.equal(mutationCalls(app.calls).length, 0);
+	}
+});
+
+test("a completed base update never repeats on a later head in the same lifecycle", async () => {
+	const app = harness({ states: [{ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }],
+		commands: [packageCommand("skill:pi-pr-update-branch")] });
+	const run = new PrRun();
+	run.complete("update-branch", nextHead);
+	assert.equal(await app.handler("", app.context, invocation(run)), "none");
+	assert.equal(app.reservations.length, 0);
+	assert.match(app.notifications[0]!.message, /already ran/);
+});
+
 test("defers a busy-session workflow to the native settlement boundary, not user input", async () => {
 	const app = harness({
 		states: [null],

@@ -1,6 +1,6 @@
 # `@henryqw/pi-pr`
 
-See the current-branch pull request in the Pi footer. Run `/pr` to select its next step, including a merge that you confirm. Ask the agent for local commits or PR publication when you do not want repair or merge authority.
+See the current-branch pull request in the Pi footer. Run `/pr` to select its next step, including a merge that you confirm. Ask the agent for local commits, pull request (PR) publication, or one explicit base update when you do not want full repair or merge authority.
 
 ## Install
 
@@ -32,17 +32,17 @@ Commands are for you; tools and skills are for the agent.
 | --- | --- | --- |
 | `/pr` | command | Select and do the PR next step. Accepts no arguments. |
 | `pi_git_commit` | tool | Inspect and commit scoped local changes. Never pushes. |
-| `pi_git_pr` | tool | Create or publish a PR, without repair or merge authority. |
+| `pi_git_pr` | tool | Create or publish a PR, or do one explicitly ordered base update. Never merges the PR. |
 | `pi_pr_create` | tool | Run guarded PR creation steps. |
 | `pi_pr_fix_ci` | tool | Repair failed GitHub Actions. |
 | `pi_pr_merge` | tool | Merge a ready named pull request after you confirm. |
 | `pi_pr_publish_work` | tool | Publish scoped local work. |
 | `pi_pr_status` | tool | Check the readiness of a named pull request. |
 | `pi_pr_sweep` | tool | Triage feedback and publish fixes. |
-| `pi_pr_update_branch` | tool | Rebase onto the pinned base and publish. |
+| `pi_pr_update_branch` | tool | Update against the pinned base and publish. |
 | `git_conflict` | tool | List, show, and resolve Git conflict blocks. Never stages files. |
 | `git-commit` | skill | Make scoped Conventional Commits. |
-| `git-pr` | skill | Create or publish a PR with permission. |
+| `git-pr` | skill | Create, publish, or update the base with scoped permission. |
 | `update-from-main` | skill | Merge exact fetched `origin/main` with a Python helper. |
 | `pi-pr-comment-sweep` | skill | Assess PR feedback items. |
 | `pi-pr-create` | skill | Create a PR. |
@@ -64,19 +64,25 @@ Local commits require an existing commit and an attached branch. They never fetc
 | --- | --- |
 | `pi_git_commit` `{ action: "inspect", target: "<local-ref-or-OID>" }` | Returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. |
 | `pi_git_commit` `{ action: "commit", inspectionId, ownedPaths, message }` | Returns `head` and consumes the inspection. Inspect again for another group. Subjects have at most 72 characters. |
-| `pi_git_pr` `{ base?: "<exact-base-ref>", allowUpstream?: true }` | Returns `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn and do not guess run IDs. |
+| `pi_git_pr` `{ scope?: "publication", base?: "<exact-base-ref>", allowUpstream?: true }` | Returns `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn and do not guess run IDs. |
 
-`pi_git_pr` permits creation, local publication, and sync onto the PR head, not the base. It stops before feedback, CI repair, base rebase, waiting, or merging. Existing PR bases, titles, and bodies do not change.
+The default `pi_git_pr` scope is `publication`. It permits creation, local publication, and sync onto the PR head, not the base. It stops before feedback, CI repair, base updates, waiting, or merging. Existing PR bases, titles, and bodies do not change.
+
+For an explicit conflict/base-update order, the agent calls `pi_git_pr` with `{ scope: "update-branch" }`. An optional `base` must match the current PR. Do not supply `allowUpstream`. This scope permits bounded refresh, one base update and its checked publication, then stops. It cannot create, link, sync local history, publish unrelated work, sweep feedback, repair CI, or merge the PR. It needs a configured, open, non-draft current PR and clean local state at the published head, or matching verified update recovery.
 
 To delegate publication, delegate before a workflow starts. Pass the authorized work scope, base intent, and repository-local upstream consent, not a parent `runId`. The child calls `pi_git_pr` and follows its own same-session skill handoff.
 
-Run IDs are session-local. An active parent workflow stays parent-owned; parent and child must not publish concurrently. A foreign or stale run ID stops the call; it does not start a new workflow. Direct workers must keep their required JSON completion object, with the PR URL in `answer`, instead of a plain URL.
+Run identifiers (IDs) are session-local. An active parent workflow stays parent-owned; parent and child must not publish concurrently. A foreign or stale run ID stops the call; it does not start a new workflow.
+
+A run that ended at ordinary settlement in this session can use a fresh entry with the same still-valid scoped authorization. Failure or cancellation requires result and journal inspection first. Fresh entries never bypass recovery or replay uncertain actions. After `prepare`, continue the route steps; preparation is not completion.
+
+Direct workers must keep their required JSON completion object, with the PR URL in `answer`, instead of a plain URL.
 
 An explicit `base` must match the existing PR base or configured/default creation base. Another creation base needs permission for repository-local `gh-merge-base`. Inferred targets need specific upstream consent through `allowUpstream: true` for one invocation, never global configuration permission.
 
 ### Standalone merge from main
 
-[update-from-main](./skills/update-from-main/SKILL.md) requires Python 3.9 or newer and Git with `fetch --porcelain`. It fetches, then **merges** the exact fetched `origin/main` OID without pushing. This differs from the `/pr` rebase route.
+[update-from-main](./skills/update-from-main/SKILL.md) requires Python 3.9 or newer and Git with `fetch --porcelain`. It fetches, then **merges** the exact fetched `origin/main` OID without pushing. This differs from the guarded PR branch update, which can rebase or merge and then publish.
 
 The helper retains backups of tracked, untracked, and colliding ignored files. Retained backups block their owning worktree; unowned legacy backups block every worktree. Follow the linked skill for exact-OID restoration, interrupted runs, legacy backup adoption, and recovery completion. Verify restored bytes and staging before explicitly requesting completion. Never drop a backup or repeat an uncertain operation automatically. Removing a worktree removes ownership refs, not stash entries.
 
@@ -150,7 +156,7 @@ Required checks are read for the exact head. If a required check sets an integra
 | Local HEAD behind, or clean divergent commits | Fast-forward or rebase onto the PR head. Overlapping uncommitted work or conflicts stop with the original HEAD. Never push, stash, or reset. |
 | Intended pending or ahead work | Commit owned paths, validate, then publish. On divergence, commit first, sync onto the PR head, then validate and publish. |
 | Unknown mergeability | Re-read at most three times, five seconds apart. Then stop; run `/pr` again. |
-| Confirmed conflict or policy-required base update | Rebase onto the pinned base, validate, and publish with an exact lease. Unclear resolutions stop. |
+| Confirmed conflict or policy-required base update | Rebase linear history, or merge the pinned base into merge-containing history. Validate, then publish with an exact lease. Unclear resolutions stop. |
 | Failed GitHub Actions job | Inspect evidence, fix, validate, and publish. Other failed checks block. |
 | Changes requested, unresolved threads, or new feedback | Assess feedback and fix scoped issues. Leave blocked threads open. |
 | Running CI or required Codex review; no other blocker | Wait with `ciPollSeconds` and shared `ciWaitMinutes`, then select from fresh evidence. Running CI blocks merging, not repairs. |
@@ -293,5 +299,7 @@ The commands reject symbolic links. After you verify it, upgrade pi-pr and resum
 - Concurrent updates block publication: pushes revalidate their destination and use exact OID leases. Pushes exclude tags, even with `push.followTags=true`. Never replay an uncertain commit or push before checking its outcome.
 - Preflight changes can select another route at most twice without resetting budgets. Changed authority, dirty/divergent work, unreconciled recovery, or uncertain outcomes stop continuation. Repeated completed routes on the same head also stop.
 - [Branch-update guidance](./skills/pi-pr-update-branch/SKILL.md) explains base advancement and changed authority during conflicts. [CI-fix guidance](./skills/pi-pr-fix-ci/SKILL.md) explains preflight changes. Base movement during or after evidence collection blocks CI repair; never reuse stale evidence.
-- Verified rebases can resume through `/pr`, including detached HEAD. Unverified interrupted rebases need manual recovery. Merge commits after the fork point need manual resolution. Other branch refs stay unchanged, even with `rebase.updateRefs=true`.
+- Verified branch updates can resume through `/pr` or the authorized `update-branch` scope. Pending, unverified updates need manual recovery after restart. Merge-containing history uses a merge with the original head as first parent and the pinned base as second parent. Linear history still uses rebase. Other branch refs stay unchanged, even with `rebase.updateRefs=true`.
+- A valid conflict context survives idle turns only in its live session. Continuation checks branch, HEAD, exact operation markers, fresh authority, and the original status baseline. Undeclared edits block continuation and abort. Cancellation, failure, stale operation state, completion, and shutdown clear the context, not the recovery journal. A new launch cannot replace a valid conflict.
+- In a merge conflict, `ours` is the PR branch and `theirs` is the base. In a rebase conflict, `ours` is the base with commits already replayed and `theirs` is the replayed PR commit. Main owns conflict decisions, not subagents. An advancing base does not start a second update in the same invocation.
 - Every `/pr` merge needs explicit confirmation, clean safe local Git state, and fresh matching authority. A changed PR head during confirmation cancels merging. Active Git operations block merging. `/pr` deletes no branch or worktree.
