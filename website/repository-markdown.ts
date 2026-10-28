@@ -2,10 +2,6 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const repository = new URL("https://github.com/HenryQW/pi-harness/blob/main/");
-// Cloudflare Pages builds each pushed commit, so branch previews show that commit's images.
-const rawRepository = new URL(
-  `https://raw.githubusercontent.com/HenryQW/pi-harness/${process.env.CF_PAGES_COMMIT_SHA ?? "main"}/`
-);
 
 export const inlineRelativeSvgImages = async (
   markdown: string,
@@ -45,7 +41,9 @@ export const inlineRelativeSvgImages = async (
 };
 
 export const linkRelativeImagesToGitHub = (markdown: string, editPath: string) => {
-  const readme = new URL(editPath, rawRepository);
+  // Cloudflare Pages builds each pushed commit, so branch previews show that commit's images.
+  const ref = process.env.CF_PAGES_COMMIT_SHA || "main";
+  const readme = new URL(editPath, `https://raw.githubusercontent.com/HenryQW/pi-harness/${ref}/`);
   return markdown.replace(
     /!\[([^\]]*)\]\((\.\.?\/[^)\s]+)\)/g,
     (_, alt: string, target: string) => `![${alt}](${new URL(target, readme)})`
