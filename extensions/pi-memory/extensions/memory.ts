@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { watch, type FSWatcher } from "node:fs";
+import { unwatchFile, watchFile } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, opendir, realpath, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -769,7 +769,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 		sessionGeneration: number;
 	} = { promptSection: "", observedReviewSystem: false, rememberQueue: [], sessionGeneration: 0 };
 	let clearDreamActivity: (() => void) | undefined;
-	let inboxWatcher: FSWatcher | undefined;
+	let stopInboxWatch: (() => void) | undefined;
 
 	const readInbox = (ctx: ExtensionContext): InboxItem[] => {
 		const loaded = inbox.loadSync();
@@ -1033,8 +1033,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		inboxWatcher?.close();
-		inboxWatcher = undefined;
+		stopInboxWatch?.();
+		stopInboxWatch = undefined;
 		if (ctx.hasUI) ctx.ui.setWidget("pi-memory-review", undefined);
 		state.group = undefined;
 		clearDreamActivity?.();
@@ -1043,8 +1043,8 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		inboxWatcher?.close();
-		inboxWatcher = undefined;
+		stopInboxWatch?.();
+		stopInboxWatch = undefined;
 		clearDreamActivity?.();
 		state.sessionGeneration++;
 		state.rememberQueue = [];
@@ -1074,14 +1074,10 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			await mkdir(BACKUP_DIR(), { recursive: true });
 			await mkdir(config.directory, { recursive: true });
 			try {
-				inboxWatcher = watch(extensionConfigDir("pi-memory"), { persistent: false }, (_event, filename) => {
-					if (filename === "review-inbox.json") void refreshInbox(ctx);
-				});
-				inboxWatcher.on("error", () => {
-					inboxWatcher?.close();
-					inboxWatcher = undefined;
-					notifyInbox(ctx, "Memory review watcher failed; counts refresh after responses and review commands.", "warning");
-				});
+				// Poll the path: native directory events can miss atomic inbox replacements.
+				const onInboxChange = () => { void refreshInbox(ctx); };
+				watchFile(inbox.path, { interval: 250, persistent: false }, onInboxChange);
+				stopInboxWatch = () => unwatchFile(inbox.path, onInboxChange);
 			} catch {
 				notifyInbox(ctx, "Cannot watch the memory review inbox; counts refresh after responses and review commands.", "warning");
 			}
