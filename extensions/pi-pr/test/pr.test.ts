@@ -1397,6 +1397,87 @@ test("keeps an exact conflict across idle settlements, then clears the verified 
 	}
 });
 
+for (const ending of ["resume", "cancel", "context", "uncertain"] as const)
+test(`undeclared conflict edits survive settlement only until ${ending}`, async (t) => {
+	const dir = mkdtempSync(join(tmpdir(), "pi-pr-conflict-settle-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const root = join(dir, "worktree");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+	execFileSync("git", ["init", "--initial-branch=main", root], { stdio: "ignore" });
+	git("config", "user.name", "Conflict Settlement Test");
+	git("config", "user.email", "conflict@example.test");
+	writeFileSync(join(root, "file.txt"), "original\n");
+	writeFileSync(join(root, "other.txt"), "other\n");
+	git("add", ".");
+	git("commit", "-m", "initial");
+	git("switch", "-c", "feature/pr");
+	writeFileSync(join(root, "file.txt"), "feature\n");
+	git("commit", "-am", "feature");
+	const head = git("rev-parse", "HEAD");
+	git("switch", "main");
+	writeFileSync(join(root, "file.txt"), "base\n");
+	git("commit", "-am", "base");
+	const base = git("rev-parse", "HEAD");
+	git("switch", "feature/pr");
+	const pr = currentPullRequest({ conditions: { conflict: true } });
+	pr.head.oid = pr.target.remoteOid = head;
+	pr.base.oid = base;
+	let workflow!: PullRequestBranchUpdater;
+	let mutations = 0;
+	const exec: BoundedExec = async (command, args, options) => {
+		if (command === "gh") {
+			assert.deepEqual(args, ["config", "get", "git_protocol", "--host", pr.host]);
+			return execResult("ssh\n");
+		}
+		if (args[0] === "fetch") {
+			assert.deepEqual(args, ["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", "git@github.com:acme/project.git", base]);
+			return execResult(); // The pinned base is already local.
+		}
+		if (args.includes("rebase") || args.includes("add")) mutations++;
+		const result = await spawnBounded(command, args, options);
+		return ending === "uncertain" && args.includes("--continue") ? { ...result, killed: true } : result;
+	};
+	const app = harness({ load: async () => pr, useDefaultCommandHandler: true,
+		canonicalWorktree: async () => root, newRunId: () => routeRunId,
+		createBranchUpdater: (options) => workflow = new PullRequestBranchUpdater({ ...options, exec, agentDir: join(dir, "agent") }),
+	});
+	const ctx = { ...app.context(), cwd: root };
+	const continueConflict = () => app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "continue", resolvedPaths: ["file.txt"] }, ctx);
+	try {
+		await app.start(ctx);
+		await app.command().handler("", ctx as ExtensionCommandContext);
+		await app.callTool("pi_pr_update_branch", { runId: routeRunId, action: "rebase" }, ctx);
+		const baseline = workflow.state.conflict!.statusBaseline;
+		writeFileSync(join(root, "file.txt"), "resolved\n");
+		writeFileSync(join(root, "other.txt"), "undeclared edit\n");
+		await assert.rejects(continueConflict(), /outside declared conflict paths: other.txt/);
+		assert.equal(mutations, 1, "rejection must not stage, continue, or abort");
+		if (ending === "context") writeFileSync(join(root, git("rev-parse", "--git-path", "rebase-merge/onto")), head + "\n");
+		await app.beforeSettle(ctx);
+		await app.settle(ctx, ending === "cancel");
+		if (ending === "cancel" || ending === "context") {
+			await assert.rejects(continueConflict(), /run failed or was cancelled/);
+			assert.equal(mutations, 1);
+			return;
+		}
+		assert.equal(workflow.state.conflict!.statusBaseline, baseline);
+		await assert.rejects(continueConflict(), /outside declared conflict paths: other.txt/);
+		await app.settle(ctx);
+		writeFileSync(join(root, "other.txt"), "other\n"); // User correction, not a replacement baseline.
+		if (ending === "uncertain") {
+			await assert.rejects(continueConflict(), /outcome is unknown/);
+			await app.settle(ctx);
+			await assert.rejects(continueConflict(), /run failed or was cancelled/);
+		} else {
+			assert.equal(((await continueConflict()).details as { kind: string }).kind, "verified");
+			assert.equal(git("status", "--porcelain"), "");
+			assert.equal(git("branch", "--show-current"), "feature/pr");
+		}
+		assert.equal(mutations, 3, "only the original rebase, staging, and one continuation ran");
+		assert.equal(app.messages.length, 1, "the same run continues without a fresh launch");
+	} finally { await app.shutdown(ctx); }
+});
+
 for (const ending of ["aborted", "error", "blocked", "shutdown"] as const)
 test(`clears ${ending} conflict context without replay`, async () => {
 	const authority = currentPullRequest({ conditions: { conflict: true } });
@@ -3539,7 +3620,8 @@ for (const aborted of [false, true]) test(`branch-update-only entry stops after 
 	} finally { await app.shutdown(ctx); }
 });
 
-for (const failed of [false, true]) test(`ended local run gives ${failed ? "failure" : "fresh-entry"} guidance, not foreign ownership`, async () => {
+for (const [entry, failed] of [["publication", false], ["publication", true], ["lifecycle", false]] as const)
+test(`ended local ${entry} run gives ${failed ? "failure" : "fresh-entry"} guidance, not foreign ownership`, async () => {
 	let run = 0;
 	const app = harness({ load: async () => noPullRequest(1), useDefaultCommandHandler: true,
 		canonicalWorktree: async () => "/repo", newRunId: () => `${String(++run).repeat(8)}-1111-4111-8111-111111111111`,
@@ -3551,12 +3633,15 @@ for (const failed of [false, true]) test(`ended local run gives ${failed ? "fail
 	const ctx = app.context();
 	try {
 		await app.start(ctx);
-		await app.callTool("pi_git_pr", { allowUpstream: true }, ctx);
+		if (entry === "lifecycle") await app.command().handler("", ctx as ExtensionCommandContext);
+		else await app.callTool("pi_git_pr", { allowUpstream: true }, ctx);
 		const action = () => app.callTool("pi_pr_create", { runId: "11111111-1111-4111-8111-111111111111", action: "prepare" }, ctx);
 		if (failed) await assert.rejects(action(), /uncertain action/);
 		else await action();
 		await app.settle(ctx);
-		await assert.rejects(action(), failed ? /run failed or was cancelled.*recovery journal/ : /run ended at settlement.*fresh pi_git_pr/);
+		await assert.rejects(action(), failed ? /run failed or was cancelled.*recovery journal/
+			: entry === "lifecycle" ? /original instruction.*fresh pi_git_pr.*no new approval.*run \/pr for the full lifecycle/
+			: /run ended at settlement.*fresh pi_git_pr/);
 		await assert.rejects(app.callTool("pi_pr_create", { runId: "33333333-1111-4111-8111-111111111111", action: "prepare" }, ctx), /foreign or stale.*owning session/);
 		if (!failed) {
 			await app.callTool("pi_git_pr", { allowUpstream: true }, ctx);

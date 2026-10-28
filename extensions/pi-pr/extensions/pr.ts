@@ -49,7 +49,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { canonicalWorktree, isRecord } from "./pr-execution.ts";
+import { canonicalWorktree, isRecord, UndeclaredConflictEdits } from "./pr-execution.ts";
 import {
 	discoveryIssueDetails,
 	formatPrFooter,
@@ -583,7 +583,7 @@ export default function pullRequestExtension(
 			throw new Error(ended && !ended.failed
 				? `No PR workflow is active: this session's run ended at settlement. ${ended.scoped
 					? "If the user's authorization still applies, start a fresh pi_git_pr entry with the same scope."
-					: "Ask the user to run /pr for the full lifecycle, or use a fresh pi_git_pr entry only with separate scoped authorization."} It must inspect recovery before any mutation; never replay an uncertain action.`
+					: "For scoped publication already authorized by the user's original instruction, start a fresh pi_git_pr entry; no new approval is needed. Ask the user to run /pr for the full lifecycle."} It must inspect recovery before any mutation; never replay an uncertain action.`
 				: ended?.failed
 				? "No PR workflow is active: this session's run failed or was cancelled. Inspect its result and recovery journal before a fresh authorized entry; never replay an uncertain action."
 				: "No PR workflow is active in this session; this runId is foreign or stale. Do not restart it or take over a parent or child run. Ask its owning session to continue.");
@@ -612,7 +612,10 @@ export default function pullRequestExtension(
 			selected.failed = false;
 			return toolResult(result);
 		} catch (error) {
-			selected.failed = true;
+			if (!(error instanceof UndeclaredConflictEdits && selected.route === "update-branch" &&
+				selected.workflow.state.phase === "conflict-awaiting-user" && !selected.controller.signal.aborted)) {
+				selected.failed = true;
+			}
 			throw error;
 		} finally {
 			signal?.removeEventListener("abort", abortRun);
