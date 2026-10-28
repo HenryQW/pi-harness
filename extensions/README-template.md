@@ -1,15 +1,5 @@
 <!--
-README contract:
-- Copy this file to extensions/<package>/README.md. Replace placeholders.
-- Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
-- Do not use em or en dashes in prose, except `—` alone in a table cell.
-- Limit each table-cell sentence to 25 words.
-- Every H2 section is optional. Include a section only when it contains package-specific user information.
-- Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information.
-- Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
-- Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
-- Keep simple packages short. Follow the root `AGENTS.md` Documentation section for language and `CONTEXT.md` terms; do not use the synonyms that `CONTEXT.md` lists under _Avoid_.
-- Prefer tables for structured information with multiple comparable rows (interfaces, settings, modes, limits, or recovery cases). Use prose for explanations and numbered lists for ordered workflows; do not force narrative or single items into tables.
+Copy to extensions/<package>/README.md. Keep only sections with package-specific user information, in this order. Delete the rest: no `None`, `N/A`, or filler. Put other topics under an H3. Use tables for comparable rows, prose for explanation, and numbered lists for ordered steps. Start local links with `./` or `../`. `pnpm run docs:validate` checks headings, introduction length, and the root AGENTS.md language rules.
 -->
 
 # `@henryqw/<package>`
@@ -18,18 +8,16 @@ README contract:
 
 <!-- Optional: when the package was learned from or adapted from another project, add an "Inspired by" sentence here. -->
 
-<!-- Optional: add a product screenshot here. Follow docs/screenshot-style.md. Keep a meaningful explanatory diagram near the relevant prose. Do not add decorative diagrams. -->
+<!-- Optional: add a product screenshot that follows docs/screenshot-style.md. -->
 
-<!-- Optional: include only when installation has package-specific user information. -->
+<!-- Optional: after the command, add only prerequisites and setup, with a verification step when setup is not trivial. The command alone is fine. -->
 ## Install
 
 ```bash
 pi install npm:@henryqw/<package>
 ```
 
-<After the command, include only prerequisites and required setup. Add a concrete verification step when setup is not trivial.>
-
-<!-- Optional: include only when another package is required, improves this package, or consumes it. Always use this exact table. Add one alphabetized row per package. Relationship must be Required, Improves, or Consumer. Purpose must not repeat the relationship word. Link companion docs with https://pi.henry.wang/extensions/<directory>. -->
+<!-- Optional: list only Pi extensions, not libraries, in one alphabetized row each. Relationship is Required, Improves, or Consumer; link to https://pi.henry.wang/extensions/<directory>. -->
 ## Works with
 
 | Package | Relationship | Purpose |
@@ -37,24 +25,22 @@ pi install npm:@henryqw/<package>
 | [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required | <What the package provides.> |
 | [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves | <What becomes better.> |
 
-<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result. When two or more interfaces exist, add exactly one complete discovery table: list every package-owned command, agent tool, skill, shortcut, and UI entry point, with command arguments needed for use. Use exactly these columns and lowercase types such as command, tool, skill, shortcut, or ui. Only when a package has both commands and tools, say that commands are for users and tools are for agents. Do not split the table by mode, normal use, or recovery, and do not repeat partial inventories later. Keep detailed behavior in prose or H3 subsections, and public library exports in API. For one trivial interface, concise prose or code is enough. -->
+<!-- Optional: start with the shortest successful workflow and its result. With two or more surfaces, add one table listing every package-owned command (with arguments), tool, skill, shortcut, and ui entry. -->
 ## Use
 
-<First successful workflow and expected result. Delete this paragraph only when a trivial command makes the result obvious.>
+<Shortest successful workflow and its result.>
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/<command>` | command | <What it does.> |
+| `/<command> <argument>` | command | <What it does.> |
 | `<tool>` | tool | <What it does.> |
 
-<Add normal-use detail without repeating the introduction.>
-
-<!-- Optional: include only for user-visible multi-step behavior and important transitions. H3 subsections are allowed. Preserve useful existing diagrams. -->
+<!-- Optional: describe user-visible multi-step behavior and important transitions. Add an explanatory diagram when flows or relationships are meaningful; never a decorative one. -->
 ## Flow
 
-<Describe the user-visible sequence and important transitions.>
+<User-visible sequence and important transitions.>
 
-<!-- Optional: include only for package-owned user-editable configuration. Start with the exact path or an ownership sentence. Do not present shared config or generated state as this package's config. Do not repeat a flat config table as JSON; a nested JSON example may explain structure. Every Config section must include the exact four-column primary table below: Name, Description, Values, and Default. Put genuinely conditional requirements briefly in Description. Keep explanation in Description and type, range, enum, or structural constraints in Values. State effective omitted behavior in Default. Use — when no default exists. -->
+<!-- Optional: package-owned, user-editable config only. Start with the path and use the four columns below; Default states omitted behavior or a lone dash, and no JSON copy of the table. -->
 ## Config
 
 Package-owned: `~/.pi/agent/config/<package>/config.json`
@@ -64,9 +50,9 @@ Package-owned: `~/.pi/agent/config/<package>/config.json`
 | `<setting-a>` | <What it controls. Required when <condition>.> | <Type, range, enum, or structural constraint.> | — |
 | `<setting-b>` | <What it controls.> | <Type, range, enum, or structural constraint.> | <Effective behavior when omitted.> |
 
-<After the table, explain invalid or missing config, who writes it, when changes reload, and recovery.>
+<Invalid or missing config, who writes it, when changes reload, and recovery.>
 
-<!-- Optional: document public library or owner APIs only. For two or more comparable exports, use exactly this table. A single API may use concise prose or code. -->
+<!-- Optional: public library or owner APIs only. Use this table for two or more exports. -->
 ## API
 
 | Surface | Type | Purpose |
@@ -74,12 +60,12 @@ Package-owned: `~/.pi/agent/config/<package>/config.json`
 | `<export-a>` | function | <What it does.> |
 | `<export-b>` | type | <What it represents.> |
 
-<!-- Optional: document package-owned generated files, session entries, caches, indexes, or storage. Include paths, lifecycle, safe deletion, and recovery when they matter. -->
+<!-- Optional: package-owned generated files, session entries, caches, or indexes, with paths, lifecycle, and safe deletion when they matter. Do not call generated state config. -->
 ## State and storage
 
-<Describe owned state. Do not call generated state config.>
+<Owned state.>
 
-<!-- Optional and always last: document actionable constraints, failure meaning, and recovery. Use this heading instead of variants such as Safety limits or Limits and failures. -->
+<!-- Optional and always last: actionable limits, failure meaning, and recovery. -->
 ## Limits and recovery
 
-<Make limits actionable and explain recovery.>
+<Actionable limits and recovery.>

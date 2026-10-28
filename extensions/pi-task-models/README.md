@@ -3,7 +3,6 @@
 Configure shared Task Profiles for `fast`, `balanced`, `frontier`, and `fav`. Each Task Route pairs a model with a thinking level; each consumer owns its Model Tasks and defaults.
 
 ![Pi showing task model profiles and task routes](./example.png)
-![A Model Task selects a Task Profile and resolves Task Routes; config and profile errors occur before resolution, and no-route follows it.](./docs/task-routing-architecture.svg)
 
 ## Install
 
@@ -38,17 +37,19 @@ Configure each profile your consumers require. `fav` has no fallback. Select an 
 
 ### Presets
 
-Run `/task-models preset` and choose a name. Included profiles replace complete routes, thinking levels, and fallbacks in one atomic update. Omitted profiles and task assignments stay unchanged. Applying can create missing active config. It does not check authentication, availability, or thinking support; task execution uses normal scope and resolution rules.
+Run `/task-models preset` and choose a name. Included profiles replace complete routes, thinking levels, and fallbacks in one atomic update. Omitted profiles and task assignments stay unchanged. Applying can create missing active config.
 
-To save, open `/task-models`, press **Option+S** (macOS) or **Alt+S**, then enter a name. Configure at least one profile first. The preset contains all configured profiles, not task assignments. Replacing an existing name requires confirmation; other presets stay unchanged. Cancelling a preset prompt writes nothing.
+To save, open `/task-models`, press **Option+S** (macOS) or **Alt+S**, then enter a name. The preset contains all configured profiles, not task assignments. Other presets stay unchanged. Cancelling a preset prompt writes nothing.
 
 The shortcut requires an interactive terminal that sends Option/Alt as Meta (Escape); RPC does not support it.
 
 ## Flow
 
+![A Model Task selects a Task Profile and resolves Task Routes; config and profile errors occur before resolution, and no-route follows it.](./docs/task-routing-architecture.svg)
+
 The menu shows effective profiles for active tasks. Disabled consumers' assignments remain stored but hidden.
 
-Menus and resolution use `ctx.scopedModels`, including pinned thinking levels. An empty scope uses available text models from Pi's registry. Duplicate numbered Codex aliases collapse into one choice; fallback choices exclude the primary.
+Menus list your scoped models and pinned thinking levels, or all available text models when no scope is set. Duplicate numbered Codex aliases collapse into one choice; fallback choices exclude the primary.
 
 ## Config
 
@@ -74,15 +75,15 @@ Package-owned: `~/.pi/agent/config/pi-task-models/config.json`. Only explicit `/
 | `tasks` | Explicit profile overrides. | Object mapping `<package>/<task>` IDs to profiles. | `{}` |
 | `tasks.<taskId>` | Overrides the declared profile. | `fast`, `balanced`, `frontier`, or `fav`. | Task declaration's `defaultProfile`. |
 
-Task defaults belong to consumer declarations. Existing overrides equal to those defaults remain valid. Numbered `openai-codex-N` aliases resolve through Pi's registry and save as `openai-codex/<model>`.
+Task defaults belong to consumer declarations. Existing overrides equal to those defaults remain valid.
 
 ### Preset file
 
-You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps preset names to any subset of the four profiles, each in the `profiles.<profile>` format above. Names must be non-empty, without surrounding whitespace or control characters. The picker sorts names alphabetically.
+You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps preset names to any subset of the four profiles, each in the `profiles.<profile>` format above. The picker sorts names alphabetically.
 
 The file must be valid UTF-8 JSON, at most 64 KiB. Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
 
-Saving refuses any preset-file problem and preserves that file. It reads the latest active profiles, including concurrent changes, before saving. It creates a missing preset file with a private atomic write. An open confirmation prompt does not block other sessions. Saves wait briefly for another save. If another session saves the same new name first, the save reports the conflict and writes nothing; try again.
+Saving never overwrites a preset file that has problems; a conflict message asks you to try again.
 
 ## API
 
@@ -106,13 +107,11 @@ Saving refuses any preset-file problem and preserves that file. It reads the lat
 | `orderedProfileRoutes(profile)` | function | Returns primary, then optional fallback. |
 | `createTaskModelsExtension(pi, options?)` (also default export) | function | Registers `/task-models`, missing-config warnings, and issue reporting. |
 
-Model and route helpers use only `ctx.model`, `ctx.scopedModels`, and `ctx.modelRegistry.getAvailable()`. They do not require UI methods, so consumers can use supported Pi releases. Profile thinking is authoritative; resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+Profile thinking is authoritative; resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
 
-Consumers must not read or write shared config directly. Register `registerTaskModelsConfigReporting(pi)` in the extension factory and call its `report(ctx)` before resolution, even without the Task Models extension. Each problem appears once per session across reporters.
+Consumers must not read or write shared config; call `report(ctx)` before resolution.
 
-`loadTaskModelsConfig()` returns `source: "file"` or `"missing"`. Missing config returns `{ source: "missing", value: { "profiles": {}, "tasks": {} } }` without creating files. Disabled-config errors give the path and problems.
-
-`executeTaskRoutes()` only executes supplied routes. It does not resolve, authenticate, inspect providers, log, wait, or retry routes. It rejects empty lists and checks `signal` before each route. Cancellation or `shouldFallback(error) === false` stops execution. Allowed failures end with the final error unchanged. Each route call must be atomic and safe to repeat.
+`executeTaskRoutes()` rejects empty lists and checks `signal` before each route. Cancellation or `shouldFallback(error) === false` stops execution. Allowed failures end with the final error unchanged. Each route call must be atomic and safe to repeat.
 
 ## Limits and recovery
 
@@ -120,13 +119,13 @@ Reads never change config. Problems appear at session start and when `/task-mode
 
 | Problem | Code | Recovery |
 | --- | --- | --- |
-| Unknown key, misspelled `tasks`, unknown profile name, invalid task ID or task profile. Pi warns and ignores the entry. | None | None needed. Tasks without valid overrides use declared defaults. |
+| Unknown key, misspelled `tasks`, unknown profile name, invalid task ID or task profile. | None | None needed. Tasks without valid overrides use declared defaults. |
 | Config is absent. | `config-missing` | Run `/task-models` to create it. |
-| Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root or `profiles`, misspelled `profiles` such as `profile`. Routing is disabled for every task. | `config-disabled` | The error gives the path and problems. Repair the file or save through `/task-models`. |
-| Profile is absent, or Pi warns and ignores an invalid profile, route, or `fallback` in `fav`. | `profile-missing` | The error identifies invalid settings. Configure the profile in `/task-models`. |
+| Malformed JSON, invalid UTF-8, over 64 KiB, unreadable file, non-object root or `profiles`, misspelled `profiles` such as `profile`. Routing is disabled for every task. | `config-disabled` | Repair the file or save through `/task-models`. |
+| Profile is absent, or Pi warns and ignores an invalid profile, route, or `fallback` in `fav`. | `profile-missing` | Configure the profile in `/task-models`. |
 | No available route. | `no-route` | Choose an available model and thinking level in `/task-models`. |
 
-Problematic config requires confirmation before a save or preset replaces it. Saves retain only valid settings, including valid `tasks` when `profiles` is invalid. If the file changed while `/task-models` was open, saving writes nothing; reopen `/task-models`.
+Saves retain only valid settings, including valid `tasks` when `profiles` is invalid. If the file changed while `/task-models` was open, saving writes nothing; reopen `/task-models`.
 
 Saving refuses oversized, unreadable, or non-regular files. Fix, shrink, or remove the file first.
 

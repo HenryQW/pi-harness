@@ -1,5 +1,6 @@
 // Render the final screen of a record.py capture into the standard framed PNG.
 // usage: node scripts/screenshots/render.mjs CAPTURE OUT.png
+// Set CHROME when Google Chrome is not at the default macOS path.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

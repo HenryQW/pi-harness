@@ -21,7 +21,7 @@ Run `/note Verify the migration rollback.` in a Git worktree. The reminder appea
 | `/note-clear` | command | Clear worktree notes. |
 | Notes widget | ui | Show worktree notes. |
 
-Each worktree has separate notes. The TUI numbers notes and limits each to two lines. Other modes show plain text without that limit. Empty widgets stay hidden.
+Each worktree has separate notes.
 
 ## State and storage
 

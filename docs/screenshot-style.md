@@ -4,14 +4,9 @@ Use this guide for the product screenshot in an extension README.
 
 ## Standard
 
-Each screenshot is `example.png` in the package root, linked as `./example.png`, and listed in the package `files`.
+Each screenshot is `example.png` in the package root, linked as `./example.png`. The scripts fix the size, font, and frame; do not crop or resize the PNG.
 
-- The image is 2080 × 1240 pixels: a 1040 × 620 canvas at 2× scale.
-- The canvas shows one Pi terminal of 100 columns × 24 rows in fullscreen mode, centered on the blue gradient frame.
-- The terminal uses Geist Mono at 15 px with 20 px rows. Glyphs that Geist Mono does not have fall back to the system font in the same cell width.
-- Pi runs in fullscreen mode with the extensions of this repository installed, in a clean clone of this repository on `main`, so the footer shows `pi-harness · main`.
-
-Do not crop, scale, or resize the terminal for one extension. All screenshots must have the same size and text scale.
+Pi runs in fullscreen mode with the extensions of this repository installed, in a clean clone of this repository on `main`, so the footer shows `pi-harness · main`.
 
 ## Fill the window
 
@@ -21,7 +16,7 @@ Use real data only. Do not show personal paths, customer data, credentials, or t
 
 ## Capture
 
-Run `pnpm install` in this repository first: `render.mjs` uses its dev dependencies. `scripts/screenshots/record.py` runs Pi in a 100 × 24 pseudo-terminal, sends scripted input, and saves the raw terminal output. Its steps are `["until", text, seconds]`, `["send", keys]`, and `["sleep", seconds]`. `scripts/screenshots/render.mjs` replays that output, prints the screen as text, and writes the framed PNG with headless Google Chrome. Set `CHROME` when Chrome is not at the default macOS path.
+Run `pnpm install` in this repository first: `render.mjs` uses its dev dependencies.
 
 ```bash
 git clone --branch main https://github.com/HenryQW/pi-harness.git /path/to/demo/pi-harness
