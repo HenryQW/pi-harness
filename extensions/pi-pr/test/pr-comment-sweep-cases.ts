@@ -536,7 +536,8 @@ for (const mode of ["live", "triage-resume", "recorded-resume"] as const) test(`
 	await workflow.commit(state.guard, "fix: review");
 	const published = await publishRecorded(workflow, state);
 	assert.equal(app.world.pushCalls, 1);
-	assert.deepEqual(app.trackingUpdates, [["update-ref", "refs/remotes/origin/feature", published.publicationHead, app.initial]]);
+	// Git 2.56 and later also move the tracking ref during the push, so later fallback writes vary by version.
+	assert.deepEqual(app.trackingUpdates[0], ["update-ref", "refs/remotes/origin/feature", published.publicationHead, app.initial]);
 	assert.equal(git(app.root, "rev-parse", "refs/remotes/origin/feature"), published.publicationHead);
 	const path = await workflow.recoveryPath();
 	assert.equal(JSON.parse(readFileSync(path, "utf8")).authority.base.oid, app.initial, "frozen feedback keeps its base until refresh");
