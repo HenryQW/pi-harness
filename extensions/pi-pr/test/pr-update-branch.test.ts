@@ -279,49 +279,153 @@ test("does not push when HEAD or target authority changes after final base check
 	}
 });
 
-test("refuses to rebase a merge-containing PR branch before changing HEAD", async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "pi-pr-merge-history-"));
+for (const scenario of ["success", "conflict", "stale", "identity", "lease", "first-parent", "second-parent", "extra-parent",
+	"merge-marker", "merge-head", "merge-branch", "rebase-marker", "rebase-head", "rebase-onto", "rebase-original", "rebase-branch"] as const)
+test("real branch update: " + scenario, async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-update-history-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const worktree = join(directory, "worktree");
-	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+	const remote = join(directory, "remote.git");
+	const agentDir = join(directory, "agent");
+	const git = (...args: string[]) => execFileSync("git", args, { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	execFileSync("git", ["init", "--initial-branch=main", worktree]);
-	git("config", "user.name", "Rebase Test");
-	git("config", "user.email", "rebase@example.test");
+	execFileSync("git", ["init", "--bare", remote]);
+	git("config", "user.name", "Branch Update Test");
+	git("config", "user.email", "update@example.test");
+	git("config", "merge.ff", "only"); // The helper must explicitly request its two-parent merge.
 	writeFileSync(join(worktree, "file.txt"), "original\n");
 	git("add", "file.txt");
 	git("commit", "-m", "initial");
+	const initial = git("rev-parse", "HEAD");
 	git("switch", "-c", "feature");
 	writeFileSync(join(worktree, "file.txt"), "feature\n");
 	git("commit", "-am", "feature");
-	git("switch", "-c", "topic");
-	writeFileSync(join(worktree, "topic.txt"), "topic\n");
-	git("add", "topic.txt");
-	git("commit", "-m", "topic");
-	git("switch", "feature");
-	git("merge", "--no-ff", "topic", "-m", "merge topic");
+	const linear = scenario.startsWith("rebase-");
+	if (!linear) {
+		git("switch", "-c", "topic");
+		writeFileSync(join(worktree, "topic.txt"), "topic\n");
+		git("add", "topic.txt");
+		git("commit", "-m", "topic");
+		git("switch", "feature");
+		git("merge", "--no-ff", "topic", "-m", "merge topic");
+	}
 	const featureHead = git("rev-parse", "HEAD");
 	git("switch", "main");
-	writeFileSync(join(worktree, "base.txt"), "base\n");
-	git("add", "base.txt");
+	const conflict = scenario === "conflict" || scenario === "stale" || scenario.startsWith("merge-") || linear;
+	writeFileSync(join(worktree, conflict ? "file.txt" : "base.txt"), "base\n");
+	git("add", ".");
 	git("commit", "-m", "base");
 	const baseHead = git("rev-parse", "HEAD");
 	git("switch", "feature");
+	git("push", remote, featureHead + ":refs/heads/feature", baseHead + ":refs/heads/main");
 	const authority = pullRequest({
 		base: { repository: "acme/project", ref: "main", oid: baseHead },
 		head: { repository: "acme/fork", ref: "feature", oid: featureHead },
+		headFetchSource: remote,
+		target: { ...pullRequest().target, fetchSource: remote, remoteOid: featureHead },
 	});
-	let rebases = 0;
+	let live = authority;
+	let duringDiscovery: (() => void) | undefined;
+	const mutations: string[][] = [];
+	const recoveryFile = () => {
+		const dir = join(agentDir, "config", "pi-pr", "update-branch");
+		return join(dir, readdirSync(dir)[0]!);
+	};
 	const exec: Exec = async (command, args, options) => {
 		if (command === "gh") return result("ssh\n");
-		if (command === "git" && args[0] === "fetch") return result();
-		if (command === "git" && args.includes("rebase")) rebases++;
-		return await spawnBounded(command, args, options);
+		if (command === "git" && args[0] === "fetch") args = args.map((arg) => arg === "git@github.com:acme/project.git" ? remote : arg);
+		if (command === "git" && (args.includes("merge") || args.includes("rebase") || args[0] === "push" || args.includes("add"))) {
+			mutations.push([...args]);
+			if (args.includes(baseHead) && (args.includes("merge") || args.includes("rebase"))) {
+				assert.equal(JSON.parse(readFileSync(recoveryFile(), "utf8")).phase, "pending");
+			}
+		}
+		const outcome = await spawnBounded(command, args, options);
+		if (command === "git" && args[0] === "merge" && outcome.code === 0 && scenario.endsWith("parent")) {
+			const parents = scenario === "first-parent" ? [initial, baseHead]
+				: scenario === "second-parent" ? [featureHead, git("commit-tree", baseHead + "^{tree}", "-p", baseHead, "-m", "later base")] : [featureHead, baseHead, initial];
+			const replacement = git("commit-tree", "HEAD^{tree}", ...parents.flatMap((parent) => ["-p", parent]), "-m", "wrong parents");
+			git("update-ref", "HEAD", replacement);
+		}
+		return outcome;
 	};
-	const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority, exec, agentDir: join(directory, "agent"),
-		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: authority }) });
-	await assert.rejects(workflow.rebase(), /merge commits/);
-	assert.equal(rebases, 0);
-	assert.equal(git("rev-parse", "HEAD"), featureHead);
+	const options = { run: new PrRun(), cwd: worktree, authority, exec, agentDir,
+		loadCurrentPullRequest: async () => { duringDiscovery?.(); return { kind: "current" as const, pullRequest: live }; } };
+	const workflow = new PullRequestBranchUpdater(options);
+	if (scenario.endsWith("parent")) {
+		await assert.rejects(workflow.rebase(), /exact first and second merge parents/);
+		assert.equal(JSON.parse(readFileSync(recoveryFile(), "utf8")).phase, "pending");
+		return;
+	}
+	const updated = await workflow.rebase();
+	if (conflict) {
+		assert.deepEqual(updated, { kind: "conflict", paths: ["file.txt"], strategy: linear ? "rebase" : "merge" });
+		const baseline = workflow.state.conflict!.statusBaseline;
+		writeFileSync(join(worktree, "file.txt"), "combined\n");
+		assert.equal(await workflow.hasLiveConflict(), true);
+		assert.equal(await workflow.hasLiveConflict(), true);
+		assert.equal(workflow.state.conflict!.statusBaseline, baseline);
+		const restarted = new PullRequestBranchUpdater({ ...options, run: new PrRun() });
+		await assert.rejects(restarted.recoveryLaunchAction(), /unverified; recover manually/);
+		if (scenario.startsWith("merge-") || linear) {
+			duringDiscovery = () => {
+				if (scenario.endsWith("head")) git("update-ref", "HEAD", initial);
+				else if (scenario === "merge-branch") git("symbolic-ref", "HEAD", "refs/heads/main");
+				else {
+					const name = scenario === "merge-marker" ? "MERGE_HEAD"
+						: scenario === "rebase-onto" ? "rebase-merge/onto"
+						: scenario === "rebase-original" ? "rebase-merge/orig-head"
+						: scenario === "rebase-branch" ? "rebase-merge/head-name" : "REBASE_HEAD";
+					writeFileSync(join(worktree, git("rev-parse", "--git-path", name)), initial + "\n");
+				}
+			};
+			const before = mutations.length;
+			await assert.rejects(workflow.continue(["file.txt"]), /context changed/);
+			assert.equal(workflow.state.phase, "blocked");
+			assert.equal(await workflow.hasLiveConflict(), false);
+			await assert.rejects(workflow.continue(["file.txt"]), /no conflict awaiting/);
+			assert.equal(mutations.length, before, "context mismatch must not stage, continue, abort, or push");
+			return;
+		}
+		// Repeated idle inspections must not admit undeclared edits to continuation or abort.
+		writeFileSync(join(worktree, "unrelated.txt"), "keep\n");
+		await assert.rejects(workflow.continue(["file.txt"]), /outside declared conflict paths/);
+		assert.equal(readFileSync(join(worktree, "unrelated.txt"), "utf8"), "keep\n");
+		rmSync(join(worktree, "unrelated.txt"));
+		if (scenario === "stale") live = { ...authority, id: "PR_changed" };
+		const continued = await workflow.continue(["file.txt"]);
+		if (scenario === "stale") {
+			assert.equal(continued.kind, "stale");
+			assert.equal(git("rev-parse", "HEAD"), featureHead);
+			assert.equal(git("status", "--porcelain"), "");
+			assert.equal(await workflow.hasLiveConflict(), false);
+			assert.equal(existsSync(join(worktree, git("rev-parse", "--git-path", "MERGE_HEAD"))), false);
+			return;
+		}
+		assert.equal(continued.kind, "verified");
+	}
+	assert.equal(git("status", "--porcelain"), "");
+	const head = git("rev-parse", "HEAD");
+	assert.equal(git("rev-list", "--parents", "-n", "1", "HEAD"), [head, featureHead, baseHead].join(" "));
+	if (scenario === "identity") {
+		live = { ...authority, id: "PR_changed" };
+		await assert.rejects(workflow.publish(), /frozen pull request authority changed/);
+	} else if (scenario === "lease") {
+		git("push", remote, baseHead + ":refs/heads/feature", "--force");
+		await assert.rejects(workflow.publish(), /unexpected OID; do not retry/);
+	} else {
+		const resumed = new PullRequestBranchUpdater({ ...options, run: new PrRun() });
+		await resumed.recoveryLaunchAction();
+		assert.deepEqual(await resumed.rebase(), { kind: "verified", head });
+		assert.deepEqual(await resumed.publish(), { kind: "published", head });
+		const pushes = mutations.filter((args) => args[0] === "push");
+		assert.equal(pushes.length, 1);
+		assert.ok(pushes[0]!.includes("--force-with-lease=refs/heads/feature:" + featureHead));
+		assert.equal(pushes[0]!.at(-1), head + ":refs/heads/feature");
+		assert.equal(git("ls-remote", remote, "refs/heads/feature").split("\t")[0], head);
+	}
+	if (scenario === "identity" || scenario === "lease") assert.equal(mutations.some((args) => args[0] === "push"), false);
+	assert.equal(mutations.some((args) => args.includes("rebase")), false, "merge-containing history is never rewritten");
 });
 
 test("confirmed conflict rebases only onto the pinned base and publishes the rewritten head once", async (t) => {
@@ -359,7 +463,6 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 	const trackingUpdates: string[][] = [];
 	let rebases = 0;
 	let stagingAttempts = 0;
-	let duringDiscovery: (() => void) | undefined;
 	const exec: Exec = async (command, args, options) => {
 		if (command === "git" && args.includes("add")) stagingAttempts += 1;
 		if (command === "git" && args.includes("rebase")) {
@@ -386,30 +489,14 @@ test("confirmed conflict rebases only onto the pinned base and publishes the rew
 			if ((context.rebaseBranch ?? git("branch", "--show-current")) !== "feature") {
 				return { kind: "blocked", issue: { kind: "detached-head" } };
 			}
-			duringDiscovery?.();
 			return { kind: "current", pullRequest: liveAuthority };
 		},
 	});
-	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
+	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"], strategy: "rebase" });
 	assert.equal(pushes, 0);
 	await assert.rejects(inspectVerifiedRebaseRecovery(authority, { cwd: worktree, agentDir: join(directory, "agent") }),
 		/unverified; recover manually/);
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
-	const pausedHead = git("rev-parse", "HEAD");
-	const markerPath = join(worktree, git("rev-parse", "--git-path", "rebase-merge/head-name"));
-	const marker = readFileSync(markerPath, "utf8");
-	for (const change of ["head", "marker", "missing-marker"]) {
-		duringDiscovery = () => {
-			if (change === "head") git("update-ref", "HEAD", featureHead);
-			else if (change === "marker") writeFileSync(markerPath, "refs/heads/another-branch\n");
-			else rmSync(markerPath);
-		};
-		await assert.rejects(workflow.continue(["file.txt"]), /Branch rebase context changed/);
-		assert.equal(stagingAttempts, 0);
-		git("update-ref", "HEAD", pausedHead);
-		writeFileSync(markerPath, marker);
-	}
-	duringDiscovery = undefined;
 	// A base that only advanced keeps the pinned rebase valid through continuation and publication.
 	const advancedBase = git("commit-tree", `${baseHead}^{tree}`, "-p", baseHead, "-m", "base advanced");
 	git("push", remote, `${advancedBase}:refs/heads/main`);
@@ -520,7 +607,7 @@ test("authority change during a conflict aborts the unpublished rebase and rerou
 	let live = authority;
 	const workflow = new PullRequestBranchUpdater({ run: new PrRun(), cwd: worktree, authority, exec, agentDir,
 		loadCurrentPullRequest: async () => ({ kind: "current", pullRequest: live }) });
-	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"] });
+	assert.deepEqual(await workflow.rebase(), { kind: "conflict", paths: ["file.txt"], strategy: "rebase" });
 	writeFileSync(join(worktree, "file.txt"), "resolved change\n");
 	// A rewritten base no longer contains the pinned base, so the paused rebase is obsolete.
 	const rewrittenBase = git("commit-tree", `${initial}^{tree}`, "-p", initial, "-m", "rewritten base");

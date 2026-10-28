@@ -239,6 +239,9 @@ export function parseStatusSnapshot(output: string): Map<string, string> {
 	return snapshot;
 }
 
+/** A known input rejection, not a failed or uncertain Git mutation. */
+export class UndeclaredConflictEdits extends Error {}
+
 export function assertOnlyDeclaredStatusChanged(
 	baseline: string,
 	current: string,
@@ -249,7 +252,7 @@ export function assertOnlyDeclaredStatusChanged(
 	const declared = new Set(declaredPaths);
 	for (const path of new Set([...before.keys(), ...after.keys()])) {
 		if (!declared.has(path) && before.get(path) !== after.get(path)) {
-			throw new Error(`Worktree changed outside declared conflict paths: ${path}`);
+			throw new UndeclaredConflictEdits(`Worktree changed outside declared conflict paths: ${path}`);
 		}
 	}
 }

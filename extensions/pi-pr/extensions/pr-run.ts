@@ -75,6 +75,10 @@ export class PrRun {
 		this.completed.set(route, heads);
 	}
 
+	hasCompletedRoute(route: string): boolean {
+		return this.completed.has(route);
+	}
+
 	hasCompleted(route: string, head: string | null): boolean {
 		return this.completed.get(route)?.has(head) ?? false;
 	}
