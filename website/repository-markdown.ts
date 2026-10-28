@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const repository = new URL("https://github.com/HenryQW/pi-harness/blob/main/");
-const rawRepository = new URL("https://raw.githubusercontent.com/HenryQW/pi-harness/main/");
+// Cloudflare Pages builds each pushed commit, so branch previews show that commit's images.
+const rawRepository = new URL(
+  `https://raw.githubusercontent.com/HenryQW/pi-harness/${process.env.CF_PAGES_COMMIT_SHA ?? "main"}/`
+);
 
 export const inlineRelativeSvgImages = async (
   markdown: string,
