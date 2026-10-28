@@ -23,8 +23,6 @@ pi install npm:@henryqw/pi-multi-codex
 
 Run `/login` and authenticate `OpenAI Codex (legacy)` for slot 1. Run `/codex-add`, then `/login` and select `OpenAI Codex #<n>`. Restart Pi or update model scope. Run `/codex-status` to verify the new account slot.
 
-Commands and UI entries are for users.
-
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/codex-add` | command | Create the next numbered slot for authentication. |
@@ -55,9 +53,7 @@ Package-owned: `~/.pi/agent/config/pi-multi-codex/config.json`
 
 Edit config manually; changes apply at the next session start. The extension never writes it; missing files use the default.
 
-Startup warnings identify unknown keys, invalid values, and file paths. Unknown keys are ignored. Non-boolean or misspelled `autoSwitchOn429`, such as `autoswitchOn429`, disables HTTP 429 switching for the session.
-
-Malformed JSON, invalid UTF-8, files above 64 KiB, read errors, and non-object roots also disable this switching with warnings. Fix the unchanged file and start a new session.
+A non-boolean or misspelled `autoSwitchOn429`, such as `autoswitchOn429`, disables HTTP 429 switching for the session. Malformed JSON, invalid UTF-8, files above 64 KiB, read errors, and non-object roots also disable it. A startup warning gives the file path and problem. Unknown keys get a warning and are ignored. Fix the unchanged file and start a new session.
 
 ## State and storage
 

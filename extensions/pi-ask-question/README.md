@@ -14,10 +14,6 @@ pi install npm:@henryqw/pi-ask-question
 
 Call `ask_question` in an interactive text user interface (TUI) with a question and one to three options in preference order. Pi waits for the selected option or custom answer.
 
-| Surface | Type | Purpose |
-| --- | --- | --- |
-| `ask_question` | tool | For agents: pause execution to get answers to one question or a list of questions. |
-
 ```json
 {
   "question": "Which database should we use?",
@@ -52,7 +48,7 @@ The list must not be empty. Do not mix the two request forms. The tool validates
 
 A list result contains `answers` in the same order. Each entry has a one-based `questionIndex`, the question, its options, and its answer. Cancellation, empty custom input, or abort sets `cancelled` to `true` and stops the list. Earlier answers remain in the result. A cancelled dialog has an entry with `answer: null`; questions not started have no entry. An already-aborted call opens no dialog.
 
-Invalid questions, non-interactive calls, and dialog failures include `error`. For list requests, these failures set the tool result's `isError` to `true`. Cancellation is not an error. A dialog failure stops the list and retains earlier answers. Single-question results keep their existing shape.
+Invalid questions, non-interactive calls, and dialog failures include `error`. For list requests, these failures set the tool result's `isError` to `true`. Cancellation is not an error. A dialog failure stops the list and retains earlier answers.
 
 While a question or list is open, the tool publishes `herdr:blocked` with `Input required`. Completion, cancellation, or failure clears the status. Non-interactive calls do not publish this status.
 

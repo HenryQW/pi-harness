@@ -4,16 +4,12 @@ README contract:
 - Use the exact package H1 format shown below. Follow it with one to three short sentences about the user outcome.
 - Do not use em or en dashes in prose, except `—` alone in a table cell.
 - Limit each table-cell sentence to 25 words.
-- Do not repeat generic Pi version requirements enforced by peerDependencies.
 - Every H2 section is optional. Include a section only when it contains package-specific user information.
 - Delete an inapplicable or empty heading instead of writing `None`, `N/A`, `Not applicable`, placeholder filler, or generic information.
 - Keep retained H2 headings in this canonical order: Install, Works with, Use, Flow, Config, API, State and storage, Limits and recovery.
 - Do not add other H2 headings. Nest package-specific topics under the relevant section with H3 headings.
-- Limits and recovery, when present, must be last.
-- Keep simple packages short. Write in ASD-STE100 Simplified Technical English. Use the terms in the package's `CONTEXT.md` as approved technical names with their defined meanings, and do not use the synonyms that it lists under _Avoid_. When a package has no `CONTEXT.md`, use ASD-STE100 only. Preserve exact commands, paths, errors, safety advice, and recovery steps.
+- Keep simple packages short. Follow the root `AGENTS.md` Documentation section for language and `CONTEXT.md` terms; do not use the synonyms that `CONTEXT.md` lists under _Avoid_.
 - Prefer tables for structured information with multiple comparable rows (interfaces, settings, modes, limits, or recovery cases). Use prose for explanations and numbered lists for ordered workflows; do not force narrative or single items into tables.
-- When a package exposes two or more discoverable interfaces, include exactly one complete interface-discovery table near the start of Use. Include every package-owned command, agent tool, skill, shortcut, and UI entry point; distinguish their types and explain their audience. Do not split the inventory by mode, normal use, or recovery. Keep detailed behavior in prose or H3 subsections, and public library exports in API.
-- Start links to local files with `./` (or `../` for parent paths): use `./docs/auto-compact-flow.svg`, not `docs/auto-compact-flow.svg`, or `docs:build` fails.
 -->
 
 # `@henryqw/<package>`
@@ -31,7 +27,7 @@ README contract:
 pi install npm:@henryqw/<package>
 ```
 
-<After the command, include only prerequisites and required setup. Add a concrete verification step when setup is not trivial. Do not repeat generic Pi version requirements enforced by peerDependencies.>
+<After the command, include only prerequisites and required setup. Add a concrete verification step when setup is not trivial.>
 
 <!-- Optional: include only when another package is required, improves this package, or consumes it. Always use this exact table. Add one alphabetized row per package. Relationship must be Required, Improves, or Consumer. Purpose must not repeat the relationship word. Link companion docs with https://pi.henry.wang/extensions/<directory>. -->
 ## Works with
@@ -41,7 +37,7 @@ pi install npm:@henryqw/<package>
 | [`@henryqw/<companion-a>`](https://pi.henry.wang/extensions/<companion-a>) | Required | <What the package provides.> |
 | [`@henryqw/<companion-b>`](https://pi.henry.wang/extensions/<companion-b>) | Improves | <What becomes better.> |
 
-<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result, then the single complete discovery table when two or more interfaces exist. Use exactly these columns and lowercase types such as command, tool, skill, shortcut, or ui. Explain that commands are for humans and tools are for agents when both exist; identify other audiences where needed. Include command arguments needed for use. Do not repeat partial inventories in later sections. For one trivial interface, concise prose or code is enough. Use H3 headings only when an interface needs more detail. -->
+<!-- Optional: include only when users need package-specific usage information. Start with the shortest successful workflow and its expected result. When two or more interfaces exist, add exactly one complete discovery table: list every package-owned command, agent tool, skill, shortcut, and UI entry point, with command arguments needed for use. Use exactly these columns and lowercase types such as command, tool, skill, shortcut, or ui. Only when a package has both commands and tools, say that commands are for users and tools are for agents. Do not split the table by mode, normal use, or recovery, and do not repeat partial inventories later. Keep detailed behavior in prose or H3 subsections, and public library exports in API. For one trivial interface, concise prose or code is enough. -->
 ## Use
 
 <First successful workflow and expected result. Delete this paragraph only when a trivial command makes the result obvious.>

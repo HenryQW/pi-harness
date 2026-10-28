@@ -10,20 +10,7 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 pi install npm:@henryqw/pi-footer
 ```
 
-Both entry points load by default. To select only the open commands, use Pi's resource filter in `settings.json`:
-
-```json
-{
-  "packages": [
-    {
-      "source": "npm:@henryqw/pi-footer",
-      "extensions": ["extensions/open.ts"]
-    }
-  ]
-}
-```
-
-Select `extensions/footer.ts` for only the footer, or use `pi config` to toggle either resource.
+Both entry points load by default. To load only one, keep `extensions/footer.ts` (the footer) or `extensions/open.ts` (the open commands) with `pi config` or the package `extensions` filter in `settings.json`.
 
 ## Works with
 
@@ -60,8 +47,6 @@ Token and cost totals include reported tool usage and completed `pi-subagent` ba
 Virtual models show the latest successful physical model and thinking level after an arrow: `auto • high → gpt-5.6-luna • medium`.
 
 Thinking colors are dim grey for `off` and the model name, then green `minimal`, yellow-green `low`, lime `medium`, yellow `high`, orange `xhigh`, and red `max`. Active levels use ANSI-256 colors. `ultra` uses a rainbow only when the runtime supports it; unsupported levels do not appear.
-
-For CodeGraph badges, see [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph).
 
 Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after completion. Middle dots separate statuses. The footer preserves colors, links, glyphs, and interior spacing, trims outer whitespace, replaces line breaks with spaces, and shortens long statuses.
 
@@ -114,23 +99,7 @@ Every role is optional:
 Theme tokens: `accent`, `dim`, `muted`, `text`, `success`, `warning`, `error`, and `thinkingText`. Colors do not change the thinking gradient or other extensions' status colors.
 
 ```json
-{
-  "colors": {
-    "repository": "muted",
-    "branch": "accent",
-    "gitStatus": "warning",
-    "input": "#4ec9b0",
-    "output": "#9cdcfe",
-    "cache": "#c586c0",
-    "throughput": "#dcdcaa",
-    "cost": "#ce9178",
-    "context": "#89d185",
-    "model": "text",
-    "runtime": "muted",
-    "codegraphActive": "accent",
-    "separator": "dim"
-  }
-}
+{ "colors": { "branch": "accent", "cost": "#ce9178" } }
 ```
 
 ## API
@@ -151,15 +120,15 @@ if (loaded.status === "ok") console.log(loaded.value.command, loaded.issues);
 | `loadOpenInConfig(agentDir?)` | function | Reads and validates owner config; accepts an optional agent directory. |
 | `configuredOpenUri(path)` | function | Returns a safe VS Code URI for `code`, or `undefined` for other commands. |
 
-`loadOpenInConfig` returns a `@henryqw/pi-config-store` `ConfigLoad`: `status`, `source` (`"missing"` or `"file"`), `issues`, and `value` when `status` is `"ok"`. Invalid `value.command` gives `"code"` and an issue. Neither function shows notifications. `configuredOpenUri(path)` uses `code` for invalid config; `code -n` and `code --new-window` add `windowId=_blank`.
+`loadOpenInConfig` returns a `@henryqw/pi-config-store` `ConfigLoad`: `status`, `source` (`"missing"` or `"file"`), `issues`, and `value` when `status` is `"ok"`. Invalid `value.command` gives `"code"` and an issue. Neither function shows notifications. For `code -n` and `code --new-window`, `configuredOpenUri(path)` adds `windowId=_blank`.
 
 ## Limits and recovery
 
 Open commands split on whitespace. Quoting and tokens with spaces are unsupported; use a wrapper script for executable paths with spaces.
 
-`/open` reads config on each run. Missing config silently uses `code`. Only `/set-open-in` writes the file, atomically.
+`/open` reads config on each run. Only `/set-open-in` writes the file, atomically. Open config must be a JSON object with one non-empty string `command`. Missing config, invalid commands, and malformed files use `code` without changing the file.
 
-Open config must be a JSON object with one non-empty string `command`. Unknown keys, invalid commands, or malformed files produce warnings at session start or the next `/open`, including footer-only installations. Each issue shows once per session, never during rendering. Invalid commands and malformed files use `code` without changing the file.
+Unknown keys, invalid commands, or malformed files produce warnings at session start or the next `/open`, including footer-only installations. Missing config produces no warning. Each issue shows once per session, never during rendering.
 
 Fix config or run `/set-open-in <command>` to replace it; the command reports new issues before replacement. If the command fails, Pi reports its error output or exit code. Fix the command and retry `/open`.
 

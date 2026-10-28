@@ -14,8 +14,6 @@ pi install npm:@henryqw/pi-notes
 
 Run `/note Verify the migration rollback.` in a Git worktree. The reminder appears immediately and in later sessions.
 
-These commands and the widget are for people.
-
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/note <text>` | command | Add a worktree note. |
