@@ -1,5 +1,6 @@
-import { mkdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -184,6 +185,37 @@ async function acceptPrimaryIndex(ctx: ExtensionContext, commonDir: string, prim
 	return accepted;
 }
 
+// Consent and primary initialization form one shared operation for this repository.
+async function initializePrimary(pi: ExtensionAPI, ctx: ExtensionContext, commonDir: string, primary: string, signal: AbortSignal): Promise<boolean> {
+	const indexed = await hasIndex(primary);
+	// No initialization lock is held while the user answers.
+	const accepted = !indexed && await acceptPrimaryIndex(ctx, commonDir, primary, signal);
+	if (!indexed && !accepted) return false;
+	const lock = join(commonDir, "pi-codegraph-init.lock");
+	const recovery = `Inspect CodeGraph in ${primary}. If no initializer is running, run codegraph index in that directory, then remove ${lock} with rmdir and /reload.`;
+	let stopProgress = () => {};
+	try {
+		// Check the lock even when a database exists: it can be a failed or pending init.
+		await acquireLock(lock, recovery, signal, () => { stopProgress = showProgress(ctx, "waiting for index", signal); });
+		let ready = await hasIndex(primary);
+		if (!ready && accepted) {
+			stopProgress();
+			stopProgress = showProgress(ctx, "indexing", signal);
+			try {
+				await codegraph(pi, primary, ["init", "--yes"], signal);
+			} catch (error) {
+				// Preserve the primary lock after failed or interrupted initialization.
+				throw new Error(`${error instanceof Error ? error.message : String(error)}\n${recovery}`, { cause: error });
+			}
+			ready = true;
+		}
+		await rmdir(lock);
+		return ready;
+	} finally {
+		stopProgress();
+	}
+}
+
 async function git(pi: ExtensionAPI, cwd: string, args: string[], signal: AbortSignal): Promise<string> {
 	const result = await pi.exec("git", args, { cwd, timeout: 10_000, signal });
 	signal.throwIfAborted();
@@ -193,27 +225,35 @@ async function git(pi: ExtensionAPI, cwd: string, args: string[], signal: AbortS
 	return result.stdout.replace(/\r?\n$/, "");
 }
 
-// Resolves to the worktree root when it has an index.
-async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: AbortSignal): Promise<string | undefined> {
+async function worktreeRoot(pi: ExtensionAPI, path: string, signal: AbortSignal): Promise<string | undefined> {
+	signal.throwIfAborted();
+	try {
+		if (!(await stat(path)).isDirectory()) throw new Error("not a directory");
+	} catch (error) {
+		throw new Error(`Invalid project directory ${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+	}
+	const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: path, timeout: 10_000, signal });
+	signal.throwIfAborted();
+	if (result.code !== 0 || result.killed) {
+		if (!result.killed && result.stderr.includes("not a git repository")) return;
+		throw new Error(`Cannot locate Git worktree in ${path}: ${result.stderr.trim() || `exit ${result.code}`}`);
+	}
+	const root = result.stdout.replace(/\r?\n$/, "");
+	if (!root) throw new Error("Git returned an empty worktree root.");
+	return realpath(root);
+}
+
+class PrerequisitesError extends Error {}
+
+// Returns the worktree root only after its initialization lock is clear.
+async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, root: string, signal: AbortSignal, primaries: Map<string, Promise<boolean>>): Promise<string | undefined> {
 	ctx.ui.setStatus(STATUS_KEY, undefined);
-	const version = await pi.exec("codegraph", ["--version"], { cwd: ctx.cwd, timeout: 10_000, signal });
+	const version = await pi.exec("codegraph", ["--version"], { cwd: root, timeout: 10_000, signal });
 	signal.throwIfAborted();
 	if (version.code !== 0 || version.killed) {
 		const detail = version.killed ? "timed out or killed" : version.stderr.trim().slice(-1000) || `exit ${version.code}`;
-		const message = `pi-codegraph: setup skipped.\ncodegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.\nThen restart Pi or /reload.`;
-		ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("warning", "!")} CG: prerequisites missing`);
-		if (ctx.hasUI) ctx.ui.notify(message, "warning");
-		else console.warn(message);
-		return;
+		throw new PrerequisitesError(`setup skipped.\ncodegraph --version failed (${detail}). Install CodeGraph: npm install -g @colbymchenry/codegraph. If already installed, check that codegraph runs on Pi's PATH.\nThen restart Pi or /reload.`);
 	}
-	const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, timeout: 10_000, signal });
-	signal.throwIfAborted();
-	if (rootResult.code !== 0 || rootResult.killed) {
-		if (!rootResult.killed && rootResult.stderr.includes("not a git repository")) return;
-		throw new Error(`Cannot locate Git worktree: ${rootResult.stderr.trim() || `exit ${rootResult.code}`}`);
-	}
-	const root = rootResult.stdout.replace(/\r?\n$/, "");
-	if (!root) throw new Error("Git returned an empty worktree root.");
 	if (process.env.CODEGRAPH_DIR && process.env.CODEGRAPH_DIR !== ".codegraph") {
 		throw new Error("pi-codegraph requires the default CODEGRAPH_DIR (.codegraph). Unset CODEGRAPH_DIR before launching Pi.");
 	}
@@ -230,10 +270,15 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 		const primary = first[0].slice("worktree ".length);
 		const paths = worktrees.split("\0").filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length));
 		const commonDir = await git(pi, root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal);
-		// Ask before taking the lock, so an open dialog neither blocks other sessions nor leaves a stale lock.
-		// A bare repository has no primary checkout to index.
-		const accepted = primary !== root && !first.includes("bare") && !(await hasIndex(root)) && !(await hasIndex(primary))
-			&& await acceptPrimaryIndex(ctx, commonDir, primary, signal);
+		const preparePrimary = () => {
+			const pending = primaries.get(commonDir);
+			if (pending) return pending;
+			const setup = initializePrimary(pi, ctx, commonDir, primary, signal).finally(() => primaries.delete(commonDir));
+			primaries.set(commonDir, setup);
+			return setup;
+		};
+		// Complete primary setup before taking this worktree's lock. A bare repository has no primary checkout.
+		const primaryReady = primary !== root && !first.includes("bare") && !(await hasIndex(root)) && await preparePrimary();
 		await acquireLock(lock, recovery, signal, () => { stopProgress = showProgress(ctx, "waiting for index", signal); });
 		let attempted = false;
 		try {
@@ -241,26 +286,9 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 				indexed = true;
 				return root;
 			}
-			if (primary === root || first.includes("bare")) return;
-			const primaryIndexed = await hasIndex(primary);
-			if (!primaryIndexed && !accepted) return;
+			if (!primaryReady) return;
 			stopProgress();
 			stopProgress = showProgress(ctx, "indexing", signal);
-			if (!primaryIndexed) {
-				// The primary checkout's own lock: its sessions must not accept a partial DB either.
-				const primaryLock = join(commonDir, "pi-codegraph-init.lock");
-				const primaryRecovery = `Inspect CodeGraph in ${primary}. If no initializer is running, run codegraph index in that directory, then remove ${primaryLock} with rmdir and /reload.`;
-				await acquireLock(primaryLock, primaryRecovery, signal, () => {});
-				// Another session can index the primary checkout while this one waits.
-				if (!(await hasIndex(primary))) {
-					try {
-						await codegraph(pi, primary, ["init", "--yes"], signal);
-					} catch (error) {
-						throw new Error(`${error instanceof Error ? error.message : String(error)}\n${primaryRecovery}`, { cause: error });
-					}
-				}
-				await rmdir(primaryLock);
-			}
 			attempted = true;
 			const seeded = await seedIndex(pi, root, paths, version.stdout.trim(), signal);
 			signal.throwIfAborted();
@@ -282,13 +310,62 @@ async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, signal: Abort
 	}
 }
 
+// A cancelled caller stops waiting, but cannot cancel setup shared with another caller.
+async function waitForSetup<T>(setup: Promise<T>, signal: AbortSignal): Promise<T> {
+	let abort!: () => void;
+	const cancelled = new Promise<never>((_resolve, reject) => {
+		abort = () => reject(signal.reason);
+		signal.addEventListener("abort", abort, { once: true });
+		if (signal.aborted) abort();
+	});
+	try {
+		return await Promise.race([setup, cancelled]);
+	} finally {
+		signal.removeEventListener("abort", abort);
+	}
+}
+
 export default function codegraphExtension(pi: ExtensionAPI): void {
-	let initializer: AbortController | undefined;
-	let setup: Promise<void> | undefined;
-	pi.on("session_shutdown", (event) => {
-		// Session replacement waits for worktree-scoped indexing instead of abandoning its lock.
-		if (event.reason !== "new" && event.reason !== "resume" && event.reason !== "fork") initializer?.abort();
+	const lifetime = new AbortController();
+	const setups = new Map<string, Promise<string | undefined>>();
+	const primaries = new Map<string, Promise<boolean>>();
+	const watched = new Map<string, string>();
+	let sessionRoot: string | undefined;
+	let sessionDirectory: Promise<string | undefined> | undefined;
+	let startup: Promise<void> | undefined;
+	const unwatch = (root: string) => {
+		const name = watched.get(root);
+		if (name) pi.unregisterMcpServer(name);
+		watched.delete(root);
+	};
+	const prepare = (root: string, ctx: ExtensionContext, refresh = false): Promise<string | undefined> => {
+		lifetime.signal.throwIfAborted();
+		const pending = setups.get(root);
+		if (pending) return pending;
+		if (!refresh && watched.has(root)) return Promise.resolve(root);
+		const setup = initialize(pi, ctx, root, lifetime.signal, primaries).then((ready) => {
+			lifetime.signal.throwIfAborted();
+			if (ready && !watched.has(root)) {
+				// Root identity keeps separate repositories and linked worktrees independent.
+				const name = root === sessionRoot ? MCP_SERVER : `${MCP_SERVER}-${createHash("sha256").update(root).digest("hex").slice(0, 16)}`;
+				pi.registerMcpServer(name, { command: "codegraph", args: ["serve", "--mcp", "--path", root], cwd: root, exposure: "hidden" });
+				watched.set(root, name);
+			} else if (!ready) unwatch(root);
+			return ready;
+		}).catch((error) => {
+			unwatch(root);
+			throw error;
+		}).finally(() => setups.delete(root));
+		setups.set(root, setup);
 		return setup;
+	};
+	pi.on("session_shutdown", async (event) => {
+		// Session replacement waits for setup instead of abandoning initialization locks.
+		if (event.reason !== "new" && event.reason !== "resume" && event.reason !== "fork") {
+			lifetime.abort();
+			for (const root of watched.keys()) unwatch(root);
+		}
+		await Promise.allSettled([startup, ...setups.values()]);
 	});
 	pi.registerTool({
 		name: "codegraph_explore",
@@ -297,42 +374,53 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			query: Type.String({ description: "Symbol names, file names, short code terms, or a natural-language question." }),
 			maxFiles: Type.Optional(Type.Number({ description: "Maximum files to include (default 12)." })),
-			projectPath: Type.Optional(Type.String({ description: "Absolute path to the project or any directory inside it. Defaults to the session cwd." })),
+			projectPath: Type.Optional(Type.String({ minLength: 1, description: "Path to a Git worktree or any directory inside it. Relative paths use the session directory. Defaults to the session directory; does not search child repositories." })),
 		}),
 		annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 		async execute(_toolCallId, { query, maxFiles, projectPath }, signal, _onUpdate, ctx) {
-			const path = projectPath ?? ctx.cwd;
-			const result = await pi.exec("codegraph", ["explore", "--path", path, "--max-files", String(maxFiles ?? 12), query], { cwd: path, signal, timeout: EXPLORE_TIMEOUT_MS });
+			const callSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+			callSignal.throwIfAborted();
+			if (projectPath !== undefined && !projectPath.trim()) throw new Error("projectPath must name a project directory.");
+			const path = resolve(ctx.cwd, projectPath ?? ctx.cwd);
+			const root = await worktreeRoot(pi, path, callSignal);
+			if (!root) throw new Error(`No Git worktree contains ${path}. Set projectPath to a Git worktree or a directory inside it; child repositories are not searched.`);
+			// The startup root determines which server keeps the existing pi-codegraph name.
+			if (sessionDirectory) await waitForSetup(sessionDirectory.catch(() => undefined), callSignal);
+			callSignal.throwIfAborted();
+			if (!await waitForSetup(prepare(root, ctx), callSignal)) {
+				throw new Error(`No CodeGraph index in ${root}. Run codegraph init --yes in that directory, or index the primary checkout to enable linked-worktree setup. Set projectPath to select another indexed worktree.`);
+			}
+			callSignal.throwIfAborted();
+			const result = await pi.exec("codegraph", ["explore", "--path", root, "--max-files", String(maxFiles ?? 12), query], { cwd: root, signal: callSignal, timeout: EXPLORE_TIMEOUT_MS });
+			callSignal.throwIfAborted();
 			if (result.code !== 0 || result.killed) {
 				throw new Error(`codegraph explore failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${result.stderr.trim().slice(-2000)}`);
 			}
 			return { content: [{ type: "text", text: result.stdout }], details: undefined };
 		},
 	});
-	// CodeGraph's MCP server runs the file watcher that keeps the index current; its tools stay
-	// hidden because codegraph_explore covers them. Pi starts and stops the server.
-	let watched: string | undefined;
-	const watch = (root: string | undefined) => {
-		if (root === watched) return;
-		if (watched) pi.unregisterMcpServer(MCP_SERVER);
-		watched = root;
-		if (root) pi.registerMcpServer(MCP_SERVER, { command: "codegraph", args: ["serve", "--mcp", "--path", root], cwd: root, exposure: "hidden" });
-	};
 	pi.on("session_start", (_event, ctx) => {
-		if (setup) return ctx.mode === "tui" ? undefined : setup;
-		const controller = initializer = new AbortController();
-		setup = initialize(pi, ctx, controller.signal).then(watch).catch((error) => {
-			if (controller.signal.aborted) return;
-			// Do not keep watching the checkout of an earlier session.
-			watch(undefined);
-			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
-			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg("error", "!")} CG: setup failed`);
-			if (ctx.hasUI) ctx.ui.notify(message, "error");
-			else throw new Error(message, { cause: error });
-		}).finally(() => {
-			setup = undefined;
-			initializer = undefined;
+		if (startup) return ctx.mode === "tui" ? undefined : startup;
+		lifetime.signal.throwIfAborted();
+		ctx.ui.setStatus(STATUS_KEY, undefined);
+		sessionDirectory = worktreeRoot(pi, ctx.cwd, lifetime.signal).then((root) => {
+			if (sessionRoot && sessionRoot !== root) unwatch(sessionRoot);
+			sessionRoot = root;
+			return root;
 		});
-		if (ctx.mode !== "tui") return setup;
+		startup = sessionDirectory.then(async (root) => {
+			if (root) await prepare(root, ctx, true);
+		}).catch((error) => {
+			if (lifetime.signal.aborted) return;
+			if (sessionRoot) unwatch(sessionRoot);
+			const message = `pi-codegraph: ${error instanceof Error ? error.message : String(error)}`;
+			const missing = error instanceof PrerequisitesError;
+			const level = missing ? "warning" : "error";
+			ctx.ui.setStatus(STATUS_KEY, `${ctx.ui.theme.fg(level, "!")} CG: ${missing ? "prerequisites missing" : "setup failed"}`);
+			if (ctx.hasUI) ctx.ui.notify(message, level);
+			else if (missing) console.warn(message);
+			else throw new Error(message, { cause: error });
+		}).finally(() => { startup = undefined; });
+		if (ctx.mode !== "tui") return startup;
 	});
 }

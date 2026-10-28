@@ -1,15 +1,17 @@
 # `@henryqw/pi-codegraph`
 
-Prepare a separate [CodeGraph](https://github.com/colbymchenry/codegraph) index for each Git worktree and keep it current while Pi runs. Agents use `codegraph_explore` to get relevant source and call paths.
+Use separate [CodeGraph](https://github.com/colbymchenry/codegraph) indexes for explicitly selected Git worktrees in one Pi session. Agents use `codegraph_explore` to get relevant source and call paths. Each selected worktree has its own file watcher.
 
 ## Install
+
+The `-g` option installs CodeGraph globally.
 
 ```bash
 npm install -g @colbymchenry/codegraph
 pi install npm:@henryqw/pi-codegraph
 ```
 
-Put the `codegraph` executable on Pi's `PATH`. Keep Pi's built-in MCP support enabled for automatic index updates. The extension registers its MCP server; no MCP configuration is necessary.
+Put the `codegraph` executable on Pi's `PATH`. Keep Pi's built-in Model Context Protocol (MCP) support enabled for automatic index updates. The extension registers its MCP servers; no MCP configuration is necessary.
 
 ## Works with
 
@@ -20,31 +22,57 @@ Put the `codegraph` executable on Pi's `PATH`. Keep Pi's built-in MCP support en
 
 ## Use
 
-Start `pi` in a linked worktree. If the primary checkout has no index, the TUI asks for indexing consent once per repository. Accept to run `codegraph init --yes` there. Alternatively, run this command in the primary checkout yourself:
+Start `pi` in a linked worktree or in a directory that contains several repositories. Set `projectPath` to select another repository. Pi does not search child directories for repositories.
+
+For a linked worktree without an index, the text user interface (TUI) asks for indexing consent if the primary checkout has no index. It asks once per repository. Accept to run `codegraph init --yes` there; `--yes` accepts CodeGraph setup prompts. Alternatively, run this command in the primary checkout yourself:
 
 ```bash
 codegraph init --yes
 ```
 
+In the status display, `CG` means CodeGraph. In server names, `root-hash` identifies the canonical worktree root.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `codegraph_explore` | tool | For agents: returns relevant symbol source grouped by file, with call paths. |
-| `pi-codegraph` | mcp server | Runs `codegraph serve --mcp --path <worktree-root>`. Its file watcher updates the index. Its tools are hidden. |
+| `pi-codegraph` and `pi-codegraph-<root-hash>` | mcp server | One hidden server per selected worktree. Runs `codegraph serve --mcp --path <worktree-root>`; `--mcp` selects MCP mode and `--path` selects the worktree root. |
 | CodeGraph setup status | ui | Shows users `✓ CG` for indexed, `○ CG` for missing, or a dim spinner with elapsed setup time. Errors include recovery instructions. |
 
-`codegraph_explore` accepts `query`, optional `maxFiles` (default 12), and optional `projectPath` (default: Pi's working directory). It runs `codegraph explore --path <projectPath> --max-files <maxFiles> <query>` and returns unchanged output. A command error or runtime above 120 seconds fails the tool call and shows the end of the error output.
+`codegraph_explore` accepts `query`, optional `maxFiles` (default 12), and optional `projectPath` (default: Pi's working directory). A nested directory selects its containing Git worktree, not a separate nested index. Relative paths use Pi's working directory. Symbolic links to the same worktree share setup and one watcher.
+
+The tool runs `codegraph explore --path <worktree-root> --max-files <maxFiles> <query>` and returns unchanged output. The `--max-files` option limits the source files in the result. A command error or runtime above 120 seconds fails the exploration and shows the end of the error output. Setup can take longer.
+
+For example, a session in `/workspace` can query two repositories:
+
+```javascript
+await tools.codegraph_explore({ query: "authentication", projectPath: "/workspace/api/src" });
+await tools.codegraph_explore({ query: "navigation", projectPath: "/workspace/web" });
+```
+
+Without `projectPath`, a non-Git session directory produces an error that asks you to select a worktree. Missing directories and paths to files produce an invalid-directory error. A missing index produces manual setup instructions if automatic setup is not permitted. Selecting an unindexed primary checkout does not create its index or ask for consent.
 
 Works with `codemode`, including `codemode.mode` set to `only`. Scripts call `tools.codegraph_explore({ query })` and receive a string.
 
 ## Flow
 
-![Worktree setup: primary-index consent, seed selection, locked copy, status check, synchronization or new index, and MCP watcher.](./docs/codegraph-setup-flow.svg)
+```mermaid
+flowchart LR
+  A[Startup directory or query projectPath] --> B[Resolve containing Git worktree]
+  B --> C[Reuse setup for this worktree]
+  C --> D[Index ready after lock check]
+  D --> E[One hidden watcher per worktree]
+  D --> F[Explore at worktree root]
+  B --> G[No worktree: report path guidance]
+  C --> H[No permitted index setup: report manual steps]
+```
 
-Setup starts with Pi, not when Git creates a worktree. In the TUI, setup runs in the background. RPC, print, and JSON modes do not ask for consent. RPC waits for setup before it can accept an answer.
+![Selected linked-worktree setup: primary-index consent, seed selection, locked copy, status check, synchronization or new index, and a separate watcher.](./docs/codegraph-setup-flow.svg)
+
+Setup starts with Pi for its session worktree. A query starts setup for another explicitly selected worktree. Git worktree creation does not start setup. In the TUI, startup setup runs in the background. Remote procedure call (RPC), print, and JavaScript Object Notation (JSON) modes do not ask for consent. RPC waits for startup setup before it can accept an answer.
 
 If you decline or press Escape, the extension writes `pi-codegraph-declined` in the Git common directory. Delete that file to permit another consent request. Automatic worktree setup requires a primary index. The extension does not initialize non-Git directories or offer to index bare repositories.
 
-The MCP file watcher updates each checkout's separate index, including uncommitted edits and changes in the primary checkout. Sessions share one CodeGraph daemon per checkout. It stops five minutes after the last session closes.
+The MCP file watcher updates each selected checkout's separate index, including uncommitted edits. Selecting another repository does not stop earlier watchers. Pi starts watcher connections asynchronously; a successful query does not prove that a watcher is ready or that all edits are indexed. Sessions share one CodeGraph daemon per checkout. It stops five minutes after its last connection closes.
 
 ### Index status
 
@@ -52,7 +80,11 @@ During setup, the footer shows a dim status such as `⠋ CG · indexing 8s`. It 
 
 Missing prerequisites and setup failures remain visible as `! CG: prerequisites missing` or `! CG: setup failed`. Each has a theme-colored `!` icon and a notice with recovery instructions. With `pi-footer`, status stays on the third line. Direct `codegraph_explore` calls temporarily show `● CG`.
 
-Creating, resuming, or forking a session waits for active initialization without interrupting it. Quitting or reloading Pi cancels setup. Interrupted setup requires explicit lock recovery.
+Concurrent queries to one worktree share setup and watcher registration. Worktrees in the same repository share consent and pending primary initialization, but keep separate worktree locks. Accepted consent is not saved after primary setup ends. A failed or interrupted consent request does not record a decline. Cancelling one query stops its wait, not the shared setup.
+
+Creating, resuming, or forking a session waits for active initialization. Pi closes watcher connections and recreates the extension. In a non-Git workspace, query each selected worktree again to start its watcher in the new session. Selections do not persist across sessions.
+
+Quitting or reloading Pi cancels setup and removes all owned watcher registrations. Interrupted initialization requires explicit lock recovery.
 
 ## State and storage
 
@@ -63,7 +95,7 @@ Each checkout owns `.codegraph/codegraph.db`. The extension can read other index
 | Seed index | Complete index of the same repository, built by the installed CodeGraph version, with matching `codegraph.json` contents. |
 | Selection | Fewest changed files compared to the worktree `HEAD`. |
 | Copy | Holds the source writer lock `.codegraph/codegraph.lock`. Skips a source that another writer locks. |
-| Status check | Accepts the copy only if `codegraph status --json` exits with code 0 and reports `index.state:"complete"` and `index.reindexRecommended:false`. |
+| Status check | Uses `codegraph status --json`; `--json` selects JSON output. Accepts the copy only with exit code 0, `index.state:"complete"`, and `index.reindexRecommended:false`. |
 | Accepted copy | Runs `codegraph sync <worktree-root>` after the status check. |
 | Rejected copy | Deletes the copy and tries the next index. |
 | No usable index | Runs `codegraph init --yes <worktree-root>`. |
@@ -72,7 +104,7 @@ The extension does not add ignore rules, delete indexes, or prune worktrees. Add
 
 ## Limits and recovery
 
-If the startup check `codegraph --version` fails, Pi warns, reports `prerequisites missing`, and skips setup. Install or fix the executable, then restart Pi or run `/reload`. The extension never installs prerequisites automatically.
+The `--version` option prints the CodeGraph version. If the startup check `codegraph --version` fails, Pi warns, reports `prerequisites missing`, and skips setup. Install or fix the executable, then restart Pi or run `/reload`. The extension never installs prerequisites automatically.
 
 Failed or interrupted initialization keeps `pi-codegraph-init.lock` to block use of a partial database. To recover:
 
@@ -93,4 +125,8 @@ Do not remove an active lock or run manual `codegraph init` commands during init
 
 Only Git worktree-root indexes in the default `.codegraph` directory are supported. Nested monorepo indexes do not initialize automatically. Keep the primary checkout indexed for automatic opt-in detection.
 
-Each daemon uses approximately 230 MB of memory. With MCP disabled, for example through `--no-mcp`, indexes become stale. Run `codegraph sync` in the checkout to update its index. An `mcp.json` server named `pi-codegraph` replaces the extension's server.
+Each selected worktree can start a daemon that uses approximately 230 megabytes of memory. Selecting more worktrees increases resource use until the session ends or Pi reloads.
+
+The `--no-mcp` option disables Pi's built-in MCP support. Without MCP, queries can use existing indexes, but automatic updates do not run. Run `codegraph sync` in each checkout to update its index. Pi can also report that no MCP handler connects the registered servers.
+
+The session worktree keeps the server name `pi-codegraph`. Other worktrees use `pi-codegraph-<root-hash>`. These names stay the same across reloads. A server in `mcp.json` with the same name replaces that extension registration. Use `/mcp` to inspect names, overrides, and connection status.
