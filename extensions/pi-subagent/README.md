@@ -6,7 +6,7 @@ Delegate bounded work to configured Pi Roles through [Herdr](https://herdr.dev/)
 
 ## Install
 
-Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later. Pi Subagent checks Herdr and server support before it starts.
+Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -25,15 +25,15 @@ Configure the profiles that your Roles use in `/task-models`. Direct writer term
 
 Ask Main: “Have a scout trace sign-in without editing files.” Main calls `delegate_task` and stays available until progress and results arrive.
 
-If Pi Goal is installed, it waits for live direct or isolated results in the current session instead of adding empty continuation turns. Budget and continuation limits still apply. Retained or interrupted work does not cause a wait. The optional `pi-subagent:pending-result` event needs no package dependency; see the [pending-result contract](./CONTEXT.md#pending-result-event-contract).
+If Pi Goal is installed, it waits for live subagent results instead of adding empty continuation turns; see the [pending-result contract](./CONTEXT.md#pending-result-event-contract).
 
-Commands, prompts, and UI are for you. Tools and the packaged skill are for Main, except `git_read`, which is only for Role-declared children.
+Commands, prompts, and UI are for you. Tools and the packaged skill are for Main, except `git_read`, which is only for Role-declared children. `codemode` scripts can call only `subagent_status`.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/subagent` | command | Browse direct and isolated work, including requests whose parent checkout was removed. Stop direct workers, inspect isolated work, send follow-ups, or delete owned isolated worktrees after confirmation. **Select multiple…** applies one action to many rows. Without interactive UI, only reports. |
+| `/subagent` | command | Browse work; stop workers, send follow-ups, or delete owned worktrees after confirmation. Without interactive UI, only reports. |
 | `/subagent roles` | command | List Role sources, resources, resolved model and thinking level, route errors, and file errors. Read-only; requires no Herdr pane. |
-| `/subagent prune` | command | Collect eligible completed worker tabs, then scan leftover branches and worktrees. Run it again when ready to review and confirm deletion. Requires a running Herdr server. Without an interactive user interface, collect tabs and report worktrees without deleting them. |
+| `/subagent prune` | command | Collect finished tabs and scan leftover worktrees; run again to review and confirm deletion. Requires a running Herdr server. Without interactive UI, only collects and reports. |
 | `/subagent prune cancel` | command | Cancel the scan, ready plan, or cleanup. An active removal step can finish; completed removals are not undone. |
 | `/review [target] [focus]` | prompt | Tell Main to review a change with parallel `reviewer` tasks and give one ship verdict. See [Review a change](#review-a-change). |
 | `/subagent recover` | command | Classify interrupted isolated work in the canonical repository. Send Main request IDs, blockers, and next actions. Requires no UI or Herdr pane. |
@@ -47,8 +47,6 @@ Commands, prompts, and UI are for you. Tools and the packaged skill are for Main
 | `pi-subagent` | skill | Guide Main through authorization, delegation, checks, integration, and recovery. |
 | Direct status widget (`D`) | ui | Show direct references, names, Role badges, status, routes, elapsed time, measured task tokens, cost, and tool activity in the TUI. |
 | Isolated status widget (`I`) | ui | Show recorded task state, Role/model-class badges, and retained workspaces in the TUI. Readiness does not mean promotion. |
-
-`delegate_task`, `subagent_resume`, `subagent_stage`, `subagent_integrate`, and `subagent_abort` are model-only. Main must make these decisions visibly; `codemode` scripts can call only `subagent_status`.
 
 ### Direct workflow
 
@@ -80,27 +78,17 @@ Checkout admission is shared with managed background commands from `pi-herdr-too
 
 Direct writes change Main's checkout immediately, including dirty checkouts, and have no automatic checks or rollback. Preserve unrelated edits. See [Direct contract](./docs/orchestration.md#direct-contract) for write scope and checkout-admission rules.
 
-Tasks in write requests must return one JSON completion object:
+Each write task must end with a JSON completion object; [Direct contract](./docs/orchestration.md#direct-contract) gives its format. Plain text, a malformed object, blocked work, or failure stops later dispatch. Success is the worker's report, not independent validation.
 
-```json
-{"outcome":"succeeded","answer":"Scoped commit completed."}
-```
+A write task can declare `"paths": ["src/**"]` with repo-relative globs. The result lists new commits and changed paths and flags paths outside `paths`. This is a report only, not enforcement. A read result warns `checkout changed during task; result may be stale`. See [Checkout change reports](./docs/orchestration.md#checkout-change-reports).
 
-`outcome` accepts `succeeded`, `failed`, or `blocked`; `answer` must be non-empty. Plain text, malformed completion, blocked work, or failure stops later dispatch. Success is the worker's report, not independent validation. Checkout admission depends on proved termination, not the reported outcome.
-
-A write task can declare `"paths": ["src/**"]` with repo-relative globs. For each task in a write request, the result lists new commits and changed paths, and it flags changed paths outside `paths`. This is a report only, not enforcement, and it cannot exclude changes from other processes. For a read request, the result warns `checkout changed during task; result may be stale` when the checkout changed while the task ran. Outside a Git repository, the extension makes no report. See [Checkout change reports](./docs/orchestration.md#checkout-change-reports).
-
-To check a request before a launch, add `"dryRun": true`. The dry run does the launch checks and shows each task's Role, model, thinking level, access, and dependencies. It starts no worker and opens no tab. It also reserves no checkout and sends no follow-up. A failed check gives the same error as a launch. For the full list of checks, see [Dry run](./docs/orchestration.md#dry-run).
+Add `"dryRun": true` to do the launch checks and show the resolved plan; see [Dry run](./docs/orchestration.md#dry-run). It launches nothing.
 
 The launch returns a task ID and first Herdr tab, not the answer. One follow-up delivers results when the workflow finishes. The results show the tokens and cost of each worker and the total cost of the request. Busy Main receives it after its current turn; idle Main starts a turn. Failed partial output stays marked as partial, never success. Worker output carries no user authority.
 
-The tasks in a request share a 40 KiB answer budget, and each worker prompt states its share. A longer answer is still a success. The follow-up shows its first part and the path of a private file with the full answer. Full-answer paths also stay in structured results and recovery text, outside the output limit.
+Answers above the shared 40 KiB budget and packets above 64 KiB go to private files. A packet line above 50 KiB needs a Role with `bash`. See [Direct results and records](./docs/orchestration.md#direct-results-and-records).
 
-A task packet above 64 KiB uses a private file, including the full previous answer in a chain. The worker must read the complete packet with its Role's tools before it acts.
-
-Pi's `read` can retrieve lines of at most 50 KiB (51,200 bytes), with line offsets for more content. If any line is longer, the worker uses `bash`, even when the Role also has `read`. Without `bash`, that task fails before tab creation; use shorter lines or a Role with `bash`. A Role with neither tool also fails before tab creation. Chain context is never cut to the inline answer budget.
-
-To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`. This opens a new tab with the saved conversation and a new reference. Continue the newest reference from the original checkout and workspace. For eligibility and stop behavior, see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
+To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`; see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
 
 ### Review a change
 
@@ -113,7 +101,7 @@ Run `/review` to review uncommitted changes against `HEAD`. To review other work
 | `a1b2c3d` | The commit against its first parent |
 | `#42` | The pull request head against its merge-base with the pull request base |
 
-Text after the target adds a review focus, for example `/review #42 cache invalidation`. If the first word is not a target, Main reviews uncommitted changes and uses all text as the focus. Main changes the target to exact local commit IDs. Reviewers can read only local Git. So, for a pull request, Main fetches the head and base from the pull request repository to `refs/pi-review/`. Main groups changed files by location, starts one read-only `reviewer` task for each group, and merges the findings.
+Text after the target adds a review focus, for example `/review #42 cache invalidation`. If the first word is not a target, Main reviews uncommitted changes and uses all text as the focus. Main changes the target to exact local commit IDs. Main groups changed files by location, starts one read-only `reviewer` task for each group, and merges the findings.
 
 The verdict is **Ship** only if each reviewer task succeeded and answered exactly `PASS`. Otherwise, the verdict is **Do not ship**, with the findings in priority order. If the checkout changed during a review task, the verdict is also **Do not ship**, and you must run the review again. Main does not fix findings. If another `/review` prompt template loads first, Pi keeps that template and reports a name collision.
 
@@ -143,56 +131,24 @@ Use isolated mode for checked implementation. An isolated request has one durabl
 }
 ```
 
-`dependsOn` controls scheduling. `contextFrom` also schedules dependencies and supplies completed text outputs in order. Do not repeat a task in both fields. Changesets require focused checks; graphs with changesets require final checks. The canonical root `package.json` must have a test script. The runner adds `pnpm test` to final checks if absent.
-
-Workers use Main's pinned committed branch, HEAD, and tree, not staged, unstaged, or untracked edits. Branch or HEAD changes block new waves. Candidates must be committed with no tracked or untracked changes. Ignored generated files permit candidacy but prevent automatic cleanup.
-
-New isolated worktree names use the request and task IDs, plus an identity suffix. Integration names use the request ID and `integration-<generation>`. Herdr workspace and tab labels show the worker worktree name. Names do not use goals or requirements. Saved worktrees and labels keep their exact names for recovery and cleanup.
-
-Keep the durable ID; Main can work or end its turn without polling. Inspect ready candidates with `subagent_status`.
+Workers see only Main's committed HEAD, not uncommitted edits. Candidates must be committed and clean. Changesets need focused checks, and the root `package.json` needs a test script. Inspect ready candidates with `subagent_status`.
 
 - `subagent_stage` stages exact candidates while siblings run; resolve conflicts in the integration checkout.
 - `subagent_integrate advance` runs dependents on a staged snapshot.
 - `subagent_integrate validate` checks the combined integration tip after the wave settles, with final checks and any final judgment.
 - `subagent_integrate promote` explicitly promotes passing work.
 
-Readiness requires preliminary checks and any task `judgment`; it does not permit promotion. Checks and judgments bind to exact Git identities. Staging, combined validation, and promotion require unchanged, clean Main at the pinned identity. Changed identities, conflicts, or uncertain outcomes block promotion and preserve evidence. A definitive combined check or review failure permits one committed integration correction, recorded with `subagent_integrate correct`, and another validation.
-
-Combined validation can reuse a passed preliminary check of a staged candidate. The candidate must have the same tree as the combined tip, and the check must have the identical command and argv. Then the final check does not run again. This usually occurs when you stage one candidate onto unchanged Main. Status shows each reused result and its candidate. Final judgment still runs.
-
-Reuse assumes that checks use only tracked content. Ignored files, for example `node_modules`, can be different between worktrees.
-
-The extension sends follow-ups when a candidate becomes ready, a worker needs attention, and the wave finishes. A missed follow-up does not authorize replay. Read [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions) for graph, judgment, revision, refresh, and release details.
+Staging, validation, and promotion require clean, unchanged Main. After a definitive check or review failure, Main can record one integration correction with `subagent_integrate correct` and validate again. See [Isolated contract](./docs/orchestration.md#isolated-contract) and [Exact integration actions](./docs/orchestration.md#exact-integration-actions).
 
 ### Inspect work
 
-Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. The menu groups rows under **Direct**, **Isolated**, and **Orphaned** headers. Each isolated row shows the request ID, the status, and a short goal summary. **Refresh** or a header reloads saved status without recovery or mutation. Invalid state IDs stay preserved with a warning. Direct recovery remains available outside Git or without isolated inventory.
+Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
 
-In the terminal, use the Up and Down arrow keys to scroll through menu rows. Enter selects a row; Escape cancels the menu. The list fits the terminal height and keeps the current row visible when you resize the terminal. The menu shows your configured selection keys. In multiple-choice menus, the menu keeps the current row in view after you mark or clear it. Scroll to **Select all**, **Clear**, **Continue**, or **Cancel** below the work rows.
+Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. Terminal requests stay hidden until you select **Completed / history**; this filter deletes no records. `/subagent` reports show as transcript entries that the model does not get.
 
-Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. The extension calculates it from local and saved evidence without a model call. Without interactive UI, `/subagent` sends this report before the request list.
+Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change, and agents and tools cannot trigger this action. **Select multiple…** applies one action to many rows, with one confirmation. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
 
-A direct workflow is working only when this Pi process owns it and has a running worker. Direct work with a delivered result shows its outcome under **Completed / history** and is not in the report. Other recorded-only direct work shows as unverified. An isolated request is working only when its status is active and a live run holds the repository lease. Without a live lease, an active request shows as interrupted; run `/subagent recover`.
-
-Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. In the terminal UI, `/subagent` reports (Roles, details, reviews, and results) show as colored transcript entries. The model does not get these entries. In RPC mode, they show as notifications. Without interactive UI, they show as plain text messages.
-
-Requests whose parent checkout was removed show in the **Orphaned · parent checkout removed** group from any checkout of the same repository. Saved `running` or `pending` states show as `saved running · unverified` or `saved pending · unverified`, not as live work. The report lists them under **Unverified**. This does not prove completion.
-
-Both isolated groups hide terminal requests by default: `completed`, `aborted`, `final_failed`, and `superseded`. Select **Completed / history** to see them. Requests with retained resources or unresolved recovery stay visible. This filter does not delete saved records. Without interactive UI, the request list includes history.
-
-Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change.
-
-Select **Select multiple…** to apply one action to many rows. Select a row to mark it `[x]` or clear it, or use **Select all** or **Clear**, then select **Continue**. The next menu shows only the actions that apply. **Close and delete worktrees (discard work)** applies to isolated requests. **Close/cancel-and-release ALL owned workers** applies to direct workflows that can close. Each request shows its review, then one confirmation covers all of them.
-
-The command reports the number of selected rows that the action skipped.
-
-Only shown resources can be removed; live jobs, uncertain ownership, or other Herdr panes can block removal. Agents and tools cannot trigger this action. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
-
-Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route. If it cannot start, the request stays unchanged; Main can use `subagent_status` to read state. See [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work) for inspection and follow-up details.
-
-See [Status widgets](./docs/orchestration.md#status-widgets) for reference numbering, token counts, and activity metrics, and [Choose a delegation mode](./docs/orchestration.md#choose-a-delegation-mode) for routing guidance.
-
-![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
+Inspection needs a Herdr pane, the configured `scout` Role, and the `fast` route. If it cannot start, the request stays unchanged; Main can use `subagent_status` to read state. See [Inspect and revise active work](./docs/orchestration.md#inspect-and-revise-active-work), [Status widgets](./docs/orchestration.md#status-widgets), and [Choose a delegation mode](./docs/orchestration.md#choose-a-delegation-mode).
 
 ## Config
 
@@ -212,11 +168,7 @@ Package-owned: `~/.pi/agent/config/pi-subagent/config.json`. The extension never
 
 The extension reads config at launch, `delegate_task`, later direct workers, isolated Role launches, `/subagent roles`, and status inspection.
 
-- Invalid `maxSubagents`, `maxTurns`, `maxCorrections`, or `timeout` values warn and use finite defaults. If maximum timeout does not exceed idle timeout, the whole `timeout` uses defaults.
-- Unknown or invalid `roleDefaults` keys warn; only those keys are ignored, so Roles receive fewer default resources.
-- An invalid or misspelled `maxTokens`, or a file problem, blocks delegation. The extension does not fall back to unlimited tokens.
-
-`/subagent` remains available during a block. Correct the file to enable delegation. The next worker or isolated Role launch fails while the block remains; running workers retain their original limits. If the problem existed at session start, also run `/reload`, because that session took default execution limits.
+An invalid or misspelled `maxTokens`, or a file problem, blocks delegation, with no fallback to unlimited tokens. Running workers keep their limits; if the problem existed at session start, run `/reload` after you correct the file.
 
 ### Roles
 
@@ -232,13 +184,9 @@ Role Markdown files in `~/.pi/agent/config/pi-subagent/` require frontmatter and
 | `mcps` | Optional exact global server names from `~/.pi/agent/mcp.json`, using native `mcpServers` format. Omitted or `[]` denies access to `mcp.json` servers. Servers that Role extensions register always connect. |
 | body | Required system instructions |
 
-The package ships `implementer`, `reviewer`, and `scout`; same-name user Roles override built-ins. Roles define capabilities, not access or isolation. Unknown frontmatter keys invalidate that file and report its path and key. Other valid Roles load; duplicate names become unavailable. Delegation to an invalid file's claimed Role fails with that file's error. Inspect `/subagent roles`.
+The package ships `implementer`, `reviewer`, and `scout`; same-name user Roles override built-ins. Roles define capabilities, not access or isolation. Unknown frontmatter keys invalidate that file. Other valid Roles load; duplicate names become unavailable. Delegation to an invalid file's claimed Role fails with that file's error. Inspect `/subagent roles`.
 
-The built-in reviewer answers exactly `PASS` when it finds no actionable correctness risk. Otherwise, each finding starts with a priority and a confidence (`high`, `medium`, or `low`), for example `[P1] confidence: high`. Then it gives file and line evidence, the trigger, the impact, and the smallest fix. Each finding blocks approval.
-
-- `P0`: breaks release or operation on ordinary input.
-- `P1`: wrong behavior under a realistic condition.
-- `P2`: wrong behavior in a narrow edge case with limited impact.
+The built-in reviewer answers exactly `PASS` or gives prioritized findings in the format of [`reviewer.md`](./examples/roles/reviewer.md).
 
 The built-in reviewer and scout include `git_read`; existing user reviewers and scouts must add it to `tools`. No additional extension or Bash access is necessary. See [Reviewer Git inspection](./docs/orchestration.md#reviewer-git-inspection) for operations, parameters, limits, and Git requirements.
 
@@ -262,17 +210,17 @@ Read [Role and resource policy](./docs/orchestration.md#role-and-resource-policy
 | `RoleLaunchRuntime`, `HerdrHostRuntime`, `CheckedGitRuntime` | classes | Supply launch, host, and Git behavior. |
 | `ExecutionPolicySnapshot`, `RunState`, `CoordinatorRuntime` | types | Describe saved policy, state, and runner integration. |
 
-Role helpers require model routing fields and `isProjectTrusted()`, plus `cwd` for configured package resources, not UI methods. See [Role launch API](./docs/orchestration.md#role-launch-api) for routing and worktree results.
-
-The executor accepts concurrency, turn/token, idle/hard-runtime limits, and abort, output, token, and activity callbacks. Queue time uses no child timeout; resources resolve after admission. See [Ephemeral executor API](./docs/orchestration.md#ephemeral-executor-api) for bounded output, abort results, errors, and accounting.
+See [Role launch API](./docs/orchestration.md#role-launch-api) and [Ephemeral executor API](./docs/orchestration.md#ephemeral-executor-api).
 
 ## State and storage
 
-Private durable state lives under `config/pi-subagent/state/`. Isolated worker sessions use mode `0600` under `config/pi-subagent/leases/`; worker umask stays unchanged. Reads stop at 16 MiB. Larger sessions require inspection and cannot prove completion.
+Private durable state lives under `config/pi-subagent/state/`. Isolated worker sessions use mode `0600` under `config/pi-subagent/leases/`.
 
-Sessions are removed only after exact worker-tab cleanup. Subagent Collection keeps them. They can contain prompts and answers: do not share them. State v5 rejects v4 and older files without migration. Preserve old state and recover its work manually.
+Sessions are removed only after exact worker-tab cleanup. Subagent Collection keeps them. They can contain prompts and answers: do not share them. Unfinished requests from older versions block new isolated work until you recover them; the error names the file.
 
 ## Limits and recovery
+
+The extension never pushes, opens pull requests, publishes, deploys, or silently falls back to Main. It force-deletes recoverable work only after the user confirms **Close and delete worktrees (discard work)** in `/subagent` or a force removal in `/subagent prune`.
 
 Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set and authorize write scope explicitly. Admission coordinates this Main's Pi calls, not other sessions, trusted extension lifecycle code, or external processes. Concurrent edits can make direct reads stale.
 
@@ -280,26 +228,16 @@ For uncertain direct termination, open `/subagent`, select the exact workflow, a
 
 Unverified tab allocations retain evidence but offer no Close action. Reconcile them manually against Herdr; do not recreate tabs, guess IDs, or restart to bypass admission. See [Direct contract](./docs/orchestration.md#direct-contract).
 
-After coordinator interruption, restart Pi and run `/subagent recover` in the canonical repository. Use `subagent_status` for exact evidence; never take over a live productive lease or replay uncertain prompts, merges, or promotion. See [Recover after interruption](./docs/orchestration.md#recover-after-interruption) and [Recovery and state](./docs/orchestration.md#recovery-and-state).
+After coordinator interruption, restart Pi and run `/subagent recover` in the canonical repository. Use `subagent_status` for exact evidence; never take over a live productive lease or replay uncertain prompts, merges, or promotion. For aborted requests with retained resources, resolve blockers and repeat `subagent_abort`. See [Recover after interruption](./docs/orchestration.md#recover-after-interruption) and [Recovery and state](./docs/orchestration.md#recovery-and-state).
+
+![Main, its coordinator extension, and a Herdr subagent through checked work, worker failure, and coordinator interruption](./docs/worker-lifecycle.svg)
 
 ### Subagent Collection
 
-Subagent Collection closes only verified completed worker tabs. It keeps saved sessions, process leases, worktrees, candidates, and recovery records. It never closes a workspace or its root tab.
-
-Automatic collection checks each relevant workspace after direct `delegate_task` launches, after direct or isolated workflows finish, and when Main settles. More than 10 tabs in that workspace triggers collection. Ten is a trigger, not a maximum. Collection can close all eligible tabs, even after the count falls below 10. User tabs count toward the trigger but are never collection targets. There is no timer: changes from other clients wait for the next check.
-
-Direct collection uses exact records on the current Pi session branch, in the current checkout and Herdr workspace. It requires the recorded final session turn. If the exact agent remains, it must be idle or done. Active local tasks, continued sessions, unverified allocations, and uncertain identities stay open. Pane absence and two empty process-lease scans must pass before an empty tab can close. Saved conversations remain available for `continueFrom`.
-
-Isolated collection uses saved requests in the current checkout. It requires saved termination proof, then verifies agent and pane absence and two empty process-lease scans again. A live productive lease blocks collection. **Ready candidates keep their live workers because Main can still request a revision.** Workspaces, root tabs, orphaned requests, and requests in other checkouts stay unchanged. Use their existing recovery or cleanup actions.
-
-Every `/subagent prune` call tries collection without the tab-count trigger, including calls while a worktree scan is busy. Collection runs before worktree review and does not require deletion approval. Collection failure does not prevent that review. Worktree and branch deletion still require the existing review and confirmation. `/subagent prune cancel` stops new collection steps; a dispatched close can finish.
+Pi closes completed worker tabs when a workspace has more than 10 tabs, and on every `/subagent prune`. It keeps sessions, worktrees, candidates, and recovery records, so `continueFrom` still works. It never closes user tabs, root tabs, active work, or workers of ready candidates. Collection needs no deletion approval. See [Subagent Collection](./docs/orchestration.md#subagent-collection).
 
 ### Worktree pruning
 
-Run `/subagent prune` to scan leftovers in the background. It inspects at most four candidates at once and never inspects the same checkout twice at once. When notified, run the command again to review the plan; no dialog opens automatically. All reviews and confirmations stay in the foreground. Confirmed cleanup runs in the background and removes items one at a time with fresh safety checks.
+Run `/subagent prune` to scan leftover worktrees and branches in the background. When notified, run the command again to review the plan and confirm removal. `/subagent prune cancel` stops new removal steps; an active step can finish.
 
-Use `/subagent prune cancel` to stop new removal steps. An active step can finish, and the report includes completed steps. Repeated commands while busy show progress, not another scan. A session or branch change, reload, or shutdown cancels the operation and clears its progress. Old plans and results do not appear in the new context.
-
-In the review, merged items are selected first. Removing a checkout deletes its ignored files only after a separate confirmation naming those entries. If you select an item that an unfinished request owns, the command closes and deletes that whole request after its review and confirmation. **If you select unowned work with unique commits or changes, a separate confirmation permits its permanent deletion.** Uncertain resources, such as locked checkouts or checkouts that other Herdr panes use, cannot be selected. See [Prune leftover worktrees](./docs/orchestration.md#prune-leftover-worktrees) before removal.
-
-For aborted requests with retained resources, inspect status, resolve blockers, and repeat `subagent_abort` to reconcile cleanup without replaying work. Release rejected candidates and superseded generations explicitly. The extension never pushes, opens pull requests, publishes, deploys, or silently falls back to Main. It force-deletes recoverable work only after the user confirms **Close and delete worktrees (discard work)** in `/subagent` or a force removal in `/subagent prune`.
+Removing a checkout deletes its ignored files only after a separate confirmation naming those entries. If you select an item that an unfinished request owns, the command closes and deletes that whole request after its review and confirmation. **If you select unowned work with unique commits or changes, a separate confirmation permits its permanent deletion.** See [Prune leftover worktrees](./docs/orchestration.md#prune-leftover-worktrees) before removal.

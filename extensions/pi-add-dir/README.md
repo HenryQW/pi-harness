@@ -2,7 +2,7 @@
 
 Use external context, external skills, and searchable files in Pi without copying or linking external directories.
 
-![Pi using added external directories by name](https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-add-dir/example.png)
+![Pi using added external directories by name](./example.png)
 
 ## Install
 
@@ -21,22 +21,16 @@ Run `/dir-add`, enter a directory, then run `/dir-ls` to verify it. Humans use c
 | `/dir-reload` | command | Reload external directory resources. |
 | `add_directory(path)` | tool | Add session-only context and return instructions. Model-only: scripts and other tools cannot call it. |
 | `search_external_files(pattern, maxResults?)` | tool | Search added directories with a glob. Default: 50 results; maximum: 1,000. Codemode receives structured results. |
-| `@` file autocomplete | ui | For users: find external files and insert absolute paths. |
-| External directory widget | ui | For users: show directories; use `/dir-ls` to manage them. |
+| `@` file autocomplete | ui | Find external files and insert absolute paths. |
+| External directory widget | ui | Show directories; use `/dir-ls` to manage them. |
 
 Pi adds root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` to later prompts. External skills come from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
 
 `/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. If `add_directory` asks for `/reload`, run it to update skills.
 
-External instructions and skills enter through a model-visible tool call or user command.
-
 ### Search results
 
-`search_external_files` declares an output schema. Scripts receive `{ pattern, maxResults, searchedDirectories, totalFound, truncated, directories }`.
-
-`directories` contains only matching directories, with labels and absolute file paths. `searchedDirectories` includes searched directories without matches, but excludes directories skipped after the limit.
-
-`truncated: true` means the limit stopped the search; later files or directories can have more matches. Models receive the same matches as text. With no external directories, the tool returns an error; scripts reject with its message.
+In `search_external_files` results, `truncated: true` means more matches may exist.
 
 ## Config
 

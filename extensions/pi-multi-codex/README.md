@@ -23,8 +23,6 @@ pi install npm:@henryqw/pi-multi-codex
 
 Run `/login` and authenticate `OpenAI Codex (legacy)` for slot 1. Run `/codex-add`, then `/login` and select `OpenAI Codex #<n>`. Restart Pi or update model scope. Run `/codex-status` to verify the new account slot.
 
-Commands and UI entries are for users.
-
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/codex-add` | command | Create the next numbered slot for authentication. |
@@ -33,7 +31,7 @@ Commands and UI entries are for users.
 | Pi model selector (`OpenAI Codex (legacy)`, `OpenAI Codex #<n>`) | ui | Choose an authenticated account slot. |
 | Pi status `pi-multi-codex` | ui | Show active fresh quota, five-hour limit countdown, or stale/unavailable state. `@henryqw/pi-footer` displays it. |
 
-Status stays `unavailable` until a successful usage snapshot. Footer and command reset countdowns use five hours for Free, Go, and Plus; seven days for Pro Lite and other tiers.
+Status stays `unavailable` until a successful usage snapshot.
 
 ## Flow
 
@@ -41,7 +39,7 @@ Eligible slots must be authenticated, registered, and scope-allowed, without kno
 
 Before first agent work, the extension selects the eligible slot with the most fresh remaining quota. It repeats this selection before later starts only for a known active five-hour quota block. Explicit model selection wins for the next agent start.
 
-After HTTP 429, it tries fresh known quota first, then slots with stale or missing quota in slot-number order. It tries each eligible slot at most once per agent run; retries stop when none remain.
+After HTTP 429, it tries each eligible slot at most once per run.
 
 Routing preserves physical model IDs. Virtual `openai-codex` models, such as `openai-codex/auto`, receive neither account-slot routing nor quota status.
 
@@ -63,6 +61,6 @@ Generated, credential-free quota cache: `~/.pi/agent/config/pi-multi-codex/usage
 
 ## Limits and recovery
 
-The extension identifies slots from `auth.json` without directly editing credentials. Pi's auth resolver supplies quota-check tokens and can refresh expired OAuth credentials, updating its auth store.
+The extension identifies slots from `auth.json` without directly editing credentials.
 
 Scoped sessions can switch only to exact scoped aliases.

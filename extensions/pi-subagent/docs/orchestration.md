@@ -416,9 +416,21 @@ To close and delete many requests, select **Select multiple…** in `/subagent`,
 
 The report lists removed, skipped, and failed resources. After complete cleanup, the request is `aborted`, candidates are `released`, and integration generations are superseded with completed cleanup. Partial cleanup remains visible as retained work. Reopen the request to review the remaining resources. Abort, prune, and release keep their existing preservation rules.
 
+### Subagent Collection
+
+Subagent Collection closes only verified completed worker tabs. It keeps saved sessions, process leases, worktrees, candidates, and recovery records. It never closes a workspace or its root tab.
+
+Automatic collection checks each relevant workspace after direct `delegate_task` launches, after direct or isolated workflows finish, and when Main settles. More than 10 tabs in that workspace triggers collection. Ten is a trigger, not a maximum. Collection can close all eligible tabs, even after the count falls below 10. User tabs count toward the trigger but are never collection targets. There is no timer: changes from other clients wait for the next check.
+
+Direct collection uses exact records on the current Pi session branch, in the current checkout and Herdr workspace. It requires the recorded final session turn. If the exact agent remains, it must be idle or done. Active local tasks, continued sessions, unverified allocations, and uncertain identities stay open. Pane absence and two empty process-lease scans must pass before an empty tab can close. Saved conversations remain available for `continueFrom`.
+
+Isolated collection uses saved requests in the current checkout. It requires saved termination proof, then verifies agent and pane absence and two empty process-lease scans again. A live productive lease blocks collection. **Ready candidates keep their live workers because Main can still request a revision.** Workspaces, root tabs, orphaned requests, and requests in other checkouts stay unchanged. Use their existing recovery or cleanup actions.
+
+Every `/subagent prune` call tries collection without the tab-count trigger, including calls while a worktree scan is busy. Collection runs before worktree review and does not require deletion approval. Collection failure does not prevent that review. Worktree and branch deletion still require the existing review and confirmation. `/subagent prune cancel` stops new collection steps; a dispatched close can finish.
+
 ### Prune leftover worktrees
 
-Each `/subagent prune` call first runs [Subagent Collection](../README.md#subagent-collection), which closes only verified completed worker tabs and keeps their evidence. This separate action has no tab-count requirement and runs even if worktree review fails or has no candidates. It does not grant permission to delete worktrees or branches. A later cancellation does not reopen collected tabs.
+Each `/subagent prune` call first runs [Subagent Collection](#subagent-collection), which closes only verified completed worker tabs and keeps their evidence. This separate action has no tab-count requirement and runs even if worktree review fails or has no candidates. It does not grant permission to delete worktrees or branches. A later cancellation does not reopen collected tabs.
 
 Run `/subagent prune` to scan leftover worker and integration checkouts under `.worktrees/`. In interactive mode, the command starts a background scan, shows progress, and returns without waiting. It inspects at most four candidates at once. Candidates that share one checkout, including path aliases, are inspected one at a time. The results stay sorted and include every blocker.
 
