@@ -259,7 +259,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const directTasks = new Map<string, {
 		controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[];
 		pendingResult?: (sessionId: string) => boolean;
-		close?: (current: () => boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string;
+		close?: (current: () => boolean, terminate?: boolean) => Promise<void>; closeScope?: () => boolean; allocation?: DirectAllocationRecord; recovery?: string;
 		/** Saved sessions this task continues; claimed before any await so a second request cannot reuse them. */
 		continues?: ReadonlySet<string>;
 		/** Read workflows only: stop one running worker while siblings continue. */
@@ -406,7 +406,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			await local.settled;
 			// Automatic settlement may already have proved termination and released it.
 			if (!current()) throw new Error("Direct task scope changed; reopen /subagent.");
-			if (directTasks.has(task.id)) await local.close(owned);
+			// Only this explicit Close may signal exact lease holders; automatic settlement only proves.
+			if (directTasks.has(task.id)) await local.close(owned, true);
 			return "All owned workers in this workflow stopped; checkout admission released. Dirty files, commits and session evidence preserved. Inspect changes before retrying work.";
 		},
 		async stopDirect(task, entryId, current) {
@@ -873,17 +874,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					const proof = (async () => {
 						entryControllers.get(entryId)!.abort();
 						await handle.cancel().catch(() => undefined);
-						await herdr.stop(tab, inScope);
+						await herdr.stop(tab, inScope, "terminate");
 					})();
 					stopProofs.set(entryId, proof);
 					return proof;
 				},
 			};
-			local.close = async (current) => {
+			local.close = async (current, terminate = false) => {
 				const inScope = () => current() && (local.closeScope?.() ?? true);
 				try {
 					if (local.allocation) throw new Error(local.allocation.failure);
-					for (const tab of tabs) await herdr.stop(tab, inScope);
+					for (const tab of tabs) await herdr.stop(tab, inScope, terminate ? "terminate" : "proof");
 					if (!inScope()) throw new Error("Direct task scope changed; reopen /subagent.");
 					releaseAdmission();
 					directTasks.delete(taskId);
@@ -946,7 +947,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					try {
 						await assertSettledDirectSession(source.sessionFile, source.turn);
 						// Close only an idle or done exact agent; an absent one still needs two empty lease scans.
-						await herdr.stop(source, () => launchEpoch === sessionEpoch && !controller.signal.aborted, true);
+						await herdr.stop(source, () => launchEpoch === sessionEpoch && !controller.signal.aborted, "settled");
 					} catch (error) {
 						throw new Error(`Cannot continue ${workflow.delegations[index]!.continueFrom}: ${error instanceof Error ? error.message : String(error)}.`, { cause: error });
 					}

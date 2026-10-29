@@ -226,6 +226,8 @@ Role extensions and MCP servers are trusted executable code, not a sandbox. Sele
 
 For uncertain direct termination, open `/subagent`, select the exact workflow, and choose **Close/cancel-and-release ALL owned workers in this workflow**. This stops all owned workers, not only the selected one. Resolve reported blockers and repeat the action. Recorded-only tasks cannot release admission. Restarting Pi does not prove termination. Inspect partial changes before new writes; never blindly repeat commits or delete work.
 
+After Close/cancel-and-release proves pane absence, it terminates the processes that hold the exact private process lease of an owned worker (`SIGTERM`, then `SIGKILL`). Automatic completion, continuation, and Subagent Collection never send signals.
+
 Unverified tab allocations retain evidence but offer no Close action. Reconcile them manually against Herdr; do not recreate tabs, guess IDs, or restart to bypass admission. See [Direct contract](./docs/orchestration.md#direct-contract).
 
 After coordinator interruption, restart Pi and run `/subagent recover` in the canonical repository. Use `subagent_status` for exact evidence; never take over a live productive lease or replay uncertain prompts, merges, or promotion. For aborted requests with retained resources, resolve blockers and repeat `subagent_abort`. See [Recover after interruption](./docs/orchestration.md#recover-after-interruption) and [Recovery and state](./docs/orchestration.md#recovery-and-state).

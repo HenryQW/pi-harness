@@ -286,7 +286,7 @@ export class DirectAllocationError extends Error {
 	}
 }
 
-export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, idleMs: number) {
+export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, idleMs: number, kill: (pid: number, signal: NodeJS.Signals) => void = (pid, signal) => process.kill(pid, signal)) {
 	if (process.env.HERDR_ENV !== "1") throw new Error("Direct delegation requires a Herdr-managed Pi pane (HERDR_ENV=1).");
 	const workspaceId = field(process.env.HERDR_WORKSPACE_ID, "HERDR_WORKSPACE_ID");
 	const callerPane = field(process.env.HERDR_PANE_ID, "HERDR_PANE_ID");
@@ -306,8 +306,10 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		cwd: workingDir,
 		/** Close only an exact owned pane, then prove it and its leased children stopped.
 		 * A task result or Ctrl-C acknowledgement is not termination evidence.
-		 * `settledOnly` refuses to close a listed agent that is not idle or done. */
-		async stop(tab: Pick<DirectTab, "name" | "tabId" | "paneId" | "leasePath">, current: () => boolean = () => true, settledOnly = false): Promise<void> {
+		 * `settled` refuses to close a listed agent that is not idle or done. Only an explicit
+		 * user stop or Close uses `terminate`: after pane absence it signals each holder that a
+		 * per-PID scan still proves holds the exact lease. Other callers only prove. */
+		async stop(tab: Pick<DirectTab, "name" | "tabId" | "paneId" | "leasePath">, current: () => boolean = () => true, mode: "proof" | "settled" | "terminate" = "proof"): Promise<void> {
 			const requireCurrent = () => { if (!current()) throw new Error("Direct task scope changed; reopen /subagent."); };
 			requireCurrent();
 			await assertPrivateLease(tab.leasePath, false);
@@ -333,7 +335,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				if (related.length !== 1 || agent.name !== tab.name || agent.pane_id !== tab.paneId
 					|| agent.tab_id !== tab.tabId || agent.workspace_id !== workspaceId || agent.cwd !== workingDir
 					|| tab.paneId === callerPane) throw new Error("Worker termination requires one exact owned agent, workspace, checkout, tab and pane match.");
-				if (settledOnly && agent.agent_status !== "idle" && agent.agent_status !== "done") {
+				if (mode === "settled" && agent.agent_status !== "idle" && agent.agent_status !== "done") {
 					throw new Error(`Herdr agent ${tab.name} is ${String(agent.agent_status)}, not idle or done; it was not closed`);
 				}
 				requireCurrent();
@@ -342,11 +344,25 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			if ((await panes()).some((pane) => pane.pane_id === tab.paneId || pane.tab_id === tab.tabId)) {
 				throw new Error(`Owned pane ${tab.paneId} is still present; termination is unproved.`);
 			}
-			for (let scan = 0; scan < 2; scan++) {
-				const holders = await scanProcessLease(tab.leasePath, (args) => pi.exec("lsof", args, { cwd: workingDir, timeout: 3_000 }));
-				if (holders.length) throw new Error(`Owned process lease ${tab.leasePath} still has holders: ${holders.join(", ")}. Stop those owned processes, then retry Close/cancel-and-release.`);
-				if (scan === 0) await sleep(50);
+			const scan = (pid?: number) => scanProcessLease(tab.leasePath, (args) => pi.exec("lsof", args, { cwd: workingDir, timeout: 3_000 }), pid);
+			let holders = await scan();
+			if (mode === "terminate") {
+				for (const [signal, wait] of [["SIGTERM", 250], ["SIGKILL", 100]] as const) {
+					if (!holders.length) break;
+					for (const pid of holders) {
+						requireCurrent();
+						if (!(await scan(pid)).includes(pid)) continue;
+						requireCurrent();
+						try { kill(pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+					}
+					await sleep(wait);
+					holders = await scan();
+				}
+				if (holders.length) throw new Error(`Owned process lease ${tab.leasePath} still has holders after SIGTERM and SIGKILL: ${holders.join(", ")}. Inspect those processes before retrying Close/cancel-and-release.`);
 			}
+			if (holders.length) throw new Error(`Owned process lease ${tab.leasePath} still has holders: ${holders.join(", ")}. Stop those owned processes, or use /subagent Stop or Close/cancel-and-release of the owning workflow to terminate them.`);
+			await sleep(50);
+			if ((await scan()).length) throw new Error(`Owned process lease ${tab.leasePath} did not remain empty for two consecutive scans.`);
 			requireCurrent();
 		},
 		/** Collection preserves the saved conversation and private lease for continuation and recovery. */
@@ -360,7 +376,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 				throw new Error("Direct collection tab identity or pane count changed.");
 			}
 			await assertSettledDirectSession(tab.sessionFile, tab.turn);
-			await this.stop(tab, current, true);
+			await this.stop(tab, current, "settled");
 			const response = await herdr.exec(["tab", "get", tab.tabId], options());
 			if (!response.killed && hasHerdrErrorCode(response, "tab_not_found")) return true;
 			if (response.code !== 0 || response.killed) throw new Error("Direct collection tab presence is uncertain.");
