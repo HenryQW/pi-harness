@@ -85,7 +85,7 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
 	writeFileSync(join(cwd, "test/fixtures/api/widgets.json"), '[{"id":1,"size":2}]\n');
 	git(cwd, "init", "-q");
 	git(cwd, "add", ".");
-	git(cwd, "commit", "-qm", "init");
+	git(cwd, "-c", "user.name=Pi Eval", "-c", "user.email=pi-eval@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
 	writeFileSync(setupHeadPath(cwd), git(cwd, "rev-parse", "HEAD"));
 	writeFileSync(sessionsPath(cwd), JSON.stringify({ prepared, hits }));
 };
