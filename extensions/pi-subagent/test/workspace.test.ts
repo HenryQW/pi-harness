@@ -175,6 +175,31 @@ test("cleanup resumes after a later repository fails", async (t) => {
 	assert.equal(state.status, "cleaned", state.failure ?? "");
 });
 
+for (const failure of ["worker_tab", "workspace"] as const) test(`host cleanup resumes after ${failure} interruption`, async (t) => {
+	const f = await fixture(t);
+	let state = await staged(f);
+	state = await f.runner.action({ id: f.request.id, action: "promote", expected: state.tips }, f.root);
+	assert.equal(state.status, "promoted", state.failure ?? "");
+	let leasePresent = true, failOnce = true, reconciliations = 0;
+	const reconcile = f.host.reconcileWorkerTermination.bind(f.host);
+	f.host.reconcileWorkerTermination = async (...args) => {
+		if (!leasePresent) { reconciliations++; return { outcome: "unknown", failure: "lease removed" }; }
+		return await reconcile(...args);
+	};
+	f.host.cleanupHost = async ({ kind, attempt }) => {
+		assert.equal(attempt.termination?.status, "terminated");
+		if (kind === "worker_tab") leasePresent = false;
+		else assert.equal(attempt.cleanup.find((step) => step.kind === "worker_tab")?.status, "completed");
+		if (kind === failure && failOnce) { failOnce = false; return { outcome: "blocked", failure: "cleanup interrupted" }; }
+		return { outcome: "completed" };
+	};
+	state = await f.runner.action({ id: f.request.id, action: "cleanup" }, f.root);
+	assert.equal(state.status, "promoted"); assert.match(state.failure!, /cleanup interrupted/);
+	state = await f.reload().action({ id: f.request.id, action: "cleanup" }, f.root);
+	assert.equal(state.status, "cleaned", state.failure ?? "");
+	assert.equal(reconciliations, 0, "a removed lease is not used to repeat proven termination");
+});
+
 test("a lost promotion response is reconciled without replay or rollback; remaining targets need an explicit action", async (t) => {
 	let calls = 0;
 	class Interrupted extends IntegrationGit {

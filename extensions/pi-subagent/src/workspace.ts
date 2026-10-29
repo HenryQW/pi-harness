@@ -275,8 +275,8 @@ export class WorkspaceRunner {
 	}
 	private async stop(state: WorkspaceState): Promise<void> {
 		const primary = Object.values(state.repositories)[0]!;
-		if (primary.cleanup?.includes("workspace")) return;
 		const attempt = primary.attempt;
+		if (attempt.termination?.status === "terminated") return;
 		const agent = attempt.allocations.find((item) => item.kind === "agent");
 		if (!agent) return;
 		if (agent.kind !== "agent" || agent.status !== "owned") throw new Error("Agent allocation is uncertain; manual host reconciliation is required. All worktrees are retained.");
@@ -440,10 +440,14 @@ export class WorkspaceRunner {
 		const first = Object.values(state.repositories)[0]!, host = this.options.host(state.policy);
 		first.cleanup ??= [];
 		for (const kind of ["worker_tab", "workspace"] as const) {
-			if (first.cleanup.includes(kind)) continue;
+			const step = first.attempt.cleanup.find((item) => item.kind === kind)!;
+			if (step.status === "completed") continue;
+			step.status = "running"; await this.save(state);
 			const result = await host.cleanupHost({ requestId: state.request.id, kind, task: workerTask(state.request), attempt: first.attempt }, context(signal));
 			if (result.outcome === "blocked") throw new Error(result.failure);
-			first.cleanup.push(kind); await this.save(state);
+			step.status = "completed";
+			if (!first.cleanup.includes(kind)) first.cleanup.push(kind);
+			await this.save(state);
 		}
 		for (const [name, repo] of Object.entries(state.repositories)) {
 			repo.cleanup ??= [];
