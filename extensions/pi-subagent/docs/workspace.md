@@ -42,7 +42,7 @@ Call from `/work/app`. Each repository must be a canonical direct child with its
 
 Workspace mode supports exactly one changeset task. It rejects text tasks, dependencies, task judgment, and final judgment. It has no automatic correction, retry, refresh, or restaging. The existing single-repository graph remains unchanged when `repositories` is absent.
 
-Every selected repository needs a committed root `package.json` test script. Every repository needs task checks. Admission adds `pnpm test` for each repository to final checks when absent. The complete final command list must contain at most 32 entries. Checks must leave the tracked and untracked state clean. Test-script changes are rejected.
+Every selected repository needs task checks and final checks. Select commands that test that repository. The complete final command list must contain at most 32 entries. Checks must leave the tracked and untracked state clean. If a check runs `pnpm test`, the committed root `package.json` must have a test script, and the worker must not change it.
 
 `PI_SUBAGENT_REPOSITORIES` contains the absolute repository-to-worktree map as JSON, which is a structured text format. `PI_SUBAGENT_INPUTS` contains the input-name-to-copy map. Check commands receive both environment variables. Task checks use worker worktrees; final checks use integration worktrees. The complete repository set is checked before and after commands, including unchanged members.
 

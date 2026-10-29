@@ -9,6 +9,7 @@ import { CheckedGitRuntime } from "./git-runtime.ts";
 import { IntegrationGit } from "./integration-git.ts";
 import { FileRunStore } from "./store.ts";
 import { runProcess } from "./process.ts";
+import { runGit } from "./git-process.ts";
 import { utf8Prefix } from "./ephemeral.ts";
 import { CLEANUP_KINDS, sameIdentity, type AllocationIntent, type ExecutionPolicySnapshot, type TaskAttempt, type WorkspaceIdentity, type WorktreeAllocationIntent } from "./schema.ts";
 import type { CoordinatorRuntime, HostRuntime, OperationContext } from "./runner.ts";
@@ -119,10 +120,13 @@ export class WorkspaceRunner {
 		const bases: IdentitySet = {}, scripts: Record<string, string> = {};
 		for (const [name, repo] of Object.entries(scope.repositories)) {
 			bases[name] = await this.git.inspectMainBase({ root: repo.root }, context(signal));
-			scripts[name] = suite(await readFile(join(repo.root, "package.json"), "utf8"));
-			if (!request.finalChecks.some((check) => check.repository === name && check.command === "pnpm" && JSON.stringify(check.args) === '["test"]')) request.finalChecks.unshift({ repository: name, command: "pnpm", args: ["test"] });
+			if ([...request.tasks[0]!.checks, ...request.finalChecks].some((check) => check.repository === name && check.command === "pnpm"
+				&& (check.args[0] === "test" || check.args[0] === "run" && check.args[1] === "test"))) {
+				const manifest = await runGit(["show", `${bases[name]!.head}:package.json`], repo.root, signal);
+				if (manifest.code !== 0) throw new Error(`Cannot read committed test script for repository ${name}: ${manifest.stderr}`);
+				scripts[name] = suite(manifest.stdout);
+			}
 		}
-		if (request.finalChecks.length > 32) throw new Error("Workspace final checks, including canonical suites, exceed 32 commands.");
 		for (const path of Object.values(request.tasks[0]!.inputs ?? {})) {
 			await workspaceInputPath(scope, path);
 			if ((await lstat(path)).size > 64 * 1024) throw new Error("Each workspace input must be at most 64 KiB.");
@@ -141,7 +145,7 @@ export class WorkspaceRunner {
 			const policy = this.options.policy();
 			const state: WorkspaceState = { version: 1, root: scope.root, request, status: "allocating", inputs: {}, repositories: {},
 				policy: { ...policy } };
-			for (const [name, repo] of Object.entries(scope.repositories)) state.repositories[name] = { ...repo, base: bases[name]!, testScript: scripts[name]!,
+			for (const [name, repo] of Object.entries(scope.repositories)) state.repositories[name] = { ...repo, base: bases[name]!, ...(scripts[name] === undefined ? {} : { testScript: scripts[name] }),
 				attempt: { number: 1, waveNumber: 1, waveBase: bases[name]!, correlationToken: randomBytes(12).toString("hex"), allocationGeneration: 1, allocations: [], prompts: [], cleanup: CLEANUP_KINDS.map((kind) => ({ kind, status: "pending" })) } };
 			// Exclusive creation prevents replay, including a prior crash before the first allocation.
 			const file = await open(join(this.directory(scope.root, request.id), "state.json"), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -286,7 +290,10 @@ export class WorkspaceRunner {
 		if (!sameSet(before, expected)) throw new Error("Complete check input set changed before validation.");
 		const results: WorkspaceEvidence["results"] = [], paths = this.paths(state, integration);
 		for (const check of commands) {
-			for (const [name, path] of Object.entries(paths)) if (suite(await readFile(join(path, "package.json"), "utf8")) !== state.repositories[name]!.testScript) throw new Error(`Canonical test script changed: ${name}.`);
+			for (const [name, path] of Object.entries(paths)) {
+				const baseline = state.repositories[name]!.testScript;
+				if (baseline !== undefined && suite(await readFile(join(path, "package.json"), "utf8")) !== baseline) throw new Error(`Canonical test script changed: ${name}.`);
+			}
 			const result = await (this.options.execute ?? runProcess)(check.command, check.args, { cwd: paths[check.repository]!, signal, timeoutMs: state.policy.childMaxMs,
 				env: { PI_SUBAGENT_REPOSITORIES: JSON.stringify(paths), PI_SUBAGENT_INPUTS: JSON.stringify(Object.fromEntries(Object.entries(state.inputs).map(([name, input]) => [name, input.path]))) } });
 			results.push({ ...check, code: result.code, killed: result.killed, stdout: utf8Prefix(result.stdout, 8192), stderr: utf8Prefix(result.stderr, 8192) });
@@ -322,8 +329,10 @@ export class WorkspaceRunner {
 				delete state.failure;
 			} catch (error) {
 				state.failure = diagnostic(error);
-				if (Object.values(state.repositories).some((repo) => repo.promotion)) state.status = "partial";
-				else if (!["ready", "validated", "staged", "aborted", "cleaned"].includes(state.status)) state.status = "attention";
+				if (action.action !== "cleanup") {
+					if (Object.values(state.repositories).some((repo) => repo.promotion)) state.status = "partial";
+					else if (!["ready", "validated", "staged", "aborted", "cleaned"].includes(state.status)) state.status = "attention";
+				}
 			}
 			await this.save(state); return state;
 		});

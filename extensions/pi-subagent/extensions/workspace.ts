@@ -7,6 +7,7 @@ import { WorkspaceRunner } from "../dist/workspace.js";
 import { WorkspaceActionSchema, type WorkspaceRequest, type WorkspaceState } from "../dist/workspace-schema.js";
 import type { ExecutionPolicySnapshot } from "../dist/schema.js";
 import { workerOutputForMain } from "./result-transport.ts";
+import { captureFallbackWarning } from "./task-model-fallback.ts";
 
 /** Workspace requests keep their own versioned set state; scalar requests retain their existing contract. */
 export function registerWorkspaceExtension(pi: ExtensionAPI, policy: () => ExecutionPolicySnapshot) {
@@ -21,6 +22,10 @@ export function registerWorkspaceExtension(pi: ExtensionAPI, policy: () => Execu
 		policy();
 		if (!current) throw new Error("Workspace Role launch has no current Pi context.");
 		return current;
+	}, captureFallbackWarning: (signal) => {
+		if (!current) throw new Error("Workspace Role launch has no current Pi context.");
+		const ctx = current, capturedEpoch = epoch, sessionId = ctx.sessionManager.getSessionId();
+		return captureFallbackWarning(pi, ctx, () => epoch === capturedEpoch && current?.sessionManager.getSessionId() === sessionId, signal);
 	}, resolveRoot: createCanonicalGitRootResolver(), inspectMainBase: git.inspectMainBase.bind(git) });
 	const runner = new WorkspaceRunner({ coordinator, git, policy, host,
 		preflightHost: async (root, operation) => await host(policy()).preflightHost({ root, nonGitWorkspace: true }, operation) });

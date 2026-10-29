@@ -120,6 +120,55 @@ test("dirty Main is preserved during worker execution and blocks every target be
 	assert.equal(await readFile(join(f.repositories.client, "unrelated.txt"), "utf8"), "keep again\n");
 });
 
+test("native checks work without a package manifest and require final coverage for each repository", async (t) => {
+	const f = await fixture(t);
+	await rm(join(f.repositories.service, "package.json"));
+	git(f.repositories.service, "add", "package.json"); git(f.repositories.service, "commit", "-qm", "remove manifest");
+	assert.throws(() => parseWorkspaceRequest({ ...f.request, finalChecks: [f.request.finalChecks[0]] }), /Final checks are missing/);
+	const state = await staged(f);
+	assert.equal(state.repositories.service!.testScript, undefined);
+});
+
+test("pnpm checks pin the committed script instead of dirty Main", async (t) => {
+	const f = await fixture(t);
+	f.request.tasks[0]!.checks.push({ repository: "client", command: "pnpm", args: ["test"] });
+	const manifest = join(f.repositories.client, "package.json");
+	await writeFile(manifest, JSON.stringify({ scripts: { test: "echo dirty" } }));
+	const state = await f.runner.execute(f.request, f.root);
+	assert.equal(state.status, "ready", state.failure ?? "");
+	assert.notEqual(state.repositories.client!.testScript, "echo dirty");
+	assert.match(await readFile(manifest, "utf8"), /echo dirty/);
+});
+
+test("a worker cannot replace a pnpm test script with dirty Main's version", async (t) => {
+	const f = await fixture(t, new IntegrationGit(), async (paths) => {
+		await writeFile(join(paths.client!, "package.json"), JSON.stringify({ scripts: { test: "echo dirty" } }));
+		git(paths.client!, "add", "package.json"); git(paths.client!, "commit", "-qm", "change test script");
+	});
+	f.request.tasks[0]!.checks.push({ repository: "client", command: "pnpm", args: ["run", "test"] });
+	await writeFile(join(f.repositories.client, "package.json"), JSON.stringify({ scripts: { test: "echo dirty" } }));
+	const state = await f.runner.execute(f.request, f.root);
+	assert.equal(state.status, "attention"); assert.match(state.failure!, /test script changed/);
+});
+
+test("cleanup resumes after a later repository fails", async (t) => {
+	let calls = 0;
+	class InterruptedCleanup extends IntegrationGit {
+		override async release(...args: Parameters<IntegrationGit["release"]>) {
+			if (++calls === 5) return { outcome: "blocked" as const, failure: "cleanup blocked" };
+			return await super.release(...args);
+		}
+	}
+	const f = await fixture(t, new InterruptedCleanup());
+	let state = await staged(f);
+	state = await f.runner.action({ id: f.request.id, action: "promote", expected: state.tips }, f.root);
+	assert.equal(state.status, "promoted", state.failure ?? "");
+	state = await f.runner.action({ id: f.request.id, action: "cleanup" }, f.root);
+	assert.equal(state.status, "promoted"); assert.match(state.failure!, /cleanup blocked/);
+	state = await f.reload().action({ id: f.request.id, action: "cleanup" }, f.root);
+	assert.equal(state.status, "cleaned", state.failure ?? "");
+});
+
 test("a lost promotion response is reconciled without replay or rollback; remaining targets need an explicit action", async (t) => {
 	let calls = 0;
 	class Interrupted extends IntegrationGit {

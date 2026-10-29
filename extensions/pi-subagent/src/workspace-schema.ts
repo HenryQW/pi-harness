@@ -44,6 +44,7 @@ export function parseWorkspaceRequest(value: unknown): WorkspaceRequest {
 	}
 	for (const repository of Object.keys(value.repositories)) {
 		if (!task.checks.some((check) => check.repository === repository)) throw new Error(`Task checks are missing for repository ${repository}.`);
+		if (!value.finalChecks.some((check) => check.repository === repository)) throw new Error(`Final checks are missing for repository ${repository}.`);
 	}
 	return structuredClone(value);
 }
@@ -57,7 +58,7 @@ export function sameSet(left: IdentitySet, right: IdentitySet): boolean {
 }
 const Receipt = Type.Object({ previous: WorkspaceSchema, worker: WorkspaceSchema, tip: WorkspaceSchema }, { additionalProperties: false });
 const RepoState = Type.Object({
-	root: Text, common: Text, base: WorkspaceSchema, testScript: Text, attempt: TaskAttemptSchema,
+	root: Text, common: Text, base: WorkspaceSchema, testScript: Type.Optional(Text), attempt: TaskAttemptSchema,
 	integration: Type.Optional(WorktreeRecordSchema),
 	allocation: Type.Optional(Type.Union([Type.Literal("allocating"), Type.Literal("owned")])),
 	stage: Type.Optional(Type.Union([Type.Literal("staging"), Type.Literal("staged"), Type.Literal("unchanged")])),
