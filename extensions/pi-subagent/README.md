@@ -105,6 +105,14 @@ Text after the target adds a review focus, for example `/review #42 cache invali
 
 The verdict is **Ship** only if each reviewer task succeeded and answered exactly `PASS`. Otherwise, the verdict is **Do not ship**, with the findings in priority order. If the checkout changed during a review task, the verdict is also **Do not ship**, and you must run the review again. Main does not fix findings. If another `/review` prompt template loads first, Pi keeps that template and reports a name collision.
 
+### Several repositories in one workspace
+
+Add an explicit `repositories` map to `delegate_task` to select independent Git repositories in a non-Git workspace. One isolated worker can change the complete set. Use `subagent_workspace` for status, checks, serial promotion, and recovery.
+
+Workspace mode supports one changeset task with repository-specific checks and optional read-only root inputs. It rejects dependencies and judgment. Promotion is not atomic and never rolls back. See [Checked workspace tasks](./docs/workspace.md) for the request, limits, and partial-promotion procedure.
+
+Direct requests can select the same repository set for admission and labelled change reports. This does not provide a sandbox.
+
 ### Isolated workflow
 
 ![Isolated workers commit checked candidates; Main stages ready work while siblings run, advances dependents, validates the combined tip, and explicitly promotes](./docs/orchestration-architecture.svg)

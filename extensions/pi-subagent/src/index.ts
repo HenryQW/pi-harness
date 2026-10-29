@@ -121,6 +121,7 @@ export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"subagent_resume",
 	"subagent_stage",
 	"subagent_abort",
+	"subagent_workspace",
 ] as const;
 const SYSTEM_PROMPT_FLAG = "--append-system-prompt";
 const CHILD_IDENTITY_POLICY = "You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.";

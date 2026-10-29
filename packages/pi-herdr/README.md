@@ -56,6 +56,8 @@ Errors expose `code` and `dispatched`. If `dispatched` is true, a mutation can h
 
 `registerCheckoutAdmission(pi, directCanWrite)` keeps the direct-subagent policy: Main writes can overlap, but direct writers must wait for them and exclude other writes. A returned hold function keeps a direct request admitted beyond its tool result. Consumers must restore durable command ownership before allowing writes after restart. These mechanisms do not intercept external processes or provide a sandbox.
 
+An optional third argument, `directCheckouts(input, ctx)`, returns additional canonical checkout paths for a direct request. Admission reserves the current checkout and the complete selected set together. A conflict in one member blocks the request without a partial reservation. The caller validates repository selection; the hold function releases the set only after caller-proved worker termination.
+
 ### `startPiAgent`
 
 On macOS, a shell that starts or runs a prompt hook can lose Enter for a launch command longer than 1024 bytes. The pane then waits forever. To prevent this, the helper first checks `pane process-info`. When the pane shell owns the foreground process group, it runs `pane run <pane> "echo <token>"` and polls `pane read` for up to 20 seconds. The probe passes when the token appears on its own line, with a prompt after it.

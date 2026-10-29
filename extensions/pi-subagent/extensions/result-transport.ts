@@ -131,6 +131,7 @@ const CHECKOUT_HEADING = "Checkout (report only, not enforced; changes by other 
 function checkoutLines(note: CheckoutNote): string[] {
 	const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
 	switch (note.kind) {
+		case "repositories": return Object.entries(note.notes).flatMap(([name, item]) => item ? [`Repository ${safe(name)}:`, ...checkoutLines(item).map((line) => `  ${line}`)] : []);
 		case "stale": return [STALE_READ_NOTICE];
 		case "unavailable": return [`${note.check} unavailable: ${safe(note.reason)}`];
 		case "changes": {
