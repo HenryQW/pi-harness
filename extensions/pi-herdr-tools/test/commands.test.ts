@@ -97,6 +97,47 @@ test("private readers wait for incomplete publication and early cancellation; cl
 	assert.deepEqual(await readPrivate(file), claim);
 });
 
+for (const compromised of [false, true])
+test(`shared-job scanning ${compromised ? "rejects a compromised foreign-session lock" : "completes heartbeats before release"}`, async (t) => {
+	const f = await fixture(t, "true");
+	const other = { ...f.spec, id: randomUUID(), token: randomUUID(), sessionId: "another-session" };
+	const otherDir = join(f.root, other.id);
+	await mkdir(otherDir, { mode: 0o700 });
+	await writePrivate(join(otherDir, "spec.json"), other);
+	const script = `import assert from "node:assert/strict";
+		import fs from "node:fs/promises";
+		import { statSync, utimesSync } from "node:fs";
+		import { syncBuiltinESMExports } from "node:module";
+		import { mock } from "node:test";
+		import { listJobs } from ${JSON.stringify(new URL("../internal/command-state.ts", import.meta.url).href)};
+		const open = fs.open;
+		mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+		mock.method(fs, "open", async (...args) => {
+			if (args[0] === process.argv[2] + "/spec.json") {
+				const lockPath = process.argv[2] + ".lock";
+				const before = statSync(lockPath).mtimeMs;
+				if (${compromised}) utimesSync(lockPath, 0, 0);
+				mock.timers.tick(5000);
+				if (!${compromised}) assert.ok(statSync(lockPath).mtimeMs > before, "heartbeat must finish before reading the shared job");
+			}
+			return await open(...args);
+		});
+		syncBuiltinESMExports();
+		if (${compromised}) {
+			await assert.rejects(listJobs(process.argv[1]), { code: "ECOMPROMISED" });
+			assert.equal(statSync(process.argv[2] + ".lock").mtimeMs, 0);
+		} else {
+			const jobs = await listJobs(process.argv[1]);
+			assert.deepEqual(jobs.map(job => job.spec.sessionId).sort(), ["another-session", "session"]);
+			assert.ok(jobs.every(job => job.state === "starting"));
+			assert.ok((await fs.readdir(process.argv[1])).every(name => !name.endsWith(".lock")));
+		}
+		mock.timers.tick(10_000);
+		mock.timers.reset();`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, f.root, otherDir], { encoding: "utf8", timeout: 10_000 });
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test("malformed private files are refused and never replaced", async (t) => {
 	const f = await fixture(t, "true");
 	const file = join(f.dir, "claim.json");

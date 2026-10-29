@@ -58,6 +58,14 @@ Errors expose `code` and `dispatched`. If `dispatched` is true, a mutation can h
 
 An optional third argument, `directCheckouts(input, ctx)`, returns additional canonical checkout paths for a direct request. Admission reserves the current checkout and the complete selected set together. A conflict in one member blocks the request without a partial reservation. The caller validates repository selection; the hold function releases the set only after caller-proved worker termination.
 
+### Path locks
+
+`withWorktreeLock(checkout, operation)` locks a path while the operation runs. Acquisition, heartbeat updates, and release use synchronous filesystem calls. Slow storage can block the event loop. The operation can remain asynchronous. A heartbeat cannot remain in flight when the helper releases the lock.
+
+If a heartbeat detects lost ownership, the call rejects after the operation finishes and does not release the changed lock. If the operation also fails, an `AggregateError` contains both errors. Acquisition, operation, and release errors remain visible. The helper does not stop or undo the operation.
+
+Heartbeats do not prove continuous ownership or detect all external lock removal or replacement between checks. Do not remove active lock files. Long event-loop pauses can delay heartbeats and permit stale-lock recovery by another process. A lock error does not prove that the operation had no effect. Inspect state before a retry.
+
 ### `startPiAgent`
 
 On macOS, a shell that starts or runs a prompt hook can lose Enter for a launch command longer than 1024 bytes. The pane then waits forever. To prevent this, the helper first checks `pane process-info`. When the pane shell owns the foreground process group, it runs `pane run <pane> "echo <token>"` and polls `pane read` for up to 20 seconds. The probe passes when the token appears on its own line, with a prompt after it.
