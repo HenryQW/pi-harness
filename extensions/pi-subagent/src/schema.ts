@@ -122,7 +122,7 @@ const AllocationLifecycleFields = {
 	failure: OptionalRuntimeTextSchema,
 };
 
-const WorktreeRecordSchema = Type.Object({
+export const WorktreeRecordSchema = Type.Object({
 	path: RuntimeTextSchema,
 	cwd: RuntimeTextSchema,
 	branch: RuntimeTextSchema,
@@ -211,7 +211,7 @@ export type TaskState = Static<typeof TaskStateSchema>;
 export type WaveState = Static<typeof WaveStateSchema>;
 export type RunState = Static<typeof RunStateSchema>;
 
-const WorkspaceSchema = Type.Object({
+export const WorkspaceSchema = Type.Object({
 	branch: RuntimeTextSchema,
 	head: Type.String({ pattern: OID_PATTERN }),
 	index: Type.String({ pattern: OID_PATTERN }),
@@ -344,7 +344,7 @@ const CleanupStepSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
-const TaskAttemptSchema = Type.Object({
+export const TaskAttemptSchema = Type.Object({
 	number: Type.Integer({ minimum: 1, maximum: 2 }),
 	waveNumber: Type.Integer({ minimum: 1 }),
 	waveBase: WorkspaceSchema,
@@ -425,7 +425,7 @@ const FinalGateSchema = Type.Object({
 	failure: OptionalRuntimeTextSchema,
 }, { additionalProperties: false });
 
-const ExecutionPolicySnapshotSchema = Type.Object({
+export const ExecutionPolicySnapshotSchema = Type.Object({
 	maxSubagents: Type.Integer({ minimum: 1 }),
 	maxTurns: Type.Integer({ minimum: 1 }),
 	maxTokens: Type.Optional(Type.Integer({ minimum: 1 })),

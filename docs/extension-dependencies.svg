@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="extension-dependencies-title extension-dependencies-desc" id="extension-dependencies-root">
   <title id="extension-dependencies-title">Direct dependencies of 21 active Pi extensions</title>
-  <desc id="extension-dependencies-desc">Matrix of 21 active Pi extensions and seven internal dependency packages, with 30 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 14 extensions.</desc>
+  <desc id="extension-dependencies-desc">Matrix of 21 active Pi extensions and seven internal dependency packages, with 30 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 14 extensions. Pi Subagent uses Pi Herdr for selected-checkout admission.</desc>
   <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #extension-dependencies-root { color: #101828; font-family: 'Geist', sans-serif; }

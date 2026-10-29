@@ -236,6 +236,10 @@ export interface HostRuntime {
 		workerId: string;
 		kind: "initial" | "correction" | "followup";
 		preCandidate: WorkspaceIdentity;
+		/** Explicit complete repository worktree map; the caller validates every member. */
+		workspacePaths?: Readonly<Record<string, string>>;
+		/** Optional idle bound for exact worker session observation. */
+		idleMs?: number;
 		failure?: string;
 		instruction?: string;
 	}, context: OperationContext): Promise<WorkerResult>;
@@ -373,7 +377,7 @@ class ProductiveScope implements RuntimeScope {
 
 }
 
-class DeadlineScope implements RuntimeScope {
+export class DeadlineScope implements RuntimeScope {
 	readonly deadline: number;
 	readonly signal: AbortSignal;
 	private readonly now: () => number;
@@ -760,6 +764,7 @@ export function buildChangesetTaskPrompt(input: {
 	task: ChangesetTaskRequest;
 	kind: "initial" | "correction" | "followup";
 	worktreeCwd: string;
+	workspacePaths?: Readonly<Record<string, string>>;
 	failure?: string;
 	instruction?: string;
 }): string {
@@ -772,6 +777,9 @@ export function buildChangesetTaskPrompt(input: {
 			|| input.instruction.includes("\0") || input.instruction.length > 32_000)) {
 		throw new Error(`${input.kind === "followup" ? "follow-up" : "correction"} instruction must be non-empty exact text of at most 32000 characters.`);
 	}
+	const scope = input.workspacePaths
+		? `Work only in these selected worktrees: ${JSON.stringify(input.workspacePaths)}. Commit the complete result and leave every selected worktree clean. Read each selected repository's agent instructions and domain context before changes. Do not modify workspace-root input files or other repositories.`
+		: "Work only in the exact worktree above. Commit the complete result and leave that worktree clean.";
 	const checks = input.task.checks.map((check) => JSON.stringify({ command: check.command, args: check.args })).join("\n");
 	const upstreamTaskData = input.contexts.length
 		? ["", "Upstream task data:", formatTextTaskContexts(input.contexts, CHANGESET_TASK_PROMPT_MAX_BYTES)]
@@ -806,7 +814,7 @@ export function buildChangesetTaskPrompt(input: {
 		...(input.kind === "correction" ? ["", "Correction failure:", input.failure!] : []),
 		...(input.kind === "correction" && input.instruction ? ["", "Main's instruction:", input.instruction] : []),
 		"",
-		"Work only in the exact worktree above. Commit the complete result and leave that worktree clean.",
+		scope,
 	].join("\n");
 	if (Buffer.byteLength(text, "utf8") > CHANGESET_TASK_PROMPT_MAX_BYTES) {
 		throw new Error(`Worker assignment exceeds ${CHANGESET_TASK_PROMPT_MAX_BYTES} bytes.`);
@@ -1062,7 +1070,8 @@ export class IsolatedRunner {
 	 * A non-terminal state owns every resource name its saved text mentions; an unreadable state owns every
 	 * name its raw text mentions, or every name when unreadable. */
 	async pruneOwnership(checkouts: readonly string[]): Promise<PruneOwnership> {
-		const owners: { label: string; text?: string; request?: PruneRequest }[] = [];
+		const { workspacePruneOwners } = await import("./workspace.ts");
+		const owners: { label: string; text?: string; request?: PruneRequest }[] = await workspacePruneOwners(checkouts, this.store.agentDir);
 		let lease: string | undefined;
 		const request = ({ state, path }: RunStateHandle, orphaned: boolean): PruneRequest => ({ id: state.request.id, name: state.request.goal,
 			status: inventoryStatus(state, orphaned), directory: dirname(path), root: state.root, orphaned });

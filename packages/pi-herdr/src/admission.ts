@@ -34,12 +34,13 @@ export async function checkoutKey(pi: Pick<AdmissionHost, "exec">, ctx: { cwd: s
  */
 function createAdmission() {
 	let directCanWrite = (_input: unknown) => true;
+	let directCheckouts: ((input: unknown, ctx: { cwd: string }) => Promise<readonly string[]>) | undefined;
 	const guards = new Map<string, () => Promise<void>>();
 	const durable = new Map<string, string>();
 	const events = new WeakMap<object, Promise<Gate>>();
 	const heldCalls = new Set<string>();
 	const ownerByCheckout = new Map<string, string>();
-	const calls = new Map<string, { direct: boolean; key?: string }>();
+	const calls = new Map<string, { direct: boolean; keys?: readonly string[] }>();
 	// One Git lookup per working directory per session; a failed lookup is retried.
 	const checkouts = new Map<string, Promise<string>>();
 	const lookup = (host: AdmissionHost, ctx: { cwd: string }) => {
@@ -54,7 +55,7 @@ function createAdmission() {
 		if (heldCalls.has(toolCallId)) return;
 		const call = calls.get(toolCallId);
 		calls.delete(toolCallId);
-		if (call?.key && ownerByCheckout.get(call.key) === toolCallId) ownerByCheckout.delete(call.key);
+		for (const key of call?.keys ?? []) if (ownerByCheckout.get(key) === toolCallId) ownerByCheckout.delete(key);
 	};
 	const refresh = async () => { for (const guard of guards.values()) await guard(); };
 	const admit = async (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { cwd: string }, host: AdmissionHost): Promise<Gate> => {
@@ -62,23 +63,29 @@ function createAdmission() {
 		if (event.toolName === "background_command" || (direct ? !directCanWrite(event.input) : MAIN_NON_WRITING_TOOLS.has(event.toolName))) return;
 		try { await refresh(); }
 		catch { return { block: true, reason: "Command ownership recovery failed; writes are blocked. Inspect /commands." }; }
-		const call: { direct: boolean; key?: string } = { direct };
+		const call: { direct: boolean; keys?: readonly string[] } = { direct };
 		calls.set(event.toolCallId, call);
-		const key = await lookup(host, ctx);
+		let keys: readonly string[];
+		try {
+			keys = [...new Set([await lookup(host, ctx), ...(direct && directCheckouts ? await directCheckouts(event.input, ctx) : [])])];
+		} catch (error) {
+			release(event.toolCallId);
+			throw error;
+		}
 		if (calls.get(event.toolCallId) !== call) {
 			return { block: true, reason: `Call ${event.toolCallId} already settled; use mode: isolated to keep Main free.` };
 		}
-		const owner = ownerByCheckout.get(key) ?? [...durable].find(([, checkout]) => checkout === key)?.[0];
-		const main = direct ? [...calls].find(([, active]) => !active.direct && active.key === key)?.[0] : undefined;
+		const owner = keys.map((key) => ownerByCheckout.get(key) ?? [...durable].find(([, checkout]) => checkout === key)?.[0]).find(Boolean);
+		const main = direct ? [...calls].find(([, active]) => !active.direct && active.keys?.some((key) => keys.includes(key)))?.[0] : undefined;
 		if (owner || main) {
 			release(event.toolCallId);
 			return {
 				block: true,
-				reason: `Checkout ${key} has ${owner ? `an admitted direct writer (${owner})` : `a Main potentially-writing call in flight (${main})`}; retry after it stops, or use mode: isolated to keep Main free.`,
+				reason: `Checkout set ${keys.join(", ")} has ${owner ? `an admitted direct writer (${owner})` : `a Main potentially-writing call in flight (${main})`}; retry after it stops, or use mode: isolated to keep Main free.`,
 			};
 		}
-		call.key = key;
-		if (direct) ownerByCheckout.set(key, event.toolCallId);
+		call.keys = keys;
+		if (direct) for (const key of keys) ownerByCheckout.set(key, event.toolCallId);
 	};
 	const install = (host: AdmissionHost) => {
 		host.on("tool_call", (event, ctx) => {
@@ -96,15 +103,15 @@ function createAdmission() {
 	};
 	const hold = (toolCallId: string) => {
 		const call = calls.get(toolCallId);
-		if (!call?.direct || !call.key) {
+		if (!call?.direct || !call.keys?.length) {
 			throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again.`);
 		}
 		heldCalls.add(toolCallId);
 		return () => { heldCalls.delete(toolCallId); release(toolCallId); };
 	};
 	return {
-		install, hold,
-		classifyDirect: (classify: (input: unknown) => boolean) => { directCanWrite = classify; },
+		install, hold, supportsCheckoutSets: true as const,
+		classifyDirect: (classify: (input: unknown) => boolean, select?: typeof directCheckouts) => { directCanWrite = classify; directCheckouts = select; },
 		guard: (name: string, refresh: () => Promise<void>) => { guards.set(name, refresh); },
 		restore: (owner: string, checkout: string) => { durable.set(owner, checkout); },
 		release: (owner: string) => { durable.delete(owner); },
@@ -112,7 +119,7 @@ function createAdmission() {
 			await refresh();
 			const conflict = [...durable].find(([, key]) => key === checkout)?.[0]
 				?? ownerByCheckout.get(checkout)
-				?? [...calls].find(([, call]) => call.key === checkout)?.[0];
+				?? [...calls].find(([, call]) => call.keys?.includes(checkout))?.[0];
 			if (conflict) throw new Error(`Checkout ${checkout} has an active writer (${conflict}); wait until it stops.`);
 			durable.set(owner, checkout);
 			return () => { durable.delete(owner); };
@@ -135,9 +142,16 @@ export function checkoutAdmission(pi: AdmissionHost): CheckoutAdmission {
 	return shared;
 }
 
-export function registerCheckoutAdmission(pi: AdmissionHost, directCanWrite: (input: unknown) => boolean): (toolCallId: string) => () => void {
+export function registerCheckoutAdmission(pi: AdmissionHost, directCanWrite: (input: unknown) => boolean,
+	directCheckouts?: (input: unknown, ctx: { cwd: string }) => Promise<readonly string[]>,
+): (toolCallId: string) => () => void {
 	const admission = checkoutAdmission(pi);
-	admission.classifyDirect(directCanWrite);
+	admission.classifyDirect((input) => {
+		if (directCanWrite(input) && admission.supportsCheckoutSets !== true && input && typeof input === "object" && Object.hasOwn(input, "repositories")) {
+			throw new Error("The active checkout coordinator does not support repository sets. Reload with the current Pi Herdr package before delegation.");
+		}
+		return directCanWrite(input);
+	}, directCheckouts);
 	admission.install(pi);
 	return admission.hold;
 }

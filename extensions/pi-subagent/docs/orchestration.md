@@ -196,6 +196,10 @@ Recorded time comes only from the `durationMs` of the latest matched tool result
 
 Activity uses the existing session sample and file-size cache. The extension ignores a partial trailing JSONL entry until it is complete. For display, the extension removes terminal control characters from tool names. Narrow rows remove activity before other metrics, so worker identity and failure state stay visible. Activity and time are display information, not proof of task completion, worker ownership, or a timeout.
 
+## Explicit workspace selection
+
+The optional top-level `repositories` map selects independent repositories in a non-Git workspace. See [Checked workspace tasks](./workspace.md) for complete-set identity, one-worker allocation, input copies, direct reporting, and serial promotion recovery. This path uses `subagent_workspace`; the scalar tools below keep their existing one-repository contract.
+
 ## Isolated contract
 
 An isolated request has one durable ID, one goal, and 1 to 8 typed tasks.
