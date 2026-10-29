@@ -5,6 +5,8 @@ description: Update a PR branch with a confirmed conflict or required base updat
 
 # Pi PR Branch Update
 
+Use the supplied `projectPath` on every `pi_pr_update_branch` call, and on any `pi_git_commit` or `git_conflict` call. It is the pinned canonical worktree root. Use that directory for file inspection, edits, and checks. Pi can start in a non-Git parent; do not use the session directory or select a sibling repository. A changed path does not grant new workflow authority.
+
 Use only `pi_pr_update_branch` for Git and GitHub mechanics. This pull request (PR) route requires a fresh confirmed conflict or a required base update. Main owns conflict decisions; do not send them to subagents.
 
 Call the prompted `rebase` action. The action name stays unchanged: it rebases linear history, but merges the pinned base when the branch contains merge commits after the fork point. This preserves earlier merge resolutions. The helper records pending recovery before mutation and uses the exact base object identifier (OID).

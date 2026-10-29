@@ -8,7 +8,7 @@ import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type, type TSchema } from "typebox";
 import { realpathSync } from "node:fs";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { getPreparationRows, getSessionRows, searchIndex, syncSessions } from "./search-core.ts";
 import { getWindow, readSession } from "./hydrate.ts";
 import { MAX_QUERY_CHARS } from "./query.ts";
@@ -350,7 +350,7 @@ const OUTPUT_SCHEMA = Type.Union([
 
 const DESCRIPTION = `Search past Pi sessions locally with FTS5; returns indexed metadata and snippets.
 
-- \`operation: "prepare-pattern-miner"\` + \`scope\`: prepare one bounded corpus and repository inventory.
+- \`operation: "prepare-pattern-miner"\` + \`scope\`: prepare one bounded corpus and repository inventory. Use \`projectPath\` only with repository scope to select a path relative to the session directory; no child repository is selected automatically.
 - \`query\`: discover matches. Prefer distinctive identifiers or uncommon terms; multi-word queries are AND. Use \`OR\`/\`NOT\` for Boolean queries and quotes only when exact wording is known.
 - \`sessionId\` + \`aroundMessageId\`: scroll ±\`window\`; retain \`branchTip\` across forks.
 - \`sessionId\` alone: read; no args: browse recent sessions.
@@ -381,6 +381,7 @@ export default function (pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			operation: Type.Optional(StringEnum(["prepare-pattern-miner"] as const)),
 			scope: Type.Optional(StringEnum(["repository", "all"] as const)),
+			projectPath: Type.Optional(Type.String({ minLength: 1, description: "Project or worktree path, relative to the session directory or absolute. Only for prepare-pattern-miner with repository scope." })),
 			query: Type.Optional(Type.String({ description: "Search query (discovery). FTS5 syntax supported." })),
 			sessionId: Type.Optional(Type.String({ description: "Absolute path of the session file." })),
 			aroundMessageId: Type.Optional(Type.String({ description: "Anchor entry id for scroll mode — centers the window (with sessionId)." })),
@@ -420,6 +421,12 @@ export default function (pi: ExtensionAPI): void {
 		// Failures throw: Pi marks the result as an error for the model, and
 		// codemode scripts reject instead of receiving a success-shaped value.
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (params.projectPath !== undefined) {
+				if (params.operation !== "prepare-pattern-miner" || params.scope !== "repository") {
+					throw new Error("projectPath requires operation: prepare-pattern-miner and scope: repository.");
+				}
+				if (!params.projectPath.trim()) throw new Error("projectPath must not be blank.");
+			}
 			if (params.scope !== undefined && params.operation === undefined) {
 				throw new Error("scope requires operation: prepare-pattern-miner.");
 			}
@@ -435,7 +442,7 @@ export default function (pi: ExtensionAPI): void {
 				const limit = clamp(params.limit, 1, 10, 10);
 				const inventory = await inventoryRepository(
 					pi,
-					{ cwd: ctx.cwd, signal },
+					{ cwd: params.projectPath === undefined ? ctx.cwd : resolve(ctx.cwd, params.projectPath), signal },
 					params.scope === "repository" ? "required" : "optional",
 				);
 				const sync = syncSessions(sessionsDir(), dbPath());

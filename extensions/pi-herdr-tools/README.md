@@ -30,7 +30,7 @@ Run `/clone-tab`; the original session stays active. Commands and prompts are fo
 | `background_command` | tool | Launch, list, inspect, or cancel a managed command. |
 | `/commands` | command | Inspect command status and output, or request cancellation. |
 | `/clone-tab` | command | Clone into a new tab in the current workspace. |
-| `/clone-worktree` | command | Clone into a new Git worktree workspace. |
+| `/clone-worktree [project path]` | command | Clone into a new Git worktree workspace for the selected project. |
 | `/handoff-worktree <issue>` | prompt | Prepare a task for `herdr_handoff`. |
 | `herdr_handoff` | tool | Start a separate task from local `main`, without changing focus. |
 | `/done [-f]` | command | Remove the worktree and close its workspace tabs. `--force` aliases `-f`. |
@@ -76,24 +76,37 @@ Both commands require `HERDR_ENV=1` and `HERDR_PANE_ID`. Pane, session-path, and
 
 Clone tabs keep the current working directory. Worktree clones use the new checkout. Pi starts with `--session <absolute-clone-file>`; only successful launches change focus.
 
-Worktree creation uses `herdr worktree create --workspace <current-workspace> --no-focus`, or the repository's parent workspace when already in a linked worktree. Herdr creates missing branches from `HEAD`, with checkouts under `worktrees.directory` in grouped workspaces. Clones and handoffs use an extra unfocused tab if a layout plugin such as `herdr-plus` occupies the root pane.
+From a non-Git folder with sibling repositories, use `/clone-worktree project-a`. The complete argument is one project path, relative to the current Pi working directory or absolute. Paths can contain spaces; do not add shell quotes. No command scans or selects sibling repositories for you. Without a path, the current directory must be in the pane workspace's Git repository. `/clone-tab` still works in non-Git folders and keeps the current directory.
+
+Worktree creation uses `herdr worktree create --cwd <primary-repository> --base <commit> --no-focus`. Here, `--cwd` selects the verified primary repository, `--base` selects an exact commit, and `--no-focus` keeps focus unchanged during creation. A clone starts from the selected checkout's `HEAD`, including a linked or detached checkout, not the primary checkout's tip. Uncommitted changes are not copied. Herdr puts checkouts under `worktrees.directory`.
+
+```mermaid
+flowchart LR
+    A[Explicit project or current repository] --> B[Verify Git and Herdr repository identity]
+    B --> C[Create from the selected base commit]
+    C --> D[Verify checkout, workspace, tab, and pane]
+    D --> E[Start Pi]
+```
+
+The extension checks the common Git directory, primary repository, base commit, checkout registration, and Herdr workspace, tab, and pane relationships before launch. A failed check retains the allocation for inspection. It does not repeat creation or delete uncertain resources. Clones and handoffs use an extra unfocused tab if a layout plugin such as `herdr-plus` occupies the root pane. The extra tab must pass the same relationship checks.
 
 ### Worktree handoff
 
 Run `/handoff-worktree Fix the flaky login test`. The agent collects missing facts, asking one question only for an unclear repository, outcome, or critical constraint. It sends a self-contained prompt, not the conversation, and reports without waiting for completion.
 
-The tool registers only with `HERDR_ENV=1`. It also requires `HERDR_PANE_ID`, local `main`, and matching Git repositories for the current directory and pane workspace.
+The tool registers only with `HERDR_ENV=1`. It also requires `HERDR_PANE_ID` and local `main` in the selected project. Set `project` to an explicit path when the current folder is not a Git repository or the pane workspace belongs to another repository. Without `project`, the current directory and pane workspace must use the same Git repository.
 
 All parameters must be non-empty strings:
 
 | Parameter | Requirement |
 | --- | --- |
-| `branch` | New branch; must not exist. |
+| `project` | Optional project path, relative to the current Pi working directory or absolute. No sibling search occurs. |
+| `branch` | New literal branch name; must not exist. |
 | `label` | Workspace label. |
 | `agentName` | Unique agent name matching `^[a-z][a-z0-9_-]{0,31}$`. |
 | `prompt` | Self-contained task prompt. |
 
-After validation, the tool runs `herdr worktree create --workspace <parent> --branch <branch> --base main --label <label> --no-focus`. It starts Pi without session arguments. It submits `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`, with the prompt as one argument, not a shell command or file. The result includes workspace ID, tab, pane, branch, checkout path, and agent name.
+After validation, the tool runs `herdr worktree create --cwd <primary-repository> --branch <branch> --base <local-main-commit> --label <label> --no-focus`. The `--branch` option sets the new branch name; `--label` sets the workspace label. The base is the verified local `main` commit, not the selected checkout's `HEAD`. It starts Pi without session arguments. It submits `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`, with the prompt as one argument, not a shell command or file. The result includes workspace ID, tab, pane, branch, checkout path, and agent name.
 
 ### Side questions
 
@@ -149,7 +162,9 @@ Pi sends the notice asynchronously. The delivery record is saved only after the 
 
 ![Worktree removal and primary-checkout update.](./docs/done-flow.svg)
 
-`/done` requires `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, and `HERDR_TAB_ID`. Commit or discard changes, then confirm removal; declining changes nothing. Normal and forced completion wait for idle Pi.
+`/done` requires `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`. Commit or discard changes, then confirm removal; declining changes nothing. Normal and forced completion wait for idle Pi.
+
+Both normal and forced completion require the exact current pane, tab, and workspace to own the target linked checkout. A primary checkout, folder workspace, different checkout, stale pane, or unverified repository identity blocks removal and tab closure. A subdirectory of the owned checkout is allowed.
 
 Active or unknown managed commands block both normal and forced removal, including read jobs. Cancel the job and wait for verified completion. Other admitted writers also block removal.
 
@@ -238,7 +253,7 @@ Clones are separate session files in the Pi-selected session directory. Each con
 | Command runtime or output limit | Inspect the bounded log and error status. Any later launch is a new explicit decision. |
 | Definite clone-tab creation failure | The clone file is removed. Cleanup errors name any remaining file. |
 | Worktree creation or pre-launch extra-tab failure | No clone session exists yet. |
-| Killed or incomplete worktree creation | Partial workspace state can remain. Inspect returned IDs with `herdr workspace list`. |
+| Uncertain creation or target verification | Partial workspace state can remain. Inspect returned identifiers with `herdr workspace list`. Do not repeat creation or delete resources until ownership is clear. |
 | Incomplete tab response | Inspect known IDs before cleanup. Clone tabs retain the session path; worktree clones retain the worktree without a clone session. |
 | Agent start requested | An ambiguous launch retains targets and session files. Inspect reported IDs. |
 | Clone focus failure | Pi already started. Focus its tab manually. |

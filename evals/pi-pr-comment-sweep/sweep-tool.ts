@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { assertFixtureWorktree } from "../fixture-worktree.ts";
 
 /** The spec lives in the trial directory, the parent of the fixture cwd, so tools in cwd cannot find it. */
 export const specPath = (cwd: string) => join(dirname(cwd), "pi-eval-sweep.json");
@@ -56,6 +57,7 @@ const PARAMETERS = {
 	additionalProperties: false,
 	required: ["runId", "action"],
 	properties: {
+		projectPath: { type: "string", minLength: 1 },
 		runId: { type: "string", minLength: 36, maxLength: 36, pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
 		action: { type: "string", enum: ACTIONS },
 		guard: {
@@ -109,8 +111,9 @@ export default function (pi: ExtensionAPI) {
 		description: "Run one guarded action for the /pr feedback route.",
 		parameters: PARAMETERS as never,
 		executionMode: "sequential",
-		async execute(_id, raw, _signal, _onUpdate, ctx) {
-			const params = raw as { runId: string; action: string; guard?: unknown; id?: string; ledger?: unknown[]; ownedPaths?: string[]; message?: string; checks?: unknown[] };
+		async execute(_id, raw, signal, _onUpdate, ctx) {
+			const params = raw as { projectPath?: string; runId: string; action: string; guard?: unknown; id?: string; ledger?: unknown[]; ownedPaths?: string[]; message?: string; checks?: unknown[] };
+			await assertFixtureWorktree(ctx.cwd, params.projectPath, signal);
 			const git = (...args: string[]) => execFileSync("git", args, { cwd: ctx.cwd, encoding: "utf8" }).trim();
 			const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
 			const dirty = () => git("status", "--porcelain", "--untracked-files=all") !== "";

@@ -8,14 +8,16 @@ import {
 	prepareWorktreeLaunch,
 	requiredString,
 	resolveWorkspace,
-	worktreeParentWorkspace,
 } from "./worktree.ts";
+
+import { selectWorktreeSource, verifyCheckout } from "./repository.ts";
 
 const PROMPT_TIMEOUT_MS = 30_000;
 
 const nonEmpty = (description: string) => Type.String({ description, minLength: 1, pattern: "\\S" });
 
 const HandoffParams = Type.Object({
+	project: Type.Optional(nonEmpty("Explicit Git project path, absolute or relative to the current working directory; required outside the pane workspace repository")),
 	branch: nonEmpty("New Git branch for the worktree, created from local main"),
 	label: nonEmpty("Short Herdr workspace label"),
 	// Herdr agent names must match this pattern; checking it here fails before any mutation.
@@ -42,38 +44,19 @@ export default function herdrHandoffExtension(pi: ExtensionAPI): void {
 		parameters: HandoffParams,
 		executionMode: "sequential",
 
-		async execute(_toolCallId, { branch, label, agentName, prompt }, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, { branch, label, agentName, prompt, project }, signal, _onUpdate, ctx) {
 			const paneId = requiredString(process.env.HERDR_PANE_ID, "HERDR_PANE_ID");
 			const workspace = await resolveWorkspace(herdr, ctx.cwd, paneId);
-			const checkout = requiredString(workspace.checkout, `Git checkout of Herdr workspace ${workspace.workspaceId}`);
-			const git = (cwd: string, args: string[]) => pi.exec("git", args, { cwd });
-			const repository = async (cwd: string) => {
-				const result = await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-				if (result.code !== 0 || result.killed) throw new Error(`herdr_handoff: ${cwd} is not in a Git repository; nothing was created.`);
-				return result.stdout.trim();
-			};
-			// The worktree comes from the pane's workspace, so it must be the repository checked here.
-			if (await repository(ctx.cwd) !== await repository(checkout)) {
-				throw new Error(`herdr_handoff: ${ctx.cwd} and Herdr workspace ${workspace.workspaceId} (${checkout}) are different Git repositories; nothing was created.`);
-			}
-			const main = await git(ctx.cwd, ["rev-parse", "--verify", "--quiet", "refs/heads/main"]);
-			if (main.code !== 0 || main.killed) {
-				throw new Error(`herdr_handoff requires a local main branch in ${ctx.cwd}; nothing was created.`);
-			}
-			// Herdr checks out an existing branch instead of creating it from --base.
-			const existing = await git(ctx.cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-			if (existing.code !== 1 || existing.killed) {
-				throw new Error(`herdr_handoff: branch ${branch} already exists or could not be checked; choose a new branch. Nothing was created.`);
-			}
-			const parentId = await worktreeParentWorkspace(herdr, ctx.cwd, workspace);
+			const repository = await selectWorktreeSource(pi, herdr, ctx.cwd, workspace, project, "handoff", branch);
 
 			signal?.throwIfAborted();
 			const worktree = await createWorktree(herdr, ctx.cwd, [
-				"worktree", "create", "--workspace", parentId,
-				"--branch", branch, "--base", "main", "--label", label, "--no-focus",
-			], "Handoff");
+				"worktree", "create", "--cwd", repository.repoRoot,
+				"--branch", branch, "--base", repository.base, "--label", label, "--no-focus",
+			], "Handoff", repository);
 			const { workspaceId, checkoutPath } = worktree;
-			const { target, onPaneBusy } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree).catch((error: unknown) => {
+			const { target, onPaneBusy, verify } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree, repository,
+				() => verifyCheckout(pi, worktree.checkoutPath, repository)).catch((error: unknown) => {
 				throw new Error(
 					`Handoff launch preparation failed; retained Herdr workspace ${workspaceId}, tab ${worktree.tabId}, root pane ${worktree.rootPaneId}, branch ${branch}, checkout ${checkoutPath}: ${errorMessage(error)}`,
 					{ cause: error },
@@ -82,7 +65,7 @@ export default function herdrHandoffExtension(pi: ExtensionAPI): void {
 			const retained = () =>
 				`Herdr workspace ${workspaceId}, tab ${target.tabId}, pane ${target.paneId}, branch ${branch}, checkout ${checkoutPath}`;
 			if (signal?.aborted) throw new Error(`Handoff was cancelled before agent start; retained ${retained()}.`);
-			await launchPiAgent(herdr, ctx.cwd, { action: "Handoff", name: agentName, pane: target.paneId, args: [], retained, onPaneBusy });
+			await launchPiAgent(herdr, ctx.cwd, { action: "Handoff", name: agentName, pane: target.paneId, args: [], retained, onPaneBusy, verify });
 
 			const promptArgs = [
 				"agent", "prompt", agentName, prompt, "--wait", "--until", "working", "--timeout", String(PROMPT_TIMEOUT_MS),

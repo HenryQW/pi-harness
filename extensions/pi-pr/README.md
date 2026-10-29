@@ -30,7 +30,7 @@ Commands are for you; tools and skills are for the agent.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/pr` | command | Select and do the PR next step. Accepts no arguments. |
+| `/pr [projectPath]` | command | Select a worktree and do the PR next step. |
 | `pi_git_commit` | tool | Inspect and commit scoped local changes. Never pushes. |
 | `pi_git_pr` | tool | Create or publish a PR, or do one explicitly ordered base update. Never merges the PR. |
 | `pi_pr_create` | tool | Run guarded PR creation steps. |
@@ -53,6 +53,25 @@ Commands are for you; tools and skills are for the agent.
 | Widget | ui | Show a PR next-step widget hint or temporary PR routing widget status. |
 
 Only `/pr` and `pi_git_pr` authorize the `pi_pr_*` workflow helpers, for one invocation in the current session and worktree. `pi_pr_status` and `pi_pr_merge` are not workflow helpers; see [Named pull requests](#named-pull-requests). Direct calls cannot grant authority. Only the model can call these tools, one action at a time; Codemode scripts and other tools cannot call them. They remain available with `codemode.mode` set to `only`. Cancellation does not return workflow guidance to the editor.
+
+### Select a repository
+
+Pi can start in a non-Git directory that contains sibling repositories. All Git and PR tools in this package accept optional `projectPath`. Set it to a Git worktree or a directory inside it. Relative paths start at the session directory, as in `pi-codegraph`.
+
+Without `projectPath`, the tools use the session directory. They never search child repositories or select one from a previous tool call. Invalid paths, files, bare repositories, and directories outside a worktree stop the call.
+
+Use `/pr repo-a` or `/pr /absolute/path/to/repo-a` to select a worktree for the command. The complete text after `/pr` is one path; do not add quotes or shell escapes, even for spaces. For example, use `/pr repo a`. Without a path, `/pr` uses the session directory. Repeat the path for each new command from a non-Git parent.
+
+```mermaid
+flowchart LR
+    A[projectPath or session directory] --> B[Containing Git worktree]
+    B --> C[Canonical root]
+    C --> D[Pinned run and safety checks]
+```
+
+Selection resolves symbolic links and subdirectories to one canonical worktree root. Linked worktrees remain separate. Workflow instructions include the pinned `projectPath`; use it on every helper call and for local file work. A different worktree cannot reuse a run, commit inspection, or conflict block identifier. Only one PR workflow can be active in a session. Existing branch, remote, exact-head, and mutation checks still apply.
+
+The footer follows the last worktree selected through `/pr` or `pi_git_pr` until the session ends. This does not change Pi's working directory or the default path for later calls. Named status and merge calls do not change the footer. `pi_pr_status` returns the canonical `projectPath`; use that path with `pi_pr_merge`. Merge confirmation and its fresh checks stay in that worktree, even if the input symbolic link changes.
 
 ### Local commits and publication
 
@@ -98,7 +117,9 @@ The `git_conflict` tool resolves Git conflict markers without manual marker edit
 
 A `side` is `@ours`, `@theirs`, `@both` (ours, then theirs), or `@base`. `@base` needs diff3 or zdiff3 markers (`|||||||`). To get them, set `merge.conflictStyle` to `zdiff3` or `diff3` before the merge. Without them, `@base` fails with an error.
 
-Before it writes, the tool reads the file again and compares each block `id`. The `id` changes when the block text or its start line changes. If a block changed, the tool writes nothing and returns an error. Block numbers change after each resolve, so use the returned blocks. The tool does not stage files: run `git add` yourself. The `show` action limits each side to 300 lines or 16 KiB.
+Before it writes, the tool reads the file again and compares each block `id`. The `id` includes the canonical worktree and file path. It changes when the block text or its start line changes.
+
+If a block changed, the tool writes nothing and returns an error. Block numbers change after each resolve, so use the returned blocks. The tool does not stage files: run `git add` yourself. The `show` action limits each side to 300 lines or 16 KiB.
 
 The tool reads the `conflict-marker-size` attribute for the marker width. It changes only UTF-8 text files of 8 MiB or less. Each side of a block must match the related Git index stage.
 
@@ -197,7 +218,7 @@ Background discovery starts with the session. It refreshes after local commits, 
 
 While Pi is idle and an open PR shows running CI, running Codex review, or pending mergeability, the footer also refreshes on a timer. The first refresh occurs after 30 seconds. The interval doubles to a maximum of 5 minutes and resets when the status changes. A busy agent delays the refresh. The timer stops when the status is final, the PR merges or closes, an API quota failure occurs, or the session ends.
 
-The UI stays silent outside Git or without a supported GitHub remote. A repository with no remotes has no pull-request footer item, even before its first commit. Lookup failures show `PR · status unavailable` or retain the last footer, without an action hint. A failed GitHub repository lookup retries while Pi is idle, starting after 30 seconds and doubling to a maximum of 5 minutes. Invalid remote configuration stays blocked and is not retried on this timer. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying on the timer.
+The UI stays silent outside Git until you select a worktree, or without a supported GitHub remote. A repository with no remotes has no pull-request footer item, even before its first commit. Lookup failures show `PR · status unavailable` or retain the last footer, without an action hint. A failed GitHub repository lookup retries while Pi is idle, starting after 30 seconds and doubling to a maximum of 5 minutes. Invalid remote configuration stays blocked and is not retried on this timer. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying on the timer.
 
 After creation, `HERDR_ENV=1` with non-empty `HERDR_WORKSPACE_ID` enables the workspace prefix `#<number> • `. The branch name stays unchanged. Failure shows `Herdr workspace rename failed: <error>`; the PR and UI remain usable.
 

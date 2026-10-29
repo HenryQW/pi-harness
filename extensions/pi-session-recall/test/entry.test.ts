@@ -825,6 +825,57 @@ describe("session_search entry point", () => {
 		}
 	});
 
+	it("selects sibling repositories explicitly without changing global search or loading their skills", async () => {
+		clearRecallState();
+		const parent = fs.mkdtempSync(path.join(os.tmpdir(), "pi-recall-workspace-"));
+		try {
+			const roots = ["first repo", "second"].map((name) => path.join(parent, name));
+			for (const [index, root] of roots.entries()) {
+				fs.mkdirSync(root);
+				assert.equal(spawnSync("git", ["init", "-q"], { cwd: root }).status, 0);
+				writeRepositoryFile(root, "package.json", JSON.stringify({ scripts: { test: `echo ${index}` } }));
+				writeRepositoryFile(root, ".agents/skills/unloaded/SKILL.md", "unloaded instructions");
+				assert.equal(spawnSync("git", ["add", "."], { cwd: root }).status, 0);
+				writeSimpleSession(`workspace/${index}.jsonl`, { id: `workspace-${index}`, cwd: fs.realpathSync(root),
+					timestamp: `2026-03-02T00:0${index}:00.000Z`, text: `sibling evidence ${index}` });
+			}
+			const linked = path.join(parent, "linked");
+			assert.equal(spawnSync("git", ["-c", "commit.gpgsign=false", "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], { cwd: roots[0] }).status, 0);
+			assert.equal(spawnSync("git", ["worktree", "add", "-q", "--detach", linked], { cwd: roots[0] }).status, 0);
+			roots.push(linked);
+			writeRepositoryFile(linked, "package.json", JSON.stringify({ scripts: { test: "echo 2" } }));
+			assert.equal(spawnSync("git", ["add", "package.json"], { cwd: linked }).status, 0);
+			writeSimpleSession("workspace/linked.jsonl", { id: "workspace-linked", cwd: fs.realpathSync(linked),
+				timestamp: "2026-03-02T00:02:00.000Z", text: "sibling evidence 2" });
+			fs.symlinkSync(roots[0]!, path.join(parent, "alias"));
+			const pi = makePi();
+			const { default: register } = await import("../extensions/session-recall.ts");
+			register(pi as never);
+			const tool = (pi as any).tool as CapturedTool;
+			const context = { cwd: parent, sessionManager: { getSessionFile: () => undefined } };
+			const prepare = { operation: "prepare-pattern-miner", scope: "repository" };
+			assert.equal((tool.parameters as { type: string }).type, "object");
+			assert.equal(Value.Check(tool.parameters as any, { ...prepare, projectPath: "second" }), true);
+			await assert.rejects(tool.execute("no-selection", prepare, undefined, undefined, context), /requires a Git repository/);
+			for (const [projectPath, selected] of [["alias", 0], ["second", 1], ["first repo", 0], ["linked", 2]] as const) {
+				const result = structured(tool, await tool.execute("selected", { ...prepare, projectPath }, undefined, undefined, context));
+				assert.equal(result.scope.gitRoot, fs.realpathSync(roots[selected]!));
+				assert.deepEqual(result.sessions.map((session: { cwd: string }) => session.cwd), [result.scope.gitRoot]);
+				assert.deepEqual(result.inventory.packageScripts, [{ path: "package.json", name: "test", command: `echo ${selected}` }]);
+				assert.deepEqual(result.inventory.skills, [], "selection does not load repository skills");
+			}
+			for (const params of [{}, { query: "sibling" }, { sessionId: "missing" },
+				{ sessionId: "missing", aroundMessageId: "anchor" }, { operation: "prepare-pattern-miner", scope: "all" }]) {
+				await assert.rejects(tool.execute("unsupported", { ...params, projectPath: "second" }, undefined, undefined, context), /projectPath requires/);
+			}
+			await assert.rejects(tool.execute("blank", { ...prepare, projectPath: " " }, undefined, undefined, context), /must not be blank/);
+			await assert.rejects(tool.execute("missing", { ...prepare, projectPath: "missing" }, undefined, undefined, context), /could not resolve/);
+			const global = structured(tool, await tool.execute("global", { query: "sibling evidence" }, undefined, undefined, context));
+			assert.equal(global.results.length, 3);
+			await assert.rejects(tool.execute("still-no-selection", prepare, undefined, undefined, context), /requires a Git repository/);
+		} finally { fs.rmSync(parent, { recursive: true, force: true }); }
+	});
+
 	it("keeps the all-scope corpus when repository inventory fails", async () => {
 		clearRecallState();
 		const root = makeRepository();

@@ -7,6 +7,8 @@ description: Safely sync attached non-`main` worktree branch with fetched `origi
 
 Run `python3 <skill>/scripts/update_from_main.py` once from the target worktree. Use this file's directory for `<skill>`. Requires Python 3.9 or newer and Git with `fetch --porcelain`. This is a standalone **merge** without publication, not the guarded pull request (PR) branch update. The helper fetches before worktree mutation, backs up tracked/untracked state plus ignored paths when they collide, and merges the exact `main` OID captured from fetch output. It does not push or use GitHub. Before it stashes, the helper records ownership in this worktree's per-worktree ref. A retained backup blocks another run in its own worktree, also after a branch switch, but not in other worktrees. The instructions below are the single recovery guide.
 
+If Pi started in a non-Git parent, select the intended worktree explicitly before running the helper. Run its commands in that worktree, not the parent. Set `projectPath` on every `git_conflict` call to that canonical worktree root. Relative tool paths start at the Pi session directory, not the helper directory. Never use conflict block identifiers from a sibling repository or another linked worktree.
+
 ## Fast path
 
 For `status=merged` or `status=up_to_date`, report emitted line, run:

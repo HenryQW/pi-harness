@@ -63,6 +63,7 @@ export type WorkflowPromptIdentity = Readonly<{
 	path: string;
 	runId: string;
 	action: WorkflowLaunchAction;
+	projectPath: string;
 }>;
 
 export type PrCommandDependencies = {
@@ -125,11 +126,11 @@ async function dispatchWorkflow(
 		runId = reserved.runId;
 		invocation.assertCurrent();
 		const queued = !ctx.isIdle();
-		const identity = { route, skill: workflow.name, path: workflow.sourceInfo.path, runId, action: reserved.action };
+		const identity = { route, skill: workflow.name, path: workflow.sourceInfo.path, runId, action: reserved.action, projectPath: ctx.cwd };
 		markPromptQueued(identity, queued);
 		invocation.assertCurrent();
 		// Busy-session launches are consumed by agent_before_settle, not user input queues.
-		if (!queued) pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action}`, { expandPromptTemplates: true });
+		if (!queued) pi.sendUserMessage(`/${identity.skill} runId=${identity.runId} action=${identity.action} projectPath=${JSON.stringify(identity.projectPath)}`, { expandPromptTemplates: true });
 	} catch (error) {
 		if (runId !== undefined) release(runId, invocation);
 		throw error;

@@ -80,7 +80,7 @@ export async function fixture() {
 }
 
 function harness(
-	commandName: "clone-tab" | "clone-worktree",
+	commandName: "clone-tab",
 	sessionManager: ExtensionCommandContext["sessionManager"],
 	cwd: string,
 	respond?: Respond,
@@ -99,9 +99,8 @@ function harness(
 			const probe = shellProbe(args);
 			if (probe) return probe;
 			const workspaceGet = args[0] === "workspace" && args[1] === "get";
-			if (commandName === "clone-tab" && workspaceGet) return workspaceResponse(args, cwd);
 			const custom = respond ? await respond(args) : undefined;
-			if (custom) return custom;
+			if (custom && (!workspaceGet || custom.stdout !== "")) return custom;
 			if (workspaceGet) return workspaceResponse(args, cwd);
 			if (args[0] === "pane" && args[1] === "get") {
 				return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
@@ -109,15 +108,7 @@ function harness(
 			if (commandName === "clone-tab" && args[0] === "tab" && args[1] === "create") {
 				return success({ result: { tab: { tab_id: "tab-new" }, root_pane: { pane_id: "pane-root" } } });
 			}
-			if (commandName === "clone-worktree" && args[0] === "worktree" && args[1] === "create") {
-				return success({
-					result: {
-						workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/tmp/checkout" } },
-						tab: { tab_id: "tab-new" },
-						root_pane: { pane_id: "pane-root" },
-					},
-				});
-			}
+
 			return success();
 		},
 	} as unknown as ExtensionAPI;
@@ -151,14 +142,6 @@ export function tabHarness(
 	respond?: Respond,
 ) {
 	return harness("clone-tab", sessionManager, cwd, respond);
-}
-
-export function worktreeHarness(
-	sessionManager: ExtensionCommandContext["sessionManager"],
-	cwd: string,
-	respond?: Respond,
-) {
-	return harness("clone-worktree", sessionManager, cwd, respond);
 }
 
 export async function withEnvironment(

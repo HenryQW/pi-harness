@@ -1,445 +1,120 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { basename, relative } from "node:path";
 import test from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { fixture, success, withPane, worktreeHarness as harness } from "./helper.ts";
+import { success, withPane } from "./helper.ts";
+import { head, worktreeFixture } from "./worktree-fixture.ts";
 
-test("/clone-worktree copies only the active path into a worktree workspace and launches exact Herdr argv", async () => {
-	const data = await fixture();
-	try {
-		await withPane("pane-alias", async () => {
-			const before = await readFile(data.sessionFile, "utf8");
-			let starts = 0;
-			const app = harness(data.manager, data.cwd, (args) => {
-				if (args[0] === "pane") {
-					if (args[2] === "pane-root") {
-						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: "pi" } } });
-					}
-					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
-				}
-				if (args[0] === "worktree" && args[1] === "create") {
-					return success({
-						result: {
-							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/pi-harness/.herdr-checkouts/wt-x" } },
-							tab: { tab_id: "tab-new" },
-							root_pane: { pane_id: "pane-root" },
-							worktree: { path: "/repos/pi-harness/.herdr-checkouts/wt-x" },
-						},
-					});
-				}
-				if (args[0] === "tab" && args[1] === "create") {
-					return success({
-						result: { tab: { tab_id: "tab-clone" }, root_pane: { pane_id: "pane-clone" } },
-					});
-				}
-				if (args[0] === "agent") {
-					starts += 1;
-					return starts === 1
-						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: false }
-						: success();
-				}
-				return undefined;
-			});
-			await app.command("", app.ctx);
-
-			assert.deepEqual(app.events, [
-				"exec:pane get",
-				"exec:workspace get",
-				"exec:worktree create",
-				"exec:pane get",
-				"exec:tab create",
-				"exec:pane process-info",
-				"exec:pane run",
-				"exec:pane read",
-				"exec:agent start",
-				"exec:pane process-info",
-				"exec:pane run",
-				"exec:pane read",
-				"exec:agent start",
-				"exec:tab focus",
-			]);
-			assert.ok(app.calls.every((call) => call.command === "herdr" && call.options.cwd === data.cwd));
-			assert.deepEqual(app.calls[0].args, ["pane", "get", "pane-alias"]);
-			assert.deepEqual(app.calls[2].args, ["worktree", "create", "--workspace", "workspace-live", "--no-focus"]);
-			assert.deepEqual(app.calls[3].args, ["pane", "get", "pane-root"]);
-			assert.deepEqual(app.calls[4].args, [
-				"tab", "create", "--workspace", "workspace-new",
-				"--cwd", "/repos/pi-harness/.herdr-checkouts/wt-x", "--no-focus",
-			]);
-			assert.deepEqual(app.calls[13].args, ["tab", "focus", "tab-clone"]);
-			const start = app.calls[8].args;
-			assert.match(start[2]!, /^clone-[a-f0-9]{24}$/);
-			assert.deepEqual(start.slice(3, 8), ["--kind", "pi", "--pane", "pane-clone", "--"]);
-			assert.equal(start[8], "--session");
-			const cloneFile = start[9]!;;
-			await stat(cloneFile);
-
-			const clone = SessionManager.open(cloneFile);
-			assert.equal(clone.getHeader()?.cwd, "/repos/pi-harness/.herdr-checkouts/wt-x");
-			const text = clone.getEntries().flatMap((entry) => {
-				if (entry.type !== "message" || !("content" in entry.message)) return [];
-				const content = entry.message.content;
-				return typeof content === "string"
-					? [content]
-					: content.flatMap((part) => part.type === "text" ? [part.text] : []);
-			});
-			assert.deepEqual(text, ["root", "active"]);
-			assert.equal(clone.getEntry(data.siblingId), undefined);
-			assert.equal(data.manager.getLeafId(), data.activeId);
-			assert.equal(await readFile(data.sessionFile, "utf8"), before);
-			assert.equal(app.notifications.length, 1);
-			assert.equal(app.notifications[0]?.type, "info");
-			assert.match(app.notifications[0]!.message, /workspace-new.*checkout \/repos\/pi-harness\/\.herdr-checkouts\/wt-x/s);
-		});
-	} finally {
-		await rm(data.root, { recursive: true, force: true });
-	}
+test("/clone-worktree selects an explicit sibling from a folder workspace and copies only the active path", async () => {
+	await withPane("pane-current", async () => {
+		const app = await worktreeFixture("clone", { folder: true, busy: true });
+		try {
+			const before = await readFile(app.sessionFile, "utf8");
+			await app.run(relative(app.contextCwd, app.selected));
+			const create = app.calls.find((call) => call.args[1] === "create" && call.args[0] === "worktree");
+			assert.deepEqual(create?.args, ["worktree", "create", "--cwd", app.primary, "--base", head, "--no-focus"]);
+			assert.ok(app.calls.filter((call) => call.command === "git").every((call) => [app.selected, app.primary, app.checkout].includes(call.options.cwd)));
+			assert.equal(app.calls.some((call) => call.args[0] === "workspace" && call.args[1] === "list"), false);
+			const start = app.calls.find((call) => call.args[0] === "agent" && call.args[1] === "start")!;
+			assert.deepEqual(start.args.slice(3, 9), ["--kind", "pi", "--pane", "pane-extra", "--", "--session"]);
+			const clone = SessionManager.open(start.args[9]!);
+			assert.equal(clone.getHeader()?.cwd, app.checkout);
+			assert.equal(clone.getEntry(app.siblingId), undefined);
+			assert.equal(clone.getEntries().filter((entry) => entry.type === "message").length, 2);
+			assert.equal(app.manager.getLeafId(), app.activeId);
+			assert.equal(await readFile(app.sessionFile, "utf8"), before);
+			assert.deepEqual(app.calls.at(-1)?.args, ["tab", "focus", "tab-extra"]);
+		} finally { await rm(app.root, { recursive: true, force: true }); }
+	});
 });
 
-test("/clone-worktree starts the clone in the root pane when no plugin agent claims it", async () => {
-	const data = await fixture();
-	try {
-		await withPane("pane-alias", async () => {
-			const app = harness(data.manager, data.cwd, (args) => {
-				if (args[0] === "pane") {
-					if (args[2] === "pane-root") {
-						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new" } } });
-					}
-					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
-				}
-				if (args[0] === "worktree" && args[1] === "create") {
-					return success({
-						result: {
-							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-							tab: { tab_id: "tab-new" },
-							root_pane: { pane_id: "pane-root" },
-						},
-					});
-				}
-				return undefined;
-			});
-			await app.command("", app.ctx);
-
+test("/clone-worktree preserves the selected linked checkout HEAD and the root-pane launch", async () => {
+	await withPane("pane-current", async () => {
+		const app = await worktreeFixture("clone", { linked: true });
+		try {
+			await app.run();
+			assert.deepEqual(app.calls.find((call) => call.args[0] === "worktree" && call.args[1] === "create")?.args,
+				["worktree", "create", "--cwd", app.primary, "--base", head, "--no-focus"]);
+			assert.equal(app.calls.find((call) => call.args[1] === "start")?.args[6], "pane-root");
 			assert.equal(app.calls.some((call) => call.args[0] === "tab" && call.args[1] === "create"), false);
-			const start = app.calls.find((call) => call.args[0] === "agent" && call.args[1] === "start");
-			assert.ok(start);
-			assert.deepEqual(start.args.slice(3, 8), ["--kind", "pi", "--pane", "pane-root", "--"]);
-		});
-	} finally {
-		await rm(data.root, { recursive: true, force: true });
-	}
+		} finally { await rm(app.root, { recursive: true, force: true }); }
+	});
 });
 
-test("/clone-worktree moves to an extra tab when the root pane becomes busy after polling", async () => {
-	const data = await fixture();
-	try {
-		await withPane("pane-alias", async () => {
-			const starts: string[] = [];
-			const app = harness(data.manager, data.cwd, (args) => {
-				if (args[0] === "pane") {
-					if (args[2] === "pane-root") {
-						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new" } } });
-					}
-					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
-				}
-				if (args[0] === "worktree" && args[1] === "create") {
-					return success({
-						result: {
-							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-							tab: { tab_id: "tab-new" },
-							root_pane: { pane_id: "pane-root" },
-						},
-					});
-				}
-				if (args[0] === "tab" && args[1] === "create") {
-					return success({ result: { tab: { tab_id: "tab-clone" }, root_pane: { pane_id: "pane-clone" } } });
-				}
-				if (args[0] === "agent") {
-					starts.push(args[6]!);
-					return starts.length === 1
-						? { stdout: JSON.stringify({ error: { code: "agent_pane_busy" } }), stderr: "", code: 1, killed: true }
-						: success();
-				}
-				return undefined;
-			});
-			await app.command("", app.ctx);
-
-			assert.deepEqual(starts, ["pane-root", "pane-clone"]);
-			assert.deepEqual(app.calls.at(-1)?.args, ["tab", "focus", "tab-clone"]);
-		});
-	} finally {
-		await rm(data.root, { recursive: true, force: true });
-	}
+test("/clone-worktree never guesses a project or accepts wrong native repository targeting", async () => {
+	for (const mode of ["omitted", "missing", "wrong-native"] as const) await withPane("pane-current", async () => {
+		const app = await worktreeFixture("clone", { folder: true });
+		try {
+			if (mode === "wrong-native") app.setOverride(({ args }) => args[0] === "worktree" && args[1] === "list"
+				? success({ result: { type: "worktree_list", source: { repo_key: "/other/.git", repo_root: "/other", source_checkout_path: "/other" }, worktrees: [] } }) : undefined);
+			await assert.rejects(app.run(mode === "omitted" ? undefined : mode === "missing" ? "missing" : "project"), /nothing was created/);
+			assert.equal(app.calls.some((call) => call.args[1] === "create"), false);
+			assert.deepEqual(await readdir(app.sessionDir), [basename(app.sessionFile)]);
+		} finally { await rm(app.root, { recursive: true, force: true }); }
+	});
 });
 
-test("/clone-worktree reports recovered IDs from an incomplete extra-tab response", async () => {
-	const data = await fixture();
-	try {
-		await withPane("pane-alias", async () => {
-			const app = harness(data.manager, data.cwd, (args) => {
-				if (args[0] === "pane") {
-					if (args[2] === "pane-root") {
-						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: "pi" } } });
-					}
-					return success({ result: { pane: { pane_id: "pane-live", workspace_id: "workspace-live" } } });
-				}
+test("/clone-worktree retains uncertain allocations without launch, replay, or deletion", async () => {
+	for (const mode of ["killed", "failed-with-ids", "throw", "missing-id", "wrong-repo", "wrong-tab", "wrong-pane", "wrong-path", "wrong-common", "wrong-head", "existing-checkout", "live-pane", "live-workspace", "live-tab"] as const) await withPane("pane-current", async () => {
+		const app = await worktreeFixture("clone", { busy: true });
+		try {
+			app.setOverride(({ command, args, options }) => {
 				if (args[0] === "worktree" && args[1] === "create") {
-					return success({
-						result: {
-							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-							tab: { tab_id: "tab-new" },
-							root_pane: { pane_id: "pane-root" },
-						},
-					});
+					if (mode === "throw") throw new Error("transport lost");
+					const response = app.allocation();
+					if (mode === "missing-id") response.result.workspace.workspace_id = "";
+					if (mode === "wrong-repo") response.result.workspace.worktree = { ...response.result.workspace.worktree, repo_key: "/other/.git" };
+					if (mode === "wrong-tab") response.result.tab.workspace_id = "other";
+					if (mode === "wrong-pane") response.result.root_pane.tab_id = "other";
+					if (mode === "wrong-path") response.result.worktree.path = "/other";
+					return { ...success(response), killed: mode === "killed", code: mode === "failed-with-ids" ? 1 : 0 };
 				}
-				if (args[0] === "tab" && args[1] === "create") {
-					return success({ result: { tab: { tab_id: "tab-clone" }, root_pane: {} } });
-				}
+				if (command === "git" && args[0] === "worktree" && mode === "existing-checkout") return success(`worktree ${app.primary}\0\0worktree ${app.checkout}\0\0`);
+				if (command === "git" && options.cwd === app.checkout && mode === "wrong-common" && args.includes("--git-common-dir")) return success("/other/.git");
+				if (command === "git" && options.cwd === app.checkout && mode === "wrong-head" && args.includes("HEAD^{commit}")) return success("c".repeat(40));
+				if (mode === "live-pane" && args[0] === "pane" && args[2] === "pane-root") return success({ result: { pane: { pane_id: "other", tab_id: "tab-new", workspace_id: "workspace-new", cwd: app.checkout } } });
+				if (mode === "live-workspace" && args[0] === "workspace" && args[2] === "workspace-new") return success({ result: { workspace: { workspace_id: "workspace-new", worktree: null } } });
+				if (mode === "live-tab" && args[0] === "tab" && args[1] === "get") return success({ result: { tab: { tab_id: "tab-new", workspace_id: "other" } } });
 				return undefined;
 			});
-			await assert.rejects(app.command("", app.ctx), (error: Error) => {
-				assert.match(error.message, /workspace workspace-new/);
-				assert.match(error.message, /tab tab-clone/);
-				assert.match(error.message, /missing root_pane\.pane_id/);
+			await assert.rejects(app.run(), (error: Error) => {
+				assert.match(error.message, /retained|uncertain/);
+				if (mode !== "throw") assert.match(error.message, /pane-root/);
 				return true;
-			});
-		});
-	} finally {
-		await rm(data.root, { recursive: true, force: true });
-	}
+			}, mode);
+			assert.equal(app.calls.filter((call) => call.args[1] === "create").length, 1, mode);
+			assert.equal(app.calls.some((call) => ["start", "remove", "close", "focus"].includes(call.args[1]!)), false, mode);
+			assert.deepEqual(await readdir(app.sessionDir), [basename(app.sessionFile)]);
+		} finally { await rm(app.root, { recursive: true, force: true }); }
+	});
 });
 
-test("/clone-worktree inside a linked worktree creates the worktree from the repo parent workspace", async () => {
-	const data = await fixture();
-	try {
-		await mkdir(join(data.root, "wt"));
-		await withPane("pane-linked", async () => {
-			const app = harness(data.manager, data.cwd, (args) => {
-				if (args[0] === "pane") {
-					if (args[2] === "pane-root") {
-						return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: "pi" } } });
-					}
-					return success({ result: { pane: { pane_id: "pane-linked", workspace_id: "workspace-linked" } } });
+test("/clone-worktree verifies an extra tab after a late busy root and retains failed launches", async () => {
+	for (const mode of ["busy", "bad-extra", "failed-start", "incomplete-extra", "focus-failed"] as const) await withPane("pane-current", async () => {
+		const app = await worktreeFixture("clone", { busy: mode !== "busy" });
+		let starts = 0;
+		try {
+			app.setOverride(({ args }) => {
+				if (args[0] === "agent") {
+					starts++;
+					if (mode === "failed-start") return { stdout: "", stderr: "timed out", code: 9, killed: true };
+					if (mode === "busy" && starts === 1) return { ...success({ error: { code: "agent_pane_busy" } }), code: 1 };
 				}
-				if (args[0] === "workspace" && args[1] === "get") {
-					return success({
-						result: {
-							workspace: {
-								workspace_id: args[2],
-								worktree: {
-									checkout_path: join(data.root, "wt"),
-									repo_root: "/repos/main",
-									is_linked_worktree: true,
-								},
-							},
-						},
-					});
-				}
-				if (args[0] === "workspace" && args[1] === "list") {
-					return success({
-						result: {
-							type: "workspace_list",
-							workspaces: [
-								{ workspace_id: "workspace-parent", worktree: { checkout_path: "/repos/main", is_linked_worktree: false } },
-								{ workspace_id: "workspace-linked", worktree: { checkout_path: join(data.root, "wt"), repo_root: "/repos/main", is_linked_worktree: true } },
-							],
-						},
-					});
-				}
-				if (args[0] === "tab" && args[1] === "create") {
-					return success({
-						result: { tab: { tab_id: "tab-clone" }, root_pane: { pane_id: "pane-clone" } },
-					});
-				}
-				if (args[0] === "worktree" && args[1] === "create") {
-					return success({
-						result: {
-							workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-							tab: { tab_id: "tab-new" },
-							root_pane: { pane_id: "pane-root" },
-						},
-					});
-				}
+				if (mode === "bad-extra" && args[0] === "pane" && args[2] === "pane-extra") return success({ result: { pane: { pane_id: "pane-extra", tab_id: "unrelated", workspace_id: "workspace-new", cwd: app.checkout } } });
+				if (mode === "incomplete-extra" && args[0] === "tab" && args[1] === "create") return success({ result: { tab: { tab_id: "tab-extra" }, root_pane: {} } });
+				if (mode === "focus-failed" && args[1] === "focus") return { stdout: "", stderr: "focus failed", code: 1, killed: false };
 				return undefined;
 			});
-			await app.command("", app.ctx);
-
-			const create = app.calls.find((call) => call.args[0] === "worktree" && call.args[1] === "create");
-			assert.deepEqual(create?.args, ["worktree", "create", "--workspace", "workspace-parent", "--no-focus"]);
-			assert.equal(app.notifications.length, 1);
-			assert.equal(app.notifications[0]?.type, "info");
-		});
-	} finally {
-		await rm(data.root, { recursive: true, force: true });
-	}
-});
-
-test("worktree creation failures happen before cloning and retain nothing of the clone", async (t) => {
-	await t.test("a definitively failed worktree create never creates a clone", async () => {
-		const data = await fixture();
-		try {
-			await withPane("pane-current", async () => {
-				const app = harness(data.manager, data.cwd, (args) => {
-					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "worktree") return { stdout: "", stderr: "worktree create denied", code: 1, killed: false };
-					return undefined;
-				});
-				await assert.rejects(app.command("", app.ctx), /worktree create denied/);
-				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
-					["pane", "get"],
-					["workspace", "get"],
-					["worktree", "create"],
-				]);
-				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
-			});
-		} finally {
-			await rm(data.root, { recursive: true, force: true });
-		}
-	});
-
-	await t.test("a killed worktree create with complete JSON is ambiguous and stops before continuation", async () => {
-		const data = await fixture();
-		try {
-			await withPane("pane-current", async () => {
-				const app = harness(data.manager, data.cwd, (args) => {
-					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "worktree") {
-						return {
-							stdout: JSON.stringify({
-								result: {
-									workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-									tab: { tab_id: "tab-new" },
-									root_pane: { pane_id: "pane-root" },
-								},
-							}),
-							stderr: "killed mid-create",
-							code: 9,
-							killed: true,
-						};
-					}
-					return undefined;
-				});
-				await assert.rejects(app.command("", app.ctx), (error: Error) => {
-					assert.match(error.message, /could not be confirmed/);
-					assert.match(error.message, /workspace workspace-new/);
-					assert.match(error.message, /tab tab-new/);
-					assert.match(error.message, /root pane pane-root/);
-					assert.match(error.message, /checkout \/repos\/wt-x/);
-					assert.match(error.message, /killed before completion/);
-					return true;
-				});
-				assert.deepEqual(app.calls.map((call) => call.args.slice(0, 2)), [
-					["pane", "get"],
-					["workspace", "get"],
-					["worktree", "create"],
-				]);
-				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
-			});
-		} finally {
-			await rm(data.root, { recursive: true, force: true });
-		}
-	});
-
-	await t.test("a whitespace-only checkout_path is treated as missing and creates no clone", async () => {
-		const data = await fixture();
-		try {
-			await withPane("pane-current", async () => {
-				const app = harness(data.manager, data.cwd, (args) => {
-					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "worktree") {
-						return success({
-							result: {
-								workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "   " } },
-								tab: { tab_id: "tab-new" },
-								root_pane: { pane_id: "pane-root" },
-							},
-						});
-					}
-					return undefined;
-				});
-				await assert.rejects(app.command("", app.ctx), /missing workspace\.worktree\.checkout_path/);
-				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
-			});
-		} finally {
-			await rm(data.root, { recursive: true, force: true });
-		}
-	});
-
-	await t.test("an incomplete worktree response retains the worktree IDs and creates no clone", async () => {
-		const data = await fixture();
-		try {
-			await withPane("pane-current", async () => {
-				const app = harness(data.manager, data.cwd, (args) => {
-					if (args[0] === "pane") return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					if (args[0] === "worktree") {
-						return success({
-							result: {
-								workspace: { worktree: { checkout_path: "/repos/wt-x" } },
-								tab: { tab_id: "tab-new" },
-								root_pane: { pane_id: "pane-root" },
-							},
-						});
-					}
-					return undefined;
-				});
-				await assert.rejects(app.command("", app.ctx), (error: Error) => {
-					assert.match(error.message, /could not be confirmed/);
-					assert.match(error.message, /tab-new/);
-					assert.match(error.message, /pane-root/);
-					assert.match(error.message, /missing workspace_id/);
-					assert.match(error.message, /checkout \/repos\/wt-x/);
-					return true;
-				});
-				assert.equal(app.calls.some((call) => call.args[0] === "agent"), false);
-				assert.deepEqual(await readdir(data.sessionDir), [basename(data.sessionFile)]);
-			});
-		} finally {
-			await rm(data.root, { recursive: true, force: true });
-		}
-	});
-
-	await t.test("agent start failure retains worktree artifacts and skips focus", async () => {
-		const data = await fixture();
-		try {
-			await withPane("pane-current", async () => {
-				const app = harness(data.manager, data.cwd, (args) => {
-					if (args[0] === "pane") {
-						if (args[2] === "pane-root") {
-							return success({ result: { pane: { pane_id: "pane-root", workspace_id: "workspace-new", agent: "pi" } } });
-						}
-						return success({ result: { pane: { pane_id: "pane-current", workspace_id: "workspace-live" } } });
-					}
-					if (args[0] === "tab" && args[1] === "create") {
-						return success({
-							result: { tab: { tab_id: "tab-clone" }, root_pane: { pane_id: "pane-clone" } },
-						});
-					}
-					if (args[0] === "worktree") {
-						return success({
-							result: {
-								workspace: { workspace_id: "workspace-new", worktree: { checkout_path: "/repos/wt-x" } },
-								tab: { tab_id: "tab-new" },
-								root_pane: { pane_id: "pane-root" },
-							},
-						});
-					}
-					if (args[0] === "agent") return { stdout: "", stderr: "timed out", code: 9, killed: true };
-					return undefined;
-				});
-				await assert.rejects(app.command("", app.ctx), (error: Error) => {
-					assert.match(error.message, /could not be confirmed/);
-					assert.match(error.message, /clone-[a-f0-9]{24}/);
-					assert.match(error.message, /workspace-new/);
-					assert.match(error.message, /tab-clone/);
-					assert.match(error.message, /pane-clone/);
-					assert.match(error.message, /timed out/);
-					return true;
-				});
+			if (mode === "busy" || mode === "focus-failed") {
+				await app.run();
+				assert.equal(starts, mode === "busy" ? 2 : 1);
+				if (mode === "focus-failed") assert.equal(app.notifications[0]?.type, "warning");
+			} else {
+				await assert.rejects(app.run(), /retained.*workspace-new.*tab-extra/s);
+				assert.equal(starts, mode === "failed-start" ? 1 : 0);
 				assert.equal(app.calls.some((call) => call.args[1] === "focus"), false);
-			});
-		} finally {
-			await rm(data.root, { recursive: true, force: true });
-		}
+			}
+		} finally { await rm(app.root, { recursive: true, force: true }); }
 	});
 });

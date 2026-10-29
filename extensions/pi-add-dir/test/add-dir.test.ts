@@ -416,6 +416,53 @@ test("returns no results for missing directories but propagates abort reasons", 
 	await assert.rejects(search, (error) => error === reason);
 });
 
+test("loads only explicit session children and keeps persistent overlap protections", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-children-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const first = join(root, "first"), second = join(root, "second");
+	for (const dir of [first, second]) {
+		await mkdir(join(dir, ".agents/skills/local"), { recursive: true });
+		await git(dir, ["init", "-q"]);
+		await writeFile(join(dir, "AGENTS.md"), `Instructions for ${dir}`);
+		await writeFile(join(dir, ".agents/skills/local/SKILL.md"), "---\nname: local\ndescription: test\n---\n");
+	}
+	const notifications: Array<{ message: string; level: string }> = [];
+	const h = loadExtension({ agentDir: join(root, "agent"), exec: realExec });
+	const branch = () => h.appendedEntries.map((entry) => ({ type: "custom", ...entry }));
+	const ctx = interactiveContext(root, branch, { notifications });
+	const sections = () => {
+		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+		h.handlers.get("before_agent_start")!(event, ctx);
+		return event.systemPromptOptions.sections;
+	};
+	await h.handlers.get("session_start")!({}, ctx);
+	assert.deepEqual(sections(), {});
+	assert.equal(await h.handlers.get("resources_discover")!({ cwd: root }, ctx), undefined);
+	for (const scope of ["project", "global"]) {
+		await h.commands.get("dir-add")!.handler(`--${scope} first`, ctx as ExtensionCommandContext);
+		assert.match(notifications.at(-1)!.message, /overlaps current working directory scope/);
+	}
+	assert.equal(h.appendedEntries.length, 0);
+	const added = await h.tools.get("add_directory")!.execute("first", { path: "first" }, undefined, undefined, ctx);
+	assert.match(added.content[0].text, /Instructions for .*first/);
+	assert.match(sections().pi_add_dir!, /Instructions for .*first/);
+	assert.doesNotMatch(sections().pi_add_dir!, /Instructions for .*second/);
+	await h.commands.get("dir-add")!.handler("second", ctx as ExtensionCommandContext);
+	assert.match(sections().pi_add_dir!, /Instructions for .*second/);
+	assert.equal(h.appendedEntries.length, 2);
+	await h.handlers.get("session_start")!({}, ctx);
+	assert.match(sections().pi_add_dir!, /Instructions for .*first/);
+	await assert.rejects(h.tools.get("add_directory")!.execute("same", { path: "." }, undefined, undefined, ctx), /overlaps current working directory/);
+	await assert.rejects(h.tools.get("add_directory")!.execute("nested", { path: "first/.agents" }, undefined, undefined, ctx), /overlaps already-added/);
+	await h.commands.get("dir-add")!.handler("--global first", ctx as ExtensionCommandContext);
+	assert.match(notifications.at(-1)!.message, /overlaps current working directory scope/);
+	assert.deepEqual(savedGlobalDirectories(join(root, "agent")), []);
+	for (const dir of [first, second]) {
+		const config = await realExec("git", ["config", "--local", "--get-all", "pi-add-dir.directory"], { cwd: dir });
+		assert.equal(config.code, 1);
+	}
+});
+
 test("rejects an ancestor of the current working directory", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-"));
 	try {

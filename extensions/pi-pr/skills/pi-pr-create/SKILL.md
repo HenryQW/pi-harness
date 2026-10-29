@@ -5,6 +5,8 @@ description: Prepare and publish the current branch pull request with determinis
 
 # Pi PR Create
 
+Use the supplied `projectPath` on every `pi_pr_create` call, and on any `pi_git_commit` or `git_conflict` call. It is the pinned canonical worktree root. Use that directory for file inspection, edits, and checks. Pi can start in a non-Git parent; do not use the session directory or select a sibling repository. A changed path does not grant new workflow authority.
+
 Use only `pi_pr_create` for base selection, pending-work commits, Git and GitHub mutations. Do not reproduce its Git or GitHub checks with shell tools.
 
 Use only the `runId` reserved in this session. If publication will be delegated, delegate before starting a workflow. Pass the authorized work scope, explicit base intent, and repository-local upstream consent, not the parent's `runId`. The child calls `pi_git_pr` and follows its own same-session skill handoff. An active parent workflow stays parent-owned; do not publish concurrently from parent and child. A foreign or stale run identifier (ID) is a blocker; do not start another workflow automatically. If this session's run ended at ordinary settlement, use a fresh `pi_git_pr` entry only when the same user authorization still applies. It must pass recovery checks. After failure or cancellation, inspect the result and recovery journal first; never replay an uncertain action.

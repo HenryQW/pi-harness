@@ -1,6 +1,8 @@
 import { tmpdir } from "node:os";
 import type { ExecResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
+import { verifyPaneTarget, requiredString } from "./worktree.ts";
+import { absolutePath } from "./repository.ts";
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
 type TabEntry = { tab_id?: unknown; workspace_id?: unknown; label?: unknown };
@@ -29,6 +31,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI, guardRemoval: (chec
 			if (!tabId) throw new Error("HERDR_TAB_ID is missing.");
 			const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
 			if (!workspaceId) throw new Error("HERDR_WORKSPACE_ID is missing.");
+			const paneId = requiredString(process.env.HERDR_PANE_ID, "HERDR_PANE_ID");
 
 			if (!force) {
 				const confirmed = await ctx.ui.confirm("Done", "Close its Herdr tabs and remove the current worktree?");
@@ -36,12 +39,15 @@ export default function herdrDoneExtension(pi: ExtensionAPI, guardRemoval: (chec
 			}
 
 			await ctx.waitForIdle();
-			const checkout = (await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).trim();
+			const checkout = absolutePath((await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).replace(/\r?\n$/, ""), "Git checkout");
 			// First record of the NUL-delimited list is always the main worktree;
 			// -z keeps paths containing newlines parseable.
 			const worktreeFields = (await execOrThrow("git", ["worktree", "list", "--porcelain", "-z"], checkout)).split("\0");
 			const mainCheckout = worktreeFields[0]?.startsWith("worktree ") ? worktreeFields[0].slice("worktree ".length) : undefined;
 			if (!mainCheckout) throw new Error("git worktree list returned no main worktree.");
+			if (mainCheckout === checkout || !worktreeFields.includes(`worktree ${checkout}`)) {
+				throw new Error("/done requires the current workspace's registered linked checkout, not a primary repository.");
+			}
 			// A bare primary has no working tree to pull into.
 			const parentIsBare = worktreeFields.slice(1, worktreeFields.indexOf("")).includes("bare");
 
@@ -49,6 +55,11 @@ export default function herdrDoneExtension(pi: ExtensionAPI, guardRemoval: (chec
 				// Forced completion never bypasses managed-command ownership.
 				const release = await guardRemoval(checkout);
 				try {
+					const repoKey = absolutePath((await execOrThrow("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], checkout)).replace(/\r?\n$/, ""), "Git common directory");
+					const paneCwd = await verifyPaneTarget(herdr, ctx.cwd, { workspaceId, tabId, rootPaneId: paneId, checkoutPath: checkout }, { repoRoot: mainCheckout, repoKey }, true);
+					if ((await execOrThrow("git", ["rev-parse", "--show-toplevel"], paneCwd)).replace(/\r?\n$/, "") !== checkout) {
+						throw new Error("/done pane directory is not in the target linked checkout.");
+					}
 					let dependentIds: string[] = [];
 					if (!force) {
 						const snapshot = await herdr.json(["api", "snapshot"], { cwd: ctx.cwd });
