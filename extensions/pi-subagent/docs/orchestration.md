@@ -498,7 +498,7 @@ An empty `tools` list adds no base tools. Selected extension tools can still act
 
 Children run with `--no-extensions`. So a Role must list the extension that registers the provider of its route model. Only declared resources and required internal policy adapters load. `builtin:<name>` entries explicitly load Pi built-in extensions (`builtin:codemode`, `builtin:tool-search`, `builtin:llama.cpp`).
 
-The extension rejects `builtin:mcp` and direct loading of `pi-mcp-adapter`, because they bypass the `mcps` allowlist. Scripts can still call extension tools registered with `codemode` or `deferred` exposure. But the model gets their declarations only when `tools` names them.
+The extension rejects `builtin:mcp` and direct loading of `pi-mcp-adapter`, because they bypass the `mcps` allowlist. Scripts can still call extension tools registered with `codemode` or `deferred` exposure. The model gets their declarations only when `tools` names them or `tool_search` loads them.
 
 To let a Role run `codemode` scripts, list `builtin:codemode` in `extensions`. Also list `codemode` in `tools`. Both are required, because the built-in registers the tool as inactive and the Role tool policy activates it. If `tools` has `codemode` alone, the launch fails with an unavailable tool.
 
@@ -506,9 +506,18 @@ Pi's `codemode.mode` and `codemode.inlineBudget` settings apply in the child wit
 
 Every child loads the Role MCP adapter. It also connects the servers that Role extensions register with `pi.registerMcpServer()`, for example the CodeGraph watcher of `pi-codegraph`. These servers keep the exposure that the extension sets, and `mcps` does not gate them, because the Role already trusts the extension.
 
-The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. In a Role that activates `codemode`, each selected server keeps its configured `exposure` and `toolExposure`. Pi's default `codemode` exposure makes tools callable from scripts without declarations. `direct` declares them. `deferred` tools stay reachable from scripts, and `hidden` tools stay unreachable. An invalid exposure value fails the launch.
+The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. Every Role keeps each selected server's validated `exposure` and `toolExposure`, with or without `codemode`. An absent `exposure` keeps Pi's native `codemode` default. The adapter never changes these tools to `direct`, removes per-tool restrictions, or activates `codemode` automatically, even if the global file sets `autoEnableCodemode: true`.
 
-In every other Role, the extension forces selected servers to `direct` exposure. It ignores `toolExposure`, because that child cannot reach undeclared tools. Declared tools show to the model as `mcp__<server>__<tool>` after the server connects. Pi replaces `-` in server and tool names with `_`. Pi appends a hash suffix when two tool names collide or a name is longer than 64 characters.
+| Exposure | Child access |
+| --- | --- |
+| `codemode` | Callable from scripts or discoverable with `tool_search`; not declared at connection |
+| `deferred` | Callable from scripts; `tool_search` can load a declaration |
+| `direct` | Declared when connected and callable from scripts |
+| `hidden` | Unreachable, including from scripts and `tool_search` |
+
+`codemode-deferred` is accepted as an alias for `codemode`. `toolExposure` uses exact server tool names or `*` patterns. Exact names win; the first matching pattern wins. Invalid server or per-tool exposures fail before launch, even in a Role without `codemode`.
+
+Declared tools show to the model as `mcp__<server>__<tool>` after the server connects. Pi replaces `-` in server and tool names with `_`. Pi appends a hash suffix when two tool names collide or a name is longer than 64 characters.
 
 Before launch, the extension checks each selected entry against Pi's documented `mcpServers` rules, in Main and again in the child. The launch fails with the file path and field for each of these conditions:
 
@@ -523,6 +532,46 @@ The extension never modifies the file. Fix the entry or choose another server. T
 The extension still ignores project MCP overrides. A project cannot change the global server allowlist or exposure of the Role. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. The extension excludes Main-only delegation and recovery tools and `ask_question` from children.
 
 Isolated Herdr Role launches receive the same turn, token, and child-runtime budget metadata as ephemeral launches. Retained workers therefore keep one non-refilling session budget across follow-ups rather than receiving a new request budget.
+
+### Migrate MCP exposure to 28.0.0
+
+Earlier releases forced selected global servers to `direct` and removed `toolExposure` when a Role did not activate `codemode`. That behavior could expose hidden tools. Version 28.0.0 removes it. Existing Roles can therefore lose direct tool declarations. Inspect the global server rules before upgrading; do not make all tools direct to restore the old behavior.
+
+```mermaid
+flowchart LR
+    G[Global mcp.json] --> S[Select explicit mcps names]
+    S --> V[Validate server and per-tool exposure]
+    V --> N[Pi native exposure]
+    R[Explicit Role tools and extensions] --> N
+```
+
+Keep the required server names in the Role's `mcps`. Choose the smallest access path:
+
+| Required access | Role configuration |
+| --- | --- |
+| Discover tools without scripts | Add `builtin:tool-search` to `extensions` and `tool_search` to `tools`. Both `codemode` and `deferred` tools can be found. |
+| Run scripts | Add `builtin:codemode` to `extensions` and `codemode` to `tools`. This does not change server exposure or activate base tools such as `bash`. |
+| Direct calls to permitted tools only | Set only those tools to `direct` in the global `toolExposure`. No discovery extension is required. |
+
+Loading `builtin:tool-search` alone does not permit discovery. The final tool policy must select `tool_search`; Role tools and caller additions both count. Otherwise, Pi excludes it from registration, including later registration and MCP registry changes.
+
+For example, to declare only `search` from `docs`, use this global configuration. Replace the example command with your server command:
+
+```json
+{
+  "mcpServers": {
+    "docs": {
+      "command": "docs-server",
+      "exposure": "hidden",
+      "toolExposure": { "search": "direct" }
+    }
+  }
+}
+```
+
+A Role with `mcps: [docs]` can call `search` directly. Other tools stay hidden. Keep the Role's provider extension; `tools: []` selects no base tools but still permits the declared direct server tool. These global rules also apply to Main. Project overrides cannot restore direct access in children. If neither discovery tool is selected, non-direct tools stay undeclared; Pi can warn that they cannot be called. The adapter does not add capabilities to resolve that warning.
+
+Library callers must remove the third `options` argument from `loadRoleMcpConfig(agentDir, allowlist)`. The unused `roleActivatesCodemode` export is removed. `roleToolPolicyFromArgv` remains available for child tool policy.
 
 ### Reviewer Git inspection
 

@@ -191,7 +191,7 @@ Role Markdown files in `~/.pi/agent/config/pi-subagent/` require frontmatter and
 | `tools` | Required base or internal tool-name array; `[]` selects none. Name `codemode` or `git_read` to activate it. |
 | `extensions` | Required array of trusted absolute paths, supported package sources, or Pi built-ins such as `builtin:codemode` |
 | `skills` | Required array of effective Pi Skill names |
-| `mcps` | Optional exact global server names from `~/.pi/agent/mcp.json`, using native `mcpServers` format. Omitted or `[]` denies access to `mcp.json` servers. Servers that Role extensions register always connect. |
+| `mcps` | Optional exact global Model Context Protocol (MCP) server names from `~/.pi/agent/mcp.json`, using native `mcpServers` format. Omitted or `[]` denies access to `mcp.json` servers. Servers that Role extensions register always connect. |
 | body | Required system instructions |
 
 The package ships `implementer`, `reviewer`, and `scout`; same-name user Roles override built-ins. Roles define capabilities, not access or isolation. Unknown frontmatter keys invalidate that file. Other valid Roles load; duplicate names become unavailable. Delegation to an invalid file's claimed Role fails with that file's error. Inspect `/subagent roles`.
@@ -206,7 +206,11 @@ The same profile and fallback route warn once in the active parent session. A se
 
 Route selection does not change. An available primary produces no fallback warning. A direct `model` override produces no fallback warning because it replaces the configured model. It still keeps the resolved thinking level.
 
-Children load only declared resources and required adapters. Roles must list their model provider extension. `codemode` requires both `builtin:codemode` in `extensions` and `codemode` in `tools`. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work. Main-only delegation/recovery tools and `ask_question` stay unavailable to children.
+Children load only declared resources and required adapters. Roles must list their model provider extension. `codemode` requires both `builtin:codemode` in `extensions` and `codemode` in `tools`. For discovery without scripts, add `builtin:tool-search` to `extensions` and `tool_search` to `tools`. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work. Main-only delegation/recovery tools and `ask_question` stay unavailable to children.
+
+Every selected MCP server keeps its validated `exposure` and `toolExposure`, with or without `codemode`. An absent exposure keeps Pi's native `codemode` default. Hidden tools stay unreachable. MCP configuration never activates `codemode` automatically.
+
+**Upgrade to 28.0.0:** Roles without `codemode` no longer force servers to direct exposure or remove per-tool restrictions. Select a discovery tool, or configure only permitted tools as `direct` in the global `toolExposure`. See [Migrate MCP exposure](./docs/orchestration.md#migrate-mcp-exposure-to-2800) for configuration and library changes.
 
 Read [Role and resource policy](./docs/orchestration.md#role-and-resource-policy) for extension exposure, MCP validation, OAuth constraints, and child budgets. Project MCP overrides cannot change a Role's global allowlist or exposure.
 

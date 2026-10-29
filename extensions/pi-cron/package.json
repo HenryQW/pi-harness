@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-cron",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Run scheduled job prompts in new Pi sessions with per-job interval, Role, model, and thinking level.",
   "keywords": [
     "pi-package",
@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^4.0.0",
-    "@henryqw/pi-subagent": "^27.2.0",
+    "@henryqw/pi-subagent": "^28.0.0",
     "@henryqw/pi-task-models": "^9.0.0",
     "proper-lockfile": "^4.1.2"
   },
