@@ -1187,14 +1187,16 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		["synthesis", "Exact synthesized result."],
 	]);
 	const textCalls: Array<{ taskId: string; prompt: string }> = [];
+	let fallbackUses = 0;
 	let activeTextTasks = 0;
 	let maxConcurrentTextTasks = 0;
 	let producerStarts = 0;
 	let releaseProducers!: () => void;
 	const producersReady = new Promise<void>((resolve) => { releaseProducers = resolve; });
 	const executor: EphemeralSubagentExecutor = {
-		run: async ({ prepare }) => {
+		run: async ({ prepare, onActivity }) => {
 			const prepared = await prepare();
+			onActivity?.({ type: "message_end" });
 			const taskId = /^Task: ([^\n]+)$/m.exec(prepared.task)?.[1];
 			const output = taskId ? outputs.get(taskId) : undefined;
 			if (!taskId || output === undefined) throw new Error("Unexpected text task prompt.");
@@ -1220,6 +1222,11 @@ test("text producers feed ordered synthesis context into an integrated changeset
 		},
 	};
 	const { root, runtime, runner } = await harness(t, { executor });
+	const acquireLaunch = runtime.acquireLaunch.bind(runtime);
+	runtime.acquireLaunch = async (...args) => {
+		const handle = await acquireLaunch(...args);
+		return { ...handle, launch: { ...handle.launch, onFallbackUse: () => { fallbackUses += 1; } } };
+	};
 	runtime.main = await new CheckedGitRuntime().inspectMain({ root }, { signal: new AbortController().signal });
 	const definition = request("text-dataflow", [
 		textTask("source-one", "role/source-one"),
@@ -1236,6 +1243,7 @@ test("text producers feed ordered synthesis context into an integrated changeset
 	const apply = changesetState(result.state, "apply");
 
 	assert.equal(maxConcurrentTextTasks, 2);
+	assert.equal(fallbackUses, 3, "each productive text task forwards its parent-owned fallback notice");
 	assert.deepEqual(result.state.waves.map(({ taskIds }) => taskIds), [
 		["source-one", "source-two"],
 		["synthesis"],

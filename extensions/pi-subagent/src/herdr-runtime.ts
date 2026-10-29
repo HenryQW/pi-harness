@@ -1005,10 +1005,11 @@ export class HerdrHostRuntime implements HostRuntime {
 			try {
 				const agent = parseAgent(parseJsonObject(response.stdout, "Herdr agent start response"), allocation, ["agent_started"]);
 				if (!agent.interactiveReady || agent.status !== "idle") throw new Error("Started Herdr agent is not exactly ready and idle.");
-				return { kind: "agent", outcome: "owned" };
 			} catch (error) {
 				return { kind: "agent", outcome: "unknown", failure: safeText(error), possibleResources: [allocation.agentName, allocation.paneId] };
 			}
+			launch.onFallbackUse?.();
+			return { kind: "agent", outcome: "owned" };
 		});
 	}
 

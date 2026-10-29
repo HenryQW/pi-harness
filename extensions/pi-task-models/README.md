@@ -101,13 +101,15 @@ Saving never overwrites a preset file that has problems; a conflict message asks
 | `availableTaskModels(ctx)` | function | Lists scoped text models, or registry models when scope is empty. |
 | `taskThinkingLevels(ctx, model)` | function | Lists supported levels, respecting session-pinned thinking. |
 | `resolveTaskModelRoute(ctx, route, thinking?)` | function | Resolves one available route. |
-| `resolveConfiguredTaskRoute(ctx, task, agentDir?, thinking?)` | function | Resolves the first usable task route. |
-| `resolveConfiguredTaskRoutes(ctx, task, agentDir?, thinking?)` | function | Resolves configured task route candidates. |
+| `resolveConfiguredTaskRoute(ctx, task, agentDir?, thinking?, onFallback?)` | function | Resolves the first usable task route. |
+| `resolveConfiguredTaskRoutes(ctx, task, agentDir?, thinking?, onFallback?)` | function | Resolves configured task route candidates. |
 | `executeTaskRoutes(routes, attempt, { shouldFallback, signal? })` | function | Tries resolved routes in order; returns first success. |
 | `orderedProfileRoutes(profile)` | function | Returns primary, then optional fallback. |
 | `createTaskModelsExtension(pi, options?)` (also default export) | function | Registers `/task-models`, missing-config warnings, and issue reporting. |
 
 Profile thinking is authoritative; resolution uses `config.tasks[task.id] ?? task.defaultProfile`.
+
+The optional `onFallback(profileName, route)` callback reports when the first usable route is the configured fallback. It does not run when the primary is usable or when no route is usable. It does not report execution failures or retries. Consumers own warning delivery and duplicate suppression.
 
 Consumers must not read or write shared config; call `report(ctx)` before resolution.
 

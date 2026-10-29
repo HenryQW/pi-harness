@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-subagent",
-  "version": "27.14.3",
+  "version": "27.15.0",
   "description": "Delegate bounded direct work or durable checked isolated task graphs to Pi roles.",
   "keywords": [
     "pi-package",
@@ -74,7 +74,7 @@
     "@henryqw/pi-herdr": "^0.6.0",
     "@henryqw/pi-multi-codex": "^3.0.0",
     "@henryqw/pi-process": "^0.2.0",
-    "@henryqw/pi-task-models": "^9.0.0",
+    "@henryqw/pi-task-models": "^9.2.0",
     "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {

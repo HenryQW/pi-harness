@@ -643,6 +643,8 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 			scopedModels: [],
 			modelRegistry: { getAvailable: () => [primary, fallback] },
 		};
+		const selections: unknown[] = [];
+		const onFallback = (profile: string, route: unknown) => selections.push({ profile, route });
 		const file = configFile(dir);
 		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
 
@@ -669,10 +671,12 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 				},
 			},
 		}));
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir), {
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir, undefined, onFallback), {
 			model: primary,
 			thinkingLevel: "off",
 		});
+		resolveConfiguredTaskRoute(ctx, { ...EXAMPLE_TASK, defaultProfile: "frontier" }, dir, undefined, onFallback);
+		assert.deepEqual(selections, [], "an available fallback is not a selected fallback");
 
 		writeFileSync(file, JSON.stringify({
 			profiles: {
@@ -686,10 +690,14 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 		assert.deepEqual(resolveConfiguredTaskRoutes(ctx, EXAMPLE_TASK, dir), [
 			{ model: fallback, thinkingLevel: "off" },
 		]);
-		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir), {
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir, undefined, onFallback), {
 			model: fallback,
 			thinkingLevel: "off",
 		});
+		assert.deepEqual(selections, [{ profile: "frontier", route: { model: fallback, thinkingLevel: "off" } }]);
+		selections.length = 0;
+		assert.throws(() => resolveConfiguredTaskRoute({ ...ctx, modelRegistry: { getAvailable: () => [] } }, EXAMPLE_TASK, dir, undefined, onFallback), { taskRouteCode: "no-route" });
+		assert.deepEqual(selections, [], "failed resolution does not report a selection");
 
 		writeFileSync(file, JSON.stringify({
 			profiles: { frontier: { primary: { model: "provider/primary", thinkingLevel: "wrong" } } },

@@ -190,6 +190,12 @@ The built-in reviewer answers exactly `PASS` or gives prioritized findings in th
 
 The built-in reviewer and scout include `git_read`; existing user reviewers and scouts must add it to `tools`. No additional extension or Bash access is necessary. See [Reviewer Git inspection](./docs/orchestration.md#reviewer-git-inspection) for operations, parameters, limits, and Git requirements.
 
+When a direct or isolated worker starts with a configured fallback, Pi Subagent warns in the parent session that created it. The warning names the profile, selected `provider/model`, and thinking level. It uses the user interface (UI) when available. Without a UI, it adds a displayed parent-session message that does not start a turn.
+
+The same profile and fallback route warn once in the active parent session. A session change resets these warnings. A different fallback model or thinking level gets a new warning. Dry runs, preflight, unused launch preparation, and cancelled or replaced sessions do not consume warnings. Isolated text and judgment workers report fallback use on their first child activity.
+
+Route selection does not change. An available primary produces no fallback warning. A direct `model` override produces no fallback warning because it replaces the configured model. It still keeps the resolved thinking level.
+
 Children load only declared resources and required adapters. Roles must list their model provider extension. `codemode` requires both `builtin:codemode` in `extensions` and `codemode` in `tools`. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work. Main-only delegation/recovery tools and `ask_question` stay unavailable to children.
 
 Read [Role and resource policy](./docs/orchestration.md#role-and-resource-policy) for extension exposure, MCP validation, OAuth constraints, and child budgets. Project MCP overrides cannot change a Role's global allowlist or exposure.
@@ -200,7 +206,7 @@ Read [Role and resource policy](./docs/orchestration.md#role-and-resource-policy
 | --- | --- | --- |
 | `loadRoleCatalog`, `findRole`, `parseRoleName`, `parseRoleDefaults` | functions | Load, validate, and select Roles with shared defaults and per-file errors. |
 | `registerRoleDefaultsReporting(pi, agentDir?)` | function | Report problems at session start, once per session. Returns `report(ctx)`; call before a lazy `loadRoleCatalog`. |
-| `resolveRoleSkills`, `resolveRoleLaunch`, `resolveConfiguredRoleLaunch` | functions | Resolve effective Pi resources and model routes. |
+| `resolveRoleSkills`, `resolveRoleLaunch`, `resolveConfiguredRoleLaunch` | functions | Resolve effective Pi resources and model routes. Role launch results include optional `fallback` identity without a notification. |
 | `prepareRoleLaunch`, `finalizeRoleLaunch` | functions | Prepare Role prompts, arguments, and tool policy. |
 | `createEphemeralSubagentExecutor` | function | Run bounded no-session Pi children through a FIFO pool. |
 | `createChildWorktree`, `finalizeChildWorktree` | functions | Create and conservatively finalize child worktrees. |

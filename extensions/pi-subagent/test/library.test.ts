@@ -822,6 +822,54 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.equal(taskDefault.thinkingLevel, "high");
 });
 
+test("Role preparation reports fallback identity without delivering a warning", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-fallback-"));
+	t.after(() => rm(agentDir, { recursive: true, force: true }));
+	const path = join(agentDir, "config", "pi-task-models", "config.json");
+	await mkdir(join(path, ".."), { recursive: true });
+	await writeFile(path, JSON.stringify({
+		profiles: {
+			fast: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "high" }, fallback: { model: "openai-codex/gpt-test", thinkingLevel: "medium" } },
+			balanced: { primary: { model: "openai-codex/gpt-test", thinkingLevel: "medium" }, fallback: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+			frontier: { primary: { model: "missing/model", thinkingLevel: "high" }, fallback: { model: "openai-codex/gpt-test", thinkingLevel: "high" } },
+		},
+		tasks: { "pi-example/review": "frontier" },
+	}));
+	const notifications: unknown[] = [];
+	const stderr: string[] = [];
+	t.mock.method(process.stderr, "write", (text: string) => { stderr.push(text); return true; });
+	const ctx = {
+		model,
+		scopedModels: [{ model, thinkingLevel: "high" as const }],
+		modelRegistry: { getAvailable: () => [model] },
+		isProjectTrusted: () => true,
+		hasUI: true,
+		ui: { notify: (message: string, type?: string) => { notifications.push({ message, type }); } } as ExtensionContext["ui"],
+	};
+	const pi = { getCommands: () => [] } as unknown as Pick<ExtensionAPI, "getCommands">;
+	const role: Role = { name: "worker", description: "Test worker", tools: [], extensions: [], skills: [], systemPrompt: "Do the task." };
+	const task = { id: "pi-example/review", label: "Review", purpose: "Review work.", defaultProfile: "fast" } as const;
+	const launch = (overrides = {}) => prepareRoleLaunch(pi, ctx, { role, task, agentDir, ...overrides });
+	const fallback = (profileName: string) => ({ profileName, model: "openai-codex-2/gpt-test", thinkingLevel: "high" });
+	assert.equal(launch({ modelClass: "fast" }).fallback, undefined);
+	assert.deepEqual(launch({ role: { ...role, modelClass: "balanced" } }).fallback, fallback("balanced"), "scope-pinned thinking can require the fallback for the same model");
+	const assigned = launch();
+	assert.equal(assigned.model, model);
+	assert.equal(assigned.thinkingLevel, "high");
+	assert.deepEqual(assigned.fallback, fallback("frontier"));
+	assert.deepEqual(finalizeRoleLaunch(assigned).fallback, fallback("frontier"));
+	assert.deepEqual(launch({ modelClass: "frontier" }).fallback, fallback("frontier"));
+	assert.deepEqual(launch({ role: { ...role, modelClass: "frontier" } }).fallback, fallback("frontier"));
+	ctx.hasUI = false;
+	launch();
+	assert.throws(() => launch({ modelClass: "fav" }), /No fav task model profile is configured/);
+	ctx.scopedModels = [];
+	ctx.modelRegistry.getAvailable = () => [];
+	assert.throws(() => launch({ modelClass: "balanced" }), /No usable balanced task model route/);
+	assert.deepEqual(notifications, []);
+	assert.deepEqual(stderr, []);
+});
+
 test("Role package resources resolve enabled paths; configured launches require a class, reject missing Skills, and deduplicate Skills", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-package-resources-"));
 	const agentDir = join(directory, "agent");

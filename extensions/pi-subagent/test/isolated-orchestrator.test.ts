@@ -175,6 +175,7 @@ interface Harness {
 	rootCalls: Array<{ cwd: string; context: OperationContext }>;
 	getComponentCreations(): number;
 	getRoleContext(): ExtensionContext;
+	captureFallbackWarning: NonNullable<Parameters<CreateIsolatedComponents>[0]["captureFallbackWarning"]>;
 	getStateSaved(): (state: RunState) => void;
 	sent: Array<{ message: { content: string; details: unknown }; options: unknown }>;
 }
@@ -309,6 +310,7 @@ function createHarness(options: {
 		sent,
 		getComponentCreations: () => componentCreations,
 		getRoleContext: () => componentOptions!.context(),
+		captureFallbackWarning: (signal) => componentOptions!.captureFallbackWarning!(signal),
 		getStateSaved: () => componentOptions!.onStateSaved,
 	};
 }
@@ -852,6 +854,35 @@ test("each deferred Role launch reports and revalidates config with the session 
 	await executeTool(namedTool(guarded, "delegate_task"), EXECUTE_REQUEST, new AbortController().signal, initial);
 	blocked = true;
 	assert.throws(() => guarded.getRoleContext(), /delegation is blocked/);
+});
+
+test("isolated fallback notices stay in their creating parent and cancelled notices do not consume suppression", async () => {
+	const harness = createHarness();
+	let sessionId = "first-parent";
+	const ctx = { ...context(CANONICAL_ROOT), hasUI: false,
+		sessionManager: { getSessionId: () => sessionId },
+	} as ExtensionContext;
+	await executeTool(namedTool(harness, "delegate_task"), EXECUTE_REQUEST, undefined, ctx);
+	const report = harness.captureFallbackWarning(new AbortController().signal);
+	const fallback = { profileName: "balanced", model: "provider/backup", thinkingLevel: "high" } as const;
+	const before = harness.sent.length;
+	await Promise.resolve();
+	sessionId = "replacement-parent";
+	report(fallback);
+	assert.equal(harness.sent.length, before, "late preparation cannot deliver to the current replacement session");
+	harness.handlers.get("session_start")!({}, ctx);
+	const cancelled = new AbortController();
+	const suppressed = harness.captureFallbackWarning(cancelled.signal);
+	cancelled.abort();
+	suppressed(fallback);
+	assert.equal(harness.sent.length, before);
+	const current = harness.captureFallbackWarning(new AbortController().signal);
+	current(fallback);
+	current(fallback);
+	assert.deepEqual(harness.sent.slice(before), [{
+		message: { customType: "pi-subagent-model-fallback", content: 'Task model profile balanced: primary route is unavailable; selected fallback "provider/backup" (thinking high).', display: true },
+		options: { triggerTurn: false, deliverAs: "followUp" },
+	}]);
 });
 
 test("lazily creates one component graph and supplies fresh session context", async () => {

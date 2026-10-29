@@ -39,6 +39,7 @@ import {
 } from "../dist/schema.js";
 import { FileRunStore } from "../dist/store.js";
 import { workerOutputForMain } from "./result-transport.ts";
+import { captureFallbackWarning } from "./task-model-fallback.ts";
 import type { CleanupReport, IsolatedInventory, IsolatedRequest, PrunePlan } from "./subagent-command.ts";
 import type { DiscardPlan } from "../dist/discard.js";
 
@@ -58,6 +59,7 @@ export interface IsolatedExtensionComponents {
 export type CreateIsolatedComponents = (options: {
 	pi: ExtensionAPI;
 	context(): ExtensionContext;
+	captureFallbackWarning?: LaunchRuntimeOptions["captureFallbackWarning"];
 	executor: EphemeralSubagentExecutor;
 	policy: ExecutionPolicySnapshot;
 	currentPolicy(): ExecutionPolicySnapshot;
@@ -66,7 +68,7 @@ export type CreateIsolatedComponents = (options: {
 
 /** Construct the checked runtime while reusing the unified productive-assignment executor. */
 export const createIsolatedComponents: CreateIsolatedComponents = ({
-	pi, context, executor, policy, currentPolicy, onStateSaved,
+	pi, context, captureFallbackWarning, executor, policy, currentPolicy, onStateSaved,
 }) => {
 	const runProcess: DirectProcessRunner = async (command, args, options) => options.stdin === undefined
 		? await pi.exec(command, args, { cwd: options.cwd, signal: options.signal, timeout: options.timeoutMs })
@@ -82,6 +84,7 @@ export const createIsolatedComponents: CreateIsolatedComponents = ({
 	const coordinator = new RoleLaunchRuntime({
 		pi,
 		context,
+		captureFallbackWarning,
 		resolveRoot,
 		preflightHost: async ({ root }, operation) => await host.preflightHost({ root }, operation),
 		inspectMainBase: async (input, operation) => await git.inspectMainBase(input, operation),
@@ -567,6 +570,13 @@ export function registerIsolatedExtension(pi: ExtensionAPI, options: RegisterIso
 			const ctx = latestContext();
 			options.beforeRoleLaunch?.(ctx);
 			return ctx;
+		},
+		captureFallbackWarning: (signal) => {
+			const ctx = latestContext();
+			const epoch = sessionEpoch;
+			const sessionId = ctx.sessionManager.getSessionId();
+			return captureFallbackWarning(pi, ctx, () => !sessionClosed && sessionEpoch === epoch
+				&& latestCtx?.sessionManager.getSessionId() === sessionId, signal);
 		},
 		executor: options.executor,
 		policy: options.policy,

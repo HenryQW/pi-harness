@@ -144,6 +144,8 @@ export interface VerifiedLaunch {
 	readonly args: readonly string[];
 	readonly env: Readonly<Record<string, string>>;
 	readonly tools: readonly string[];
+	/** Parent-owned notice; call only after the child starts productive work. */
+	readonly onFallbackUse?: () => void;
 }
 
 export type ResolvedRoute = Pick<VerifiedLaunch, "role" | "modelClass" | "model" | "thinkingLevel">;
@@ -2706,6 +2708,7 @@ export class IsolatedRunner {
 					const launch = { args: [...verifiedLaunch.args], env: { ...verifiedLaunch.env } };
 					return await this.textExecutor.run({
 						signal: context.signal,
+						onActivity: verifiedLaunch.onFallbackUse,
 						prepare: async () => ({ launch, task: prompt, cwd: isolated.cwd }),
 					});
 				});

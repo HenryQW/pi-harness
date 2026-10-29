@@ -172,10 +172,13 @@ export interface PiLaunch {
 	args: string[];
 }
 
+export type TaskModelFallback = Readonly<{ profileName: ProfileName; model: string; thinkingLevel: ThinkingLevel }>;
+
 export interface ResolvedRoleLaunch extends PiLaunch {
 	model: AvailableModel;
 	thinkingLevel: ThinkingLevel;
 	missingSkills: string[];
+	fallback?: TaskModelFallback;
 }
 
 export interface PreparedRoleLaunch extends ResolvedRoleLaunch {
@@ -556,21 +559,26 @@ export function resolveTaskRoute(
 	ctx: TaskRouteContext,
 	profileName: ProfileName,
 	agentDir = getAgentDir(),
+	onFallback?: (profileName: ProfileName, route: ResolvedTaskRoute) => void,
 ): ResolvedTaskRoute {
 	// A disabled config throws with the path and the problems.
 	const config = loadTaskModelsConfig(agentDir).value;
-	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName]);
+	return resolveConfiguredRoute(ctx, profileName, config.profiles[profileName], onFallback);
 }
 
 function resolveConfiguredRoute(
 	ctx: TaskRouteContext,
 	profileName: ProfileName,
 	profile: ReturnType<typeof loadTaskModelsConfig>["value"]["profiles"][ProfileName],
+	onFallback?: (profileName: ProfileName, route: ResolvedTaskRoute) => void,
 ): ResolvedTaskRoute {
 	if (!profile) throw new Error(`No ${profileName} task model profile is configured. Run /task-models.`);
 	for (const route of orderedProfileRoutes(profile)) {
 		const resolved = resolveTaskModelRoute(ctx, route);
-		if (resolved) return resolved;
+		if (resolved) {
+			if (route === profile.fallback) onFallback?.(profileName, resolved);
+			return resolved;
+		}
 	}
 	throw new Error(`No usable ${profileName} task model route. Run /task-models.`);
 }
@@ -682,12 +690,17 @@ function prepareResolvedRoleLaunch(
 ): PreparedRoleLaunch {
 	const { task, modelClass, agentDir, ...launchInput } = input;
 	const selectedClass = modelClass ?? input.role.modelClass;
-	return prepareRoleLaunchFromSkills(ctx, {
+	let fallback: TaskModelFallback | undefined;
+	const onFallback = (profileName: ProfileName, route: ResolvedTaskRoute) => {
+		fallback = { profileName, model: modelReference(route.model), thinkingLevel: route.thinkingLevel };
+	};
+	const prepared = prepareRoleLaunchFromSkills(ctx, {
 		...launchInput,
 		route: selectedClass === undefined
-			? resolveConfiguredTaskRoute(ctx, task, agentDir)
-			: resolveTaskRoute(ctx, selectedClass, agentDir),
+			? resolveConfiguredTaskRoute(ctx, task, agentDir, undefined, onFallback)
+			: resolveTaskRoute(ctx, selectedClass, agentDir, onFallback),
 	}, resolveRoleSkills(pi, input.role));
+	return { ...prepared, ...(fallback ? { fallback } : {}) };
 }
 
 export function resolveRoleLaunch(
@@ -749,9 +762,12 @@ export async function resolveConfiguredRoleLaunch(
 		...namedSkills,
 		paths: [...new Set([...namedSkills.paths, ...resources.skills])],
 	};
+	let fallback: TaskModelFallback | undefined;
 	const prepared = prepareRoleLaunchFromSkills(ctx, {
 		role: effectiveRole,
-		route: resolveTaskRoute(ctx, input.modelClass),
+		route: resolveTaskRoute(ctx, input.modelClass, undefined, (profileName, route) => {
+			fallback = { profileName, model: modelReference(route.model), thinkingLevel: route.thinkingLevel };
+		}),
 	}, skills);
 	assertNoMissingRoleSkills(effectiveRole, prepared);
 	const args = [
@@ -761,7 +777,7 @@ export async function resolveConfiguredRoleLaunch(
 		...resources.prompts.flatMap((path) => ["--prompt-template", path]),
 		...resources.themes.flatMap((path) => ["--theme", path]),
 	];
-	return { ...prepared, args, promptArgIndex: args.length };
+	return { ...prepared, args, promptArgIndex: args.length, ...(fallback ? { fallback } : {}) };
 }
 
 /** Insert the system prompt pair after a caller has prepared its launch argv. */
@@ -774,6 +790,7 @@ export function finalizeRoleLaunch(prepared: PreparedRoleLaunch): ResolvedRoleLa
 		model: prepared.model,
 		thinkingLevel: prepared.thinkingLevel,
 		missingSkills: prepared.missingSkills,
+		...(prepared.fallback ? { fallback: prepared.fallback } : {}),
 	};
 }
 

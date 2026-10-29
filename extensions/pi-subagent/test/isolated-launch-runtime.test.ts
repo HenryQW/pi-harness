@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ISOLATED_MODEL_TASK, RoleLaunchRuntime } from "../src/launch-runtime.ts";
+import { ISOLATED_MODEL_TASK, RoleLaunchRuntime, type LaunchRuntimeOptions } from "../src/launch-runtime.ts";
+import { captureFallbackWarning } from "../extensions/task-model-fallback.ts";
 import type { OperationContext } from "../src/runner.ts";
 import {
 	type ChangesetTaskRequest,
@@ -142,7 +143,7 @@ async function writeProfiles(agentDir: string): Promise<void> {
 	}));
 }
 
-async function harness(t: test.TestContext) {
+async function harness(t: test.TestContext, captureWarning?: LaunchRuntimeOptions["captureFallbackWarning"]) {
 	const directory = await mkdtemp(join(tmpdir(), "pi-subagent-launch-"));
 	const root = join(directory, "root");
 	const agentDir = join(directory, "agent");
@@ -185,6 +186,7 @@ async function harness(t: test.TestContext) {
 	const runtime = new RoleLaunchRuntime({
 		pi,
 		context: () => ctx,
+		captureFallbackWarning: captureWarning,
 		resolveRoot: async (cwd) => {
 			preflightOrder.push("root");
 			resolvedCwds.push(cwd);
@@ -204,6 +206,8 @@ async function harness(t: test.TestContext) {
 	}
 	return {
 		root,
+		agentDir,
+		ctx,
 		events,
 		runtime,
 		resolvedCwds,
@@ -226,6 +230,49 @@ function transientPromptPath(args: readonly string[]): string {
 	assert.ok(args[index + 1]);
 	return args[index + 1]!;
 }
+
+test("isolated preflight and cancelled preparation leave productive fallback warnings available", async (t) => {
+	const fixture = await harness(t, (signal) => captureFallbackWarning({} as ExtensionAPI, fixture.ctx, () => true, signal));
+	await fixture.setRole("worker.md", { name: "worker" });
+	const notifications: unknown[] = [];
+	fixture.ctx.hasUI = true;
+	fixture.ctx.ui = { notify: (message: string, type?: string) => { notifications.push({ message, type }); } } as ExtensionContext["ui"];
+	fixture.ctx.sessionManager = { getSessionId: () => "isolated-fallback" } as ExtensionContext["sessionManager"];
+	const path = join(fixture.agentDir, "config", "pi-task-models", "config.json");
+	const setProfile = (thinkingLevel: string) => writeFile(path, JSON.stringify({ profiles: { balanced: {
+		primary: { model: "test-provider/missing", thinkingLevel: "medium" },
+		fallback: { model: "test-provider/frontier-model", thinkingLevel },
+	} } }));
+	await setProfile("high");
+	const plan = await preflight(fixture, request([textTask("one", "worker", "balanced"), textTask("two", "worker", "balanced")]), true);
+	assert.deepEqual(plan.routes, [{ role: "worker", modelClass: "balanced", model: "test-provider/frontier-model", thinkingLevel: "high" }]);
+	assert.deepEqual(notifications, [], "preflight must not consume the launch warning");
+	const cancelled = new AbortController();
+	const pending = fixture.runtime.acquireLaunch("worker", "balanced", { ...operationContext(), signal: cancelled.signal });
+	cancelled.abort();
+	await assert.rejects(pending, { name: "AbortError" });
+	assert.deepEqual(notifications, []);
+	const unused = await fixture.runtime.acquireLaunch("worker", "balanced", operationContext());
+	await unused.cleanup();
+	assert.deepEqual(notifications, [], "unused acquisition is not productive fallback use");
+	const first = await fixture.runtime.acquireLaunch("worker", "balanced", operationContext());
+	try {
+		assert.equal(first.launch.model, "test-provider/frontier-model");
+		assert.equal(first.launch.thinkingLevel, "high");
+		first.launch.onFallbackUse?.();
+		first.launch.onFallbackUse?.();
+	} finally { await first.cleanup(); }
+	assert.deepEqual(notifications, [{ message: 'Task model profile balanced: primary route is unavailable; selected fallback "test-provider/frontier-model" (thinking high).', type: "warning" }]);
+	await setProfile("medium");
+	const next = await fixture.runtime.acquireLaunch("worker", "balanced", operationContext());
+	try {
+		assert.equal(next.launch.thinkingLevel, "medium");
+		next.launch.onFallbackUse?.();
+	}
+	finally { await next.cleanup(); }
+	assert.deepEqual(notifications.at(-1), { message: 'Task model profile balanced: primary route is unavailable; selected fallback "test-provider/frontier-model" (thinking medium).', type: "warning" });
+	assert.equal(notifications.length, 2);
+});
 
 test("default correlation tokens contain 96 bits as 24 lowercase hex characters", async (t) => {
 	const fixture = await harness(t);
