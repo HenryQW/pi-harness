@@ -428,7 +428,7 @@ test("routes one package workflow without opening a browser or chaining", async 
 		await app.handler("", app.context);
 
 		assert.deepEqual(app.messages, [{
-			content: `/${route.command} runId=${workflowRunId} action=${route.action}`,
+			content: `/${route.command} runId=${workflowRunId} action=${route.action} projectPath="/repo"`,
 			options: { expandPromptTemplates: true },
 		}], route.name);
 		assert.equal(app.reservations.length, 1, route.name);
@@ -452,7 +452,7 @@ test("dispatches creation for dirty-only zero-ahead work", async () => {
 
 	assert.equal(await handler("", app.context, invocation()), "create");
 	assert.deepEqual(app.messages, [{
-		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare`,
+		content: `/skill:pi-pr-create runId=${workflowRunId} action=prepare projectPath="/repo"`,
 		options: { expandPromptTemplates: true },
 	}]);
 	assert.equal(app.reservations.length, 1);
@@ -545,7 +545,7 @@ test("publishes scoped dirty work before other routes and syncs a behind local h
 	for (const route of conditions) {
 		const dirty = harness({ states: [route.state], status: " M file.ts\n", commands: [packageCommand("skill:pi-pr-publish-work")] });
 		assert.equal(await dirty.handler("", dirty.context), "publish-work", `${route.name} dirty`);
-		assert.equal(dirty.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect`);
+		assert.equal(dirty.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect projectPath="/repo"`);
 
 		const behind = harness({
 			states: [route.state, route.state],
@@ -557,7 +557,7 @@ test("publishes scoped dirty work before other routes and syncs a behind local h
 		assert.equal(await behind.handler("", behind.context), route.route, `${route.name} behind`);
 		assert.deepEqual(behind.syncs, [localHead], `${route.name} behind`);
 		assert.deepEqual(behind.events.slice(0, 4), ["load", "sync", "notify", "load"], `${route.name} behind`);
-		assert.equal(behind.messages[0]?.content, `/${route.command} runId=${workflowRunId} action=${route.action}`, `${route.name} behind`);
+		assert.equal(behind.messages[0]?.content, `/${route.command} runId=${workflowRunId} action=${route.action} projectPath="/repo"`, `${route.name} behind`);
 	}
 });
 
@@ -565,7 +565,7 @@ test("dirty work on a diverged local HEAD is committed by publish-work before sy
 	const app = harness({ states: [{}], status: " M file.ts\n", ancestry: "diverged", localHead: nextHead, commands: [packageCommand("skill:pi-pr-publish-work")] });
 	assert.equal(await app.handler("", app.context), "publish-work");
 	assert.deepEqual(app.syncs, []);
-	assert.equal(app.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect`);
+	assert.equal(app.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect projectPath="/repo"`);
 });
 
 test("merges with the configured merge method", async () => {
@@ -697,7 +697,7 @@ test("defers a busy-session workflow to the native settlement boundary, not user
 	assert.deepEqual(app.messages, []);
 	assert.deepEqual(app.queuedPrompts, [{
 		route: "create", skill: "skill:pi-pr-create", path: "/skills/skill:pi-pr-create/SKILL.md",
-		runId: workflowRunId, action: "prepare",
+		runId: workflowRunId, action: "prepare", projectPath: cwd,
 	}]);
 });
 
@@ -1000,5 +1000,5 @@ test("flagless /pr routes freshly detected standalone feedback before merge", as
 		},
 	});
 	assert.equal(await handler("", app.context, invocation()), "sweep");
-	assert.equal(app.messages[0]?.content, `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start`);
+	assert.equal(app.messages[0]?.content, `/skill:pi-pr-comment-sweep runId=${workflowRunId} action=start projectPath="/repo"`);
 });

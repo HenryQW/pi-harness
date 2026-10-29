@@ -59,6 +59,28 @@ Start pattern mining with:
 
 Repository scope selects exact and descendant `cwd` values before applying the limit. It excludes the current session file. Use `scope:"all"` across repositories, including when inventory is unavailable.
 
+For a session in a parent directory, set `projectPath` to select one repository or worktree:
+
+```json
+{
+  "operation": "prepare-pattern-miner",
+  "scope": "repository",
+  "projectPath": "first repo",
+  "limit": 10
+}
+```
+
+`projectPath` is absolute or relative to the session directory. Pi resolves its Git root; it does not scan or select child repositories. Without this field, repository preparation uses the session directory. Selection applies only to this call. It does not change the session directory or select a project for other tools.
+
+```mermaid
+flowchart LR
+    Session["Session directory"] --> Path["Explicit projectPath or session directory"]
+    Path --> Root["Canonical Git root"]
+    Root --> Corpus["Scoped sessions and index inventory"]
+```
+
+Other modes and `scope:"all"` reject `projectPath`. Browse and keyword search remain global. Repository selection does not load instructions or skills. Inventory lists only skills that Pi already has in its effective registry.
+
 The TUI shows the last five visual lines and earlier-line count. Press the tool expand key (`Ctrl+O` by default) for the full bounded response; the model always receives it.
 
 ### Programmatic output

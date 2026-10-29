@@ -95,6 +95,7 @@ export interface HerdrHostRuntimeOptions {
 	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">;
 }
 
+type WorkerObservationContext = OperationContext & { observe?: () => Promise<void> };
 type RepositoryIdentity = Pick<WorkspaceAllocationIntent, "repoKey" | "herdrRepoRoot">;
 type JsonRecord = Record<string, unknown>;
 
@@ -353,7 +354,7 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	/** Fail-closed Herdr caller/capability gate. This method creates no state or host resource. */
-	async preflightHost(input: { root: string }, context: OperationContext): Promise<void> {
+	async preflightHost(input: { root: string; nonGitWorkspace?: boolean }, context: OperationContext): Promise<void> {
 		context.signal.throwIfAborted();
 		if (this.env.HERDR_ENV !== "1") throw new Error("Pi Subagent requires HERDR_ENV=1.");
 		const paneId = exactString(this.env.HERDR_PANE_ID, "HERDR_PANE_ID");
@@ -387,6 +388,13 @@ export class HerdrHostRuntime implements HostRuntime {
 		const workspaceId = exactString(pane.workspace_id, "Herdr current workspace_id");
 		const workspaceResponse = await this.herdr.json(["workspace", "get", workspaceId], this.processOptions(root, context, HERDR_OPERATION_CAP_MS));
 		const workspace = parseWorkspaceInfo(workspaceResponse, workspaceId);
+		if (input.nonGitWorkspace) {
+			if (workspace.worktree !== undefined && workspace.worktree !== null) throw new Error("Selected repositories require a non-Git Herdr workspace.");
+			if (await realpath(exactString(pane.cwd, "Herdr current pane cwd")) !== root) throw new Error("Herdr pane does not identify the selected non-Git workspace.");
+			const probe = await this.execute("git", ["rev-parse", "--show-toplevel"], this.processOptions(root, context, GIT_INSPECTION_CAP_MS));
+			if (probe.code === 0 || probe.killed || !/not a git repository/i.test(probe.stderr)) throw new Error("Herdr non-Git workspace scope is uncertain.");
+			return;
+		}
 		const worktree = record(workspace.worktree, "Herdr current workspace worktree");
 		const checkout = await realpath(exactString(worktree.checkout_path, "Herdr current checkout_path"));
 		if (checkout !== root) throw new Error("The current Herdr workspace checkout does not match canonical Main.");
@@ -584,10 +592,12 @@ export class HerdrHostRuntime implements HostRuntime {
 			workerId: string;
 			kind: "initial" | "correction" | "followup";
 			preCandidate: WorkspaceIdentity;
+			workspacePaths?: Readonly<Record<string, string>>;
+			idleMs?: number;
 			failure?: string;
 			instruction?: string;
 		},
-		context: OperationContext,
+		context: WorkerObservationContext,
 	): Promise<WorkerResult> {
 		const allocation = ownedIntent(input.attempt, "agent");
 		requireIntentIdentity(allocation, input.attempt);
@@ -604,6 +614,7 @@ export class HerdrHostRuntime implements HostRuntime {
 				task: input.task,
 				kind: input.kind,
 				worktreeCwd: allocation.worktreeCwd,
+				...(input.workspacePaths ? { workspacePaths: input.workspacePaths } : {}),
 				...(input.failure ? { failure: input.failure } : {}),
 				...(input.instruction ? { instruction: input.instruction } : {}),
 			})}\n\nTurn identity: ${input.attempt.correlationToken}:${input.attempt.prompts.length}`;
@@ -611,6 +622,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		} catch (error) {
 			return { outcome: "not_prompted", diagnostic: `Worker assignment was not submitted: ${safeText(error)}` };
 		}
+		if (input.idleMs !== undefined) context = await this.observeWorker(allocation, input.idleMs, context);
 		let ready;
 		try {
 			ready = await this.waitForSettledAgent(allocation, context);
@@ -1013,14 +1025,41 @@ export class HerdrHostRuntime implements HostRuntime {
 		});
 	}
 
+	/** Reuse exact lifecycle polling; only complete Pi messages renew the idle deadline. */
+	private async observeWorker(allocation: AgentAllocationIntent, idleMs: number, outer: OperationContext): Promise<WorkerObservationContext> {
+		const path = this.workerSessionFile(allocation.leasePath, allocation.token);
+		await this.assertPrivateLeaseDirectories(allocation.leasePath, false);
+		let offset = (await this.privateSessionFile(path))?.length ?? 0;
+		let idleDeadline = this.now() + idleMs;
+		return {
+			...outer,
+			get deadline() { return Math.min(outer.deadline ?? Infinity, idleDeadline); },
+			observe: async () => {
+				outer.signal.throwIfAborted();
+				if (outer.deadline !== undefined && this.now() >= outer.deadline) throw new Error("Worker maximum runtime is exhausted.");
+				const session = await this.privateSessionFile(path) ?? "";
+				if (session.length < offset) throw new Error("Worker session shrank during observation.");
+				let end: number;
+				while ((end = session.indexOf("\n", offset)) >= 0) {
+					const line = session.slice(offset, end); offset = end + 1;
+					if (!line.trim()) continue;
+					const entry = JSON.parse(line);
+					if (entry?.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message?.role)) idleDeadline = this.now() + idleMs;
+				}
+				if (this.now() >= idleDeadline) throw new Error(`Worker made no progress for ${idleMs}ms; its exact session is retained.`);
+			},
+		};
+	}
+
 	private async reconcileDeliveredPrompt(
-		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
+		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity; workspacePaths?: Readonly<Record<string, string>> },
 		allocation: AgentAllocationIntent,
-		context: OperationContext,
+		context: WorkerObservationContext,
 		prompt: string,
 		promptMayBeInFlight = true,
 	): Promise<WorkerResult> {
 		for (;;) {
+			await context.observe?.();
 			let lifecycle;
 			try {
 				lifecycle = await this.waitForAgentLifecycle(allocation, context, true);
@@ -1063,7 +1102,8 @@ export class HerdrHostRuntime implements HostRuntime {
 			if (SETTLED_AGENT_STATES.has(lifecycle.status)
 				&& inspection.valid
 				&& inspection.clean
-				&& this.isExpectedCandidate(input, inspection.candidate)) {
+				&& this.isExpectedCandidate(input, inspection.candidate)
+				&& (!input.workspacePaths || await this.workerTurnFinished(allocation, prompt))) {
 				return {
 					outcome: "candidate",
 					candidate: inspection.candidate,
@@ -1100,11 +1140,12 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private async candidateResult(
-		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
+		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity; workspacePaths?: Readonly<Record<string, string>> },
 		allocation: AgentAllocationIntent,
-		context: OperationContext,
+		context: WorkerObservationContext,
 		prompt: string,
 	): Promise<WorkerResult> {
+		await context.observe?.();
 		let inspection: InFlightTaskCandidateInspection;
 		try {
 			inspection = await this.inspectInFlightCandidate(
@@ -1114,7 +1155,8 @@ export class HerdrHostRuntime implements HostRuntime {
 		} catch (error) {
 			return { outcome: "unknown", diagnostic: `Settled worker candidate inspection failed: ${safeText(error)}` };
 		}
-		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)) {
+		if (!inspection.valid || !inspection.clean || !this.isExpectedCandidate(input, inspection.candidate)
+			|| input.workspacePaths && !await this.workerTurnFinished(allocation, prompt)) {
 			return await this.reconcileDeliveredPrompt(input, allocation, context, prompt, false);
 		}
 		return {
@@ -1125,11 +1167,11 @@ export class HerdrHostRuntime implements HostRuntime {
 	}
 
 	private isExpectedCandidate(
-		input: { attempt: TaskAttempt; preCandidate: WorkspaceIdentity },
+		input: { attempt: TaskAttempt; preCandidate: WorkspaceIdentity; workspacePaths?: Readonly<Record<string, string>> },
 		candidate: WorkspaceIdentity,
 	): boolean {
 		const expectedBranch = `refs/heads/${worktreeIntent(input.attempt).branch}`;
-		return isCleanCommitted(candidate) && candidate.branch === expectedBranch && candidate.head !== input.preCandidate.head;
+		return isCleanCommitted(candidate) && candidate.branch === expectedBranch && (input.workspacePaths !== undefined || candidate.head !== input.preCandidate.head);
 	}
 
 	private async waitForSettledAgent(allocation: AgentAllocationIntent, context: OperationContext): Promise<{ status: string; interactiveReady: boolean }> {

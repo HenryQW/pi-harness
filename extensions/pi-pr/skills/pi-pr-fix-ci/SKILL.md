@@ -5,6 +5,8 @@ description: Diagnose and fix failed GitHub Actions CI for the current pull requ
 
 # Pi PR Fix CI
 
+Use the supplied `projectPath` on every `pi_pr_fix_ci` call, and on any `pi_git_commit` or `git_conflict` call. It is the pinned canonical worktree root. Use that directory for file inspection, edits, and checks. Pi can start in a non-Git parent; do not use the session directory or select a sibling repository. A changed path does not grant new workflow authority.
+
 Fix only the failures returned by the route's session-local CI workflow.
 The invocation authorizes one scoped edit, commit, and guarded publish.
 

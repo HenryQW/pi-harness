@@ -85,7 +85,7 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
 	writeFileSync(join(cwd, "test/fixtures/api/widgets.json"), '[{"id":1,"size":2}]\n');
 	git(cwd, "init", "-q");
 	git(cwd, "add", ".");
-	git(cwd, "commit", "-qm", "init");
+	git(cwd, "-c", "user.name=Pi Eval", "-c", "user.email=pi-eval@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
 	writeFileSync(setupHeadPath(cwd), git(cwd, "rev-parse", "HEAD"));
 	writeFileSync(sessionsPath(cwd), JSON.stringify({ prepared, hits }));
 };
@@ -96,7 +96,22 @@ const setup = (prepared: Session[], hits: Session[]) => (cwd: string) => {
  */
 function protocol(trace: Trace, cwd: string) {
 	const first = callsTo(trace, "session_search").at(0);
-	const direct = trace.calls.find((call) => call.name !== "session_search" && /\.pi\/agent\/sessions|\.jsonl\b|pi-eval-sessions/.test(JSON.stringify(call.args)));
+	const direct = trace.calls.find((call) => {
+		if (call.name === "session_search") return false;
+		const args = JSON.stringify(call.args);
+		if (/\.pi\/agent\/sessions|pi-eval-sessions/.test(args)) return true;
+		// Ignore only exclusion arguments on rg commands, not raw paths or later commands.
+		const command = call.name === "bash" && typeof call.args.command === "string"
+			? call.args.command.replace(/(?:^|[;&|\n])\s*rg\s+[^;&|\n]*/g, (part) => {
+				const end = part.search(/\s--(?:\s|$)/);
+				const options = end < 0 ? part : part.slice(0, end);
+				const filtered = options.replace(/\s+(?:-g\s+|--glob(?:=|\s+))(?:'![\w*?.\/-]+'|"![\w*?.\/-]+"|![\w*?.\/-]+)(?=\s|$)/g, "");
+				if (/['"\\`$]/.test(filtered)) return part;
+				return filtered + (end < 0 ? "" : part.slice(end));
+			})
+			: undefined;
+		return /\.jsonl\b/.test(command === undefined ? args : JSON.stringify({ ...call.args, command }));
+	});
 	return [
 		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner" }),
 		calledTimes(trace, "session_search", 1, { operation: "prepare-pattern-miner", scope: "repository", limit: 10 }),
@@ -109,7 +124,14 @@ function protocol(trace: Trace, cwd: string) {
 	];
 }
 
-const contractLabels = [/trigger and inputs?/i, /deterministic steps/i, /outputs? and side effects/i, /failure behaviou?r/i, /runnable check/i, /files to (add|change)/i];
+const contractLabels = [
+	/trigger and inputs?/i,
+	/deterministic steps|^\s*(?:[-*]\s+|#{1,6}\s+)?(?:\*\*)?steps(?:\*\*)?\s*:/im,
+	/outputs? and side effects/i,
+	/failure behaviou?r/i,
+	/runnable check/i,
+	/files to (add|change)|^\s*(?:[-*]\s+|#{1,6}\s+)?(?:\*\*)?files(?:\*\*)?\s*:/im,
+];
 const contractLabelCount = (text: string) => contractLabels.filter((label) => label.test(text)).length;
 
 const ABSTAIN = /not enough|insufficient|fewer than two|only one|single (?:independent )?session|one independent|doesn't meet|does not meet/i;

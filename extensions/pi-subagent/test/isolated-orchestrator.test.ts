@@ -1658,7 +1658,7 @@ test("manifest entrypoint and Main-side Skill ship with the unified tools", asyn
 		pi?: { extensions?: string[]; skills?: string[] };
 	};
 	assert.equal(manifest.dependencies?.["@henryqw/pi-subagent"], undefined);
-	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.6.0");
+	assert.equal(manifest.dependencies?.["@henryqw/pi-herdr"], "^0.6.1");
 	assert.deepEqual(manifest.pi?.extensions, ["./extensions/subagent.ts"]);
 	assert.deepEqual(manifest.pi?.skills, ["./skills"]);
 	for (const path of ["README.md", "CONTEXT.md", "skills"]) assert.ok(manifest.files?.includes(path));
@@ -1740,6 +1740,7 @@ test("root active delegation sources smoke-load only the unified delegation tool
 		"subagent_resume",
 		"subagent_stage",
 		"subagent_status",
+		"subagent_workspace",
 	]);
 	assert.ok(toolNames.every((name) => !name.startsWith("delegate_flow") && !name.startsWith("auto_dag_")));
 });

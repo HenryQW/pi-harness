@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { GitCommitter } from "./git-commit.ts";
 import { GitConflicts } from "./git-conflict.ts";
 import { readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import {
@@ -78,6 +78,7 @@ const DELEGATED_TOOLS = new Set(["delegate_task"]);
 const CLOSED = { additionalProperties: false } as const;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+const ProjectPath = Type.Optional(Type.String({ minLength: 1, description: "Path to a Git worktree or any directory inside it. Relative paths use the session directory. Defaults to the session directory; does not search child repositories." }));
 const RouteRunId = Type.String({ minLength: 36, maxLength: 36, pattern: UUID.source });
 const ResolvedPaths = Type.Array(Type.String({ minLength: 1, maxLength: 4_096 }), { minItems: 1, maxItems: 128 });
 const OwnedPaths = Type.Array(Type.String({ minLength: 1, maxLength: 4_096 }), { maxItems: 128 });
@@ -116,15 +117,18 @@ function flatRoot(actions: TUnion<TObject[]>): TObject {
 			if (variant.required?.includes(key)) requiredCount.set(key, (requiredCount.get(key) ?? 0) + 1);
 		}
 	}
-	return Type.Object(Object.fromEntries([...properties].map(([key, schemas]) => {
+	return Type.Object({ projectPath: ProjectPath, ...Object.fromEntries([...properties].map(([key, schemas]) => {
 		const schema = schemas.length === 1 ? schemas[0]! : Type.Union(schemas);
 		return [key, requiredCount.get(key) === actions.anyOf.length ? schema : Type.Optional(schema)];
-	})), CLOSED);
+	})) }, CLOSED);
 }
 
-function checkedAction<T extends TUnion<TObject[]>>(actions: T, args: unknown): Static<T> {
-	if (Check(actions, args)) return args as Static<T>;
-	const issue = [...Errors(actions, args)][0];
+function checkedAction<T extends TUnion<TObject[]>>(actions: T, args: unknown): Static<T> & { projectPath?: string } {
+	if (!isRecord(args)) throw new Error("Tool arguments must be an object");
+	const { projectPath, ...action } = args;
+	if (projectPath !== undefined && !Check(ProjectPath, projectPath)) throw new Error("Invalid projectPath");
+	if (Check(actions, action)) return args as Static<T> & { projectPath?: string };
+	const issue = [...Errors(actions, action)][0];
 	throw new Error(`Tool arguments do not match one action${issue ? `: ${issue.message}` : ""}`);
 }
 
@@ -176,12 +180,14 @@ const WorkActions = Type.Union([
 	Type.Object({ runId: RouteRunId, action: Type.Literal("publish") }, CLOSED),
 ]);
 const PublicationParameters = Type.Object({
+	projectPath: ProjectPath,
 	scope: Type.Optional(Type.Union([Type.Literal("publication"), Type.Literal("update-branch")])),
 	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
 	allowUpstream: Type.Optional(Type.Boolean()),
 }, CLOSED);
-const NamedStatusParameters = Type.Object({ number: Type.Integer({ minimum: 1 }) }, CLOSED);
+const NamedStatusParameters = Type.Object({ projectPath: ProjectPath, number: Type.Integer({ minimum: 1 }) }, CLOSED);
 const NamedMergeParameters = Type.Object({
+	projectPath: ProjectPath,
 	number: Type.Integer({ minimum: 1 }),
 	headOid: Type.String({ pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" }),
 }, CLOSED);
@@ -341,6 +347,15 @@ export default function pullRequestExtension(
 	const createCiFixer = dependencies.createCiFixer ?? ((options) => new PullRequestCiFixer(options));
 	const createWorkPublisher = dependencies.createWorkPublisher ?? ((options) => new PullRequestWorkPublisher(options));
 	const resolveCanonicalWorktree = dependencies.canonicalWorktree ?? canonicalWorktree;
+	const selectWorktree = async (ctx: ExtensionContext, projectPath?: string, signal?: AbortSignal): Promise<string> => {
+		if (projectPath !== undefined && (!projectPath.trim() || projectPath.includes("\0"))) throw new Error("projectPath must name a project directory");
+		const path = resolve(ctx.cwd, projectPath ?? ctx.cwd);
+		try { return await resolveCanonicalWorktree(path, signal); }
+		catch (error) {
+			signal?.throwIfAborted();
+			throw new Error(`Cannot select Git worktree at ${path}. Set projectPath to a Git worktree or a directory inside it; child repositories are not searched. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+		}
+	};
 	const newRunId = dependencies.newRunId ?? randomUUID;
 	const now = dependencies.now ?? Date.now;
 	let context: ExtensionContext | undefined;
@@ -392,7 +407,7 @@ export default function pullRequestExtension(
 	let prRun = new PrRun();
 	let workflowContext: WorkflowContext | undefined;
 	const endedRuns = new Map<string, { failed: boolean; scoped: boolean }>();
-	let standaloneCommit: { worktree: string; committer: GitCommitter; controller: AbortController } | undefined;
+	const standaloneCommits = new Map<string, { committer: GitCommitter; controller: AbortController }>();
 	const activeInvocations = new Map<number, "routing" | "resolved" | "create-workflow" | "workflow">();
 	let widgetKind: "presentation" | "routing" = "presentation";
 	let routingSpinnerFrame = 0;
@@ -457,6 +472,7 @@ export default function pullRequestExtension(
 		invocation.assertCurrent();
 		const worktree = await resolveCanonicalWorktree(ctx.cwd, ctx.signal);
 		invocation.assertCurrent();
+		if (worktree !== ctx.cwd) throw new Error("PR workflow worktree changed during reservation");
 		if (workflowContext) throw new Error(`PR workflow ${workflowContext.runId} is still active`);
 		const runId = newRunId();
 		const common: WorkflowContextBase = {
@@ -574,6 +590,7 @@ export default function pullRequestExtension(
 		route: Route,
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
+		projectPath: string | undefined,
 		action: (selected: Extract<WorkflowContext, { route: Route }>) => Promise<unknown>,
 	) => {
 		signal?.throwIfAborted();
@@ -599,7 +616,7 @@ export default function pullRequestExtension(
 		else signal?.addEventListener("abort", abortRun, { once: true });
 		try {
 			selected.controller.signal.throwIfAborted();
-			const worktree = await resolveCanonicalWorktree(ctx.cwd, selected.controller.signal);
+			const worktree = await selectWorktree(ctx, projectPath, selected.controller.signal);
 			if (workflowContext !== selected || selected.sessionGeneration !== sessionGeneration) {
 				throw new Error("PR workflow session changed during validation");
 			}
@@ -633,11 +650,14 @@ export default function pullRequestExtension(
 			const params = checkedAction(CommitActions, raw);
 			if (workflowContext && workflowContext.route !== "fix-ci") throw new Error("Use the active PR route's commit action");
 			const generation = sessionGeneration;
-			const worktree = await resolveCanonicalWorktree(ctx.cwd, signal);
+			const worktree = await selectWorktree(ctx, params.projectPath, signal);
 			if (generation !== sessionGeneration) throw new Error("Commit session changed");
-			if (standaloneCommit && standaloneCommit.worktree !== worktree) throw new Error("Commit worktree changed; finish the previous inspection first");
-			standaloneCommit ??= { worktree, committer: new GitCommitter({ cwd: worktree }), controller: new AbortController() };
-			const selected = standaloneCommit;
+			if (workflowContext && workflowContext.worktree !== worktree) throw new Error("Commit worktree differs from the active PR workflow");
+			let selected = standaloneCommits.get(worktree);
+			if (!selected) {
+				selected = { committer: new GitCommitter({ cwd: worktree }), controller: new AbortController() };
+				standaloneCommits.set(worktree, selected);
+			}
 			const operationSignal = signal ? AbortSignal.any([signal, selected.controller.signal]) : selected.controller.signal;
 			return toolResult(params.action === "inspect"
 				? await selected.committer.inspect(params.target, operationSignal)
@@ -654,7 +674,7 @@ export default function pullRequestExtension(
 		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(UpdateBranchActions, raw);
-			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, async (selected) => {
+			return executeWorkflowAction(params.runId, "update-branch", ctx, signal, params.projectPath, async (selected) => {
 				switch (params.action) {
 					case "rebase":
 					case "continue": {
@@ -688,7 +708,7 @@ export default function pullRequestExtension(
 		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(CreateActions, raw);
-			return executeWorkflowAction(params.runId, "create", ctx, signal, async (selected) => {
+			return executeWorkflowAction(params.runId, "create", ctx, signal, params.projectPath, async (selected) => {
 				switch (params.action) {
 					case "prepare": return await selected.workflow.prepare();
 					case "inspect": return await selected.workflow.inspect();
@@ -714,7 +734,7 @@ export default function pullRequestExtension(
 		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(WorkActions, raw);
-			return executeWorkflowAction(params.runId, "publish-work", ctx, signal, async (selected) => {
+			return executeWorkflowAction(params.runId, "publish-work", ctx, signal, params.projectPath, async (selected) => {
 				switch (params.action) {
 					case "inspect": return await selected.workflow.inspect();
 					case "commit": {
@@ -743,7 +763,7 @@ export default function pullRequestExtension(
 		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(SweepActions, raw);
-			return executeWorkflowAction(params.runId, "sweep", ctx, signal, async (selected) => {
+			return executeWorkflowAction(params.runId, "sweep", ctx, signal, params.projectPath, async (selected) => {
 				switch (params.action) {
 					case "start": {
 						try { return await selected.workflow.start(); }
@@ -781,7 +801,7 @@ export default function pullRequestExtension(
 		exposure: "model-only",
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(FixCiActions, raw);
-			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, async (selected) => {
+			return executeWorkflowAction(params.runId, "fix-ci", ctx, signal, params.projectPath, async (selected) => {
 				switch (params.action) {
 					case "collect": {
 						try { return await selected.workflow.collect(); }
@@ -809,10 +829,14 @@ export default function pullRequestExtension(
 		parameters: flatRoot(ConflictActions),
 		async execute(_toolCallId, raw, signal, _onUpdate, ctx) {
 			const params = checkedAction(ConflictActions, raw);
+			const generation = sessionGeneration;
+			const worktree = await selectWorktree(ctx, params.projectPath, signal);
+			if (generation !== sessionGeneration) throw new Error("Conflict session changed");
+			if (workflowContext && workflowContext.worktree !== worktree) throw new Error("Conflict worktree differs from the active PR workflow");
 			switch (params.action) {
-				case "list": return toolResult(await conflicts.list(ctx.cwd, params.path, signal));
-				case "show": return toolResult(await conflicts.show(ctx.cwd, params.path, params.block, signal));
-				case "resolve": return toolResult(await conflicts.resolve(ctx.cwd, params.path, params.resolutions, signal));
+				case "list": return toolResult(await conflicts.list(worktree, params.path, signal));
+				case "show": return toolResult(await conflicts.show(worktree, params.path, params.block, signal));
+				case "resolve": return toolResult(await conflicts.resolve(worktree, params.path, params.resolutions, signal));
 			}
 		},
 	});
@@ -911,8 +935,8 @@ export default function pullRequestExtension(
 
 	const stop = (): void => {
 		sessionGeneration += 1;
-		standaloneCommit?.controller.abort();
-		standaloneCommit = undefined;
+		for (const commit of standaloneCommits.values()) commit.controller.abort();
+		standaloneCommits.clear();
 		context = undefined;
 		observation = undefined;
 		queued = false;
@@ -1064,15 +1088,14 @@ export default function pullRequestExtension(
 			},
 		});
 		try {
+			if (await resolveCanonicalWorktree(selected.worktree, ctx.signal) !== selected.worktree) throw new Error("PR continuation worktree changed");
+			callback.assertCurrent();
 			if (!selected.queuedPrompt) {
 				if (replanning) {
 					selected.controller.signal.throwIfAborted();
 					ctx.signal?.throwIfAborted();
 					if (selected.staleRediscoveries >= MAX_STALE_REDISCOVERIES) {
 						throw new Error("stale-route rediscovery limit exhausted; no mutation was retried");
-					}
-					if (await resolveCanonicalWorktree(ctx.cwd, ctx.signal) !== selected.worktree) {
-						throw new Error("PR stale-route rediscovery cancelled: worktree changed");
 					}
 					callback.assertCurrent();
 					selected.controller.signal.throwIfAborted();
@@ -1083,7 +1106,7 @@ export default function pullRequestExtension(
 				if (selected.completed && selected.publication?.scope === "update-branch") return;
 				activeInvocations.set(invocation, "routing");
 				reconcileWidget(ctx);
-				const next = await commandHandler("", ctx, callback);
+				const next = await commandHandler("", { ...ctx, cwd: selected.worktree }, callback);
 				if (generation !== sessionGeneration) return;
 				if (WORKFLOW_ROUTES.has(next) && workflowContext !== undefined) {
 					activeInvocations.set(invocation, next === "create" ? "create-workflow" : "workflow");
@@ -1105,7 +1128,7 @@ export default function pullRequestExtension(
 			return {
 				entries: [...event.entries, {
 					type: "custom_message" as const, customType: "pi-pr-workflow", display: false,
-					content: `<skill name="${identity.skill.slice("skill:".length)}" location="${identity.path}">\nReferences are relative to ${dirname(identity.path)}.\n\n${body}\n</skill>\n\nrunId=${identity.runId} action=${identity.action}`,
+					content: `<skill name="${identity.skill.slice("skill:".length)}" location="${identity.path}">\nReferences are relative to ${dirname(identity.path)}.\n\n${body}\n</skill>\n\nrunId=${identity.runId} action=${identity.action} projectPath=${JSON.stringify(pending.worktree)}`,
 					details: identity,
 				}],
 				continue: true,
@@ -1203,7 +1226,8 @@ export default function pullRequestExtension(
 		policyReporter.report(ctx, policyStore, policy);
 		return policy.status === "ok" ? policy.value : DEFAULT_PR_POLICY;
 	};
-	const launch = async (args: string, ctx: ExtensionContext, publication?: PublicationRequest) => {
+	const launch = async (ctx: ExtensionContext, publication?: PublicationRequest, projectPath?: string) => {
+			const generation = sessionGeneration;
 			ctx.signal?.throwIfAborted();
 			if (workflowContext?.route === "update-branch" && workflowContext.workflow.state.phase === "conflict-awaiting-user") {
 				const selected = workflowContext;
@@ -1221,7 +1245,6 @@ export default function pullRequestExtension(
 			if (publication && (workflowContext || activeInvocations.size)) throw new Error("A PR invocation is still active");
 			cancelRefresh();
 			prRun = new PrRun(loadPolicy(ctx));
-			const generation = sessionGeneration;
 			const invocation = ++commandGeneration;
 			activeInvocations.set(invocation, "routing");
 			reconcileWidget(ctx);
@@ -1244,8 +1267,29 @@ export default function pullRequestExtension(
 				},
 			});
 			let nextStep: Awaited<ReturnType<typeof commandHandler>>;
+			let selectedContext = false;
 			try {
-				nextStep = await commandHandler(args, ctx, commandInvocation);
+				const worktree = await selectWorktree(ctx, projectPath, ctx.signal);
+				commandInvocation.assertCurrent();
+				if ((workflowContext && workflowContext.worktree !== worktree) ||
+					(activeInvocations.size > 1 && context?.cwd !== worktree)) throw new Error("A PR invocation is still active in another worktree");
+				ctx = { ...ctx, cwd: worktree };
+				if (context && ctx.hasUI) {
+					if (context.cwd !== worktree) {
+						stopPolling();
+						displayedWidget = undefined;
+						displayEstablished = false;
+						lastDiscoveryCompletedAt = undefined;
+						lastDiscoveryOpen = false;
+						lastBlockedIssueKey = undefined;
+						pendingWorkspaceRename = false;
+						reportedRefreshFailure = undefined;
+						ctx.ui.setStatus(UI_KEY, undefined);
+					}
+					context = ctx;
+				}
+				selectedContext = true;
+				nextStep = await commandHandler("", ctx, commandInvocation);
 				routeResolved();
 			} catch (error) {
 				if (sessionGeneration === generation) {
@@ -1257,7 +1301,7 @@ export default function pullRequestExtension(
 						reportRefreshFailure(error);
 					} else {
 						reconcileWidget(ctx);
-						refreshInBackground();
+						if (selectedContext) refreshInBackground();
 					}
 				}
 				throw error;
@@ -1279,8 +1323,8 @@ export default function pullRequestExtension(
 			};
 	};
 	pi.registerCommand("pr", {
-		description: "Run the current branch pull request lifecycle",
-		handler: async (args, ctx) => { if (ctx.hasUI && context) await launch(args, ctx); },
+		description: "Run the current branch pull request lifecycle: /pr [projectPath]",
+		handler: async (args, ctx) => { if (ctx.hasUI && context) await launch(ctx, undefined, args.trim() || undefined); },
 	});
 	pi.registerTool({
 		name: "pi_git_pr",
@@ -1294,8 +1338,8 @@ export default function pullRequestExtension(
 			if (raw.scope === "update-branch" && raw.allowUpstream !== undefined) {
 				throw new Error("Branch update does not permit upstream settings; omit allowUpstream");
 			}
-			return toolResult(await launch("", { ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
-				{ base: raw.base, allowUpstream: raw.allowUpstream === true, scope: raw.scope }));
+			return toolResult(await launch({ ...ctx, signal: signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal },
+				{ base: raw.base, allowUpstream: raw.allowUpstream === true, scope: raw.scope }, raw.projectPath));
 		},
 	});
 
@@ -1326,7 +1370,8 @@ export default function pullRequestExtension(
 		async execute(_id, raw, signal, _update, ctx) {
 			if (!Check(NamedStatusParameters, raw)) throw new Error("Invalid named PR status request");
 			const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
-			return toolResult((await evaluateNamed(raw.number, ctx.cwd, operationSignal, loadPolicy(ctx))).status);
+			const worktree = await selectWorktree(ctx, raw.projectPath, operationSignal);
+			return toolResult({ ...(await evaluateNamed(raw.number, worktree, operationSignal, loadPolicy(ctx))).status, projectPath: worktree });
 		},
 	});
 	pi.registerTool({
@@ -1339,8 +1384,10 @@ export default function pullRequestExtension(
 		async execute(_id, raw, signal, _update, ctx) {
 			if (!Check(NamedMergeParameters, raw)) throw new Error("Invalid named PR merge request");
 			const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
+			const generation = sessionGeneration;
+			const worktree = await selectWorktree(ctx, raw.projectPath, operationSignal);
 			const policy = loadPolicy(ctx);
-			const { pullRequest: current, status } = await evaluateNamed(raw.number, ctx.cwd, operationSignal, policy);
+			const { pullRequest: current, status } = await evaluateNamed(raw.number, worktree, operationSignal, policy);
 			const refused = (reason: string) => toolResult({ merged: false, reason, status });
 			if (status.verdict !== "ready") return refused(`PR #${current.number} is not ready`);
 			if (current.head.oid !== raw.headOid) return refused(`PR #${current.number} head is ${current.head.oid}, not the requested ${raw.headOid}`);
@@ -1352,13 +1399,15 @@ export default function pullRequestExtension(
 				{ signal: operationSignal },
 			);
 			if (!confirmed) return refused(`PR #${current.number} merge declined`);
-			const fresh = await evaluateNamed(raw.number, ctx.cwd, operationSignal, policy);
+			if (generation !== sessionGeneration || await resolveCanonicalWorktree(worktree, operationSignal) !== worktree) throw new Error("Named PR merge session or worktree changed");
+			const fresh = await evaluateNamed(raw.number, worktree, operationSignal, policy);
 			if (fresh.status.verdict !== "ready" || !isSameConfirmedMerge(current, fresh.pullRequest) || !isDeepStrictEqual(fresh.status.bypass, status.bypass)) {
 				return toolResult({ merged: false, reason: `PR #${current.number} changed after confirmation`, status: fresh.status });
 			}
+			if (generation !== sessionGeneration) throw new Error("Named PR merge session changed");
 			await mergeGitHubPullRequest({
 				exec: (command, args, options) => pi.exec(command, args, { ...options, signal: operationSignal, timeout: 10_000 }),
-				cwd: ctx.cwd,
+				cwd: worktree,
 				pullRequestId: current.id,
 				hostname: current.host,
 				mergeMethod: policy.mergeMethod,

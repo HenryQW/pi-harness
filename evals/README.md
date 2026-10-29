@@ -82,7 +82,7 @@ export default [
 | `id` | Kebab-case identifier. It must be unique in the suite. |
 | `kind` | `"safety"` or `"quality"`. See [Pass rule](#pass-rule). |
 | `skill` | Skill directory, relative to the repository root. The runner loads it with `--skill`. |
-| `prompt` | Prompt text. Start with `/skill:<name>` to load the skill. If you do not, the model must read `SKILL.md`, which needs built-in tools. |
+| `prompt` | Prompt text. `{{projectPath}}` becomes the canonical trial directory with quotes and string escapes. Start with `/skill:<name>` to load the skill. If you do not, the model must read `SKILL.md`, which needs built-in tools. |
 | `setup` | Optional function `(cwd) => void`. It prepares files or a Git repository in the empty trial directory. |
 | `stubs` | Optional scripted tools. See [Stub tools](#stub-tools). |
 | `builtinTools` | Optional. `true` loads `read`, `bash`, `edit`, `write`, and the other Pi built-in tools. Default: `false`. |

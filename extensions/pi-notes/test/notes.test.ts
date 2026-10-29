@@ -128,6 +128,27 @@ test("notes persist independently per worktree without creating config on startu
 	assert.deepEqual(h.widget(), ["1. second note"]);
 });
 
+test("explicit malformed-note recovery names the selected worktree and preserves sibling notes", async (t) => {
+	const h = await harness(t);
+	await h.handlers.note!("first", h.context(h.first));
+	await h.handlers.note!("second", h.context(h.second));
+	const dir = join(h.agentDir, "config", "pi-notes");
+	const records = await Promise.all((await readdir(dir)).map(async (name) => ({
+		path: join(dir, name), record: parseNotes(await readFile(join(dir, name), "utf8")),
+	})));
+	const second = records.find(({ record }) => record.worktree === h.identities.get(h.second)!.worktree)!;
+	await writeFile(second.path, "{malformed");
+	await h.handlers.note!("--project ../second -- blocked", h.context(h.first));
+	assert.ok(h.notified()!.includes(`/note-clear --project ${second.record.worktree}`));
+	assert.equal(await readFile(second.path, "utf8"), "{malformed");
+	await h.handlers["note-clear"]!("--project ../missing", h.context(h.first));
+	const first = records.find(({ record }) => record.worktree === h.identities.get(h.first)!.worktree)!;
+	assert.deepEqual(parseNotes(await readFile(first.path, "utf8")).notes, ["first"]);
+	await h.handlers["note-clear"]!("--project ../second", h.context(h.first));
+	await assert.rejects(readFile(second.path), { code: "ENOENT" });
+	assert.deepEqual(h.widget(), ["1. first"]);
+});
+
 test("recreated worktree at same path does not inherit old notes", async (t) => {
 	const h = await harness(t);
 	const ctx = h.context(h.first);

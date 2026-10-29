@@ -51,7 +51,12 @@ function snapshotExecutor(options: {
 	pullResult?: ExecResult;
 } = {}): Executor {
 	return async ({ command, args }) => {
-		if (command === "git" && args[0] === "rev-parse") return ok(`${options.toplevel ?? checkout}\n`);
+		if (command === "git" && args[0] === "rev-parse") return ok(`${args.includes("--git-common-dir") ? join(options.mainCheckout ?? mainCheckoutDir, ".git") : options.toplevel ?? checkout}\n`);
+		if (command === "herdr" && args[0] === "pane") return ok(JSON.stringify({ result: { pane: { pane_id: "p1", tab_id: "w1:t1", workspace_id: "w1", cwd: checkout } } }));
+		if (command === "herdr" && args[0] === "workspace") return ok(JSON.stringify({ result: { workspace: { workspace_id: "w1", worktree: {
+			checkout_path: checkout, repo_root: options.mainCheckout ?? mainCheckoutDir, repo_key: join(options.mainCheckout ?? mainCheckoutDir, ".git"), is_linked_worktree: true,
+		} } } }));
+		if (command === "herdr" && args[0] === "tab" && args[1] === "get") return ok(JSON.stringify({ result: { tab: { tab_id: "w1:t1", workspace_id: "w1" } } }));
 		if (command === "git" && args[0] === "worktree" && args[1] === "list") {
 			assert.deepEqual(args, ["worktree", "list", "--porcelain", "-z"]);
 			const main = options.mainCheckout ?? mainCheckoutDir;
@@ -89,6 +94,7 @@ async function withHerdrEnvironment(
 		HERDR_ENV: herdrEnv,
 		HERDR_TAB_ID: tabId,
 		HERDR_WORKSPACE_ID: workspaceId ?? undefined,
+		HERDR_PANE_ID: "p1",
 	};
 	const previous = Object.fromEntries(Object.keys(environment).map((key) => [key, process.env[key]]));
 	setEnvironment(environment);
@@ -119,7 +125,7 @@ test("/done resolves the checkout root, skips own tab, removes the checkout, the
 			"confirm:Done:Close its Herdr tabs and remove the current worktree?",
 			"idle",
 		]);
-		assert.deepEqual(app.calls, [
+		assert.deepEqual(app.calls.filter((call) => !["pane", "workspace"].includes(call.args[0]!) && call.args[1] !== "get" && !call.args.includes("--git-common-dir") && !(call.args[0] === "rev-parse" && call.options.cwd === checkout)), [
 			{ command: "git", args: ["rev-parse", "--show-toplevel"], options: { cwd: "/repo/worktree/nested" } },
 			{ command: "git", args: ["worktree", "list", "--porcelain", "-z"], options: { cwd: checkout } },
 			{ command: "herdr", args: ["api", "snapshot"], options: { cwd: "/repo/worktree/nested" } },
@@ -147,7 +153,7 @@ test("/done closes all other tabs in its workspace", async () => {
 		}));
 		await app.command("", context());
 		assert.deepEqual(
-			app.calls.filter((call) => call.command === "herdr" && call.args[0] === "tab").map((call) => call.args),
+			app.calls.filter((call) => call.command === "herdr" && call.args[0] === "tab" && call.args[1] !== "get").map((call) => call.args),
 			[
 				["tab", "list"],
 				["tab", "close", "w1:t2"],
@@ -189,7 +195,7 @@ test("/done refuses with blocking tab labels when another Herdr tab uses the che
 			await assert.rejects(
 				app.command("", context()),
 				/still used by Herdr tabs Fix puid pgid, w3:t4/);
-			assert.equal(app.calls.length, 4);
+			assert.equal(app.calls.some((call) => call.args[1] === "remove" || call.args[1] === "close"), false);
 		});
 	}
 });
@@ -248,15 +254,16 @@ test("/done fails safely before any execution and preserves removal errors", asy
 	await t.test("rejects mismatched Herdr tab and workspace context before removal", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor());
-			await assert.rejects(app.command("", context()), /does not belong to workspace w9/);
+			await assert.rejects(app.command("", context()), /does not own the exact tab, workspace, and checkout/);
 			assert.equal(app.calls.some((call) => call.args[1] === "remove"), false);
 		}, "w9");
 	});
 
-	await t.test("skips the parent pull when the session is the main worktree", async () => {
+	await t.test("refuses the main checkout even with force", async () => {
 		await withHerdrEnvironment("1", "w1:t1", async () => {
 			const app = harness(snapshotExecutor({ mainCheckout: checkout }));
-			await app.command("--force", context());
+			await assert.rejects(app.command("--force", context()), /registered linked checkout/);
+			assert.equal(app.calls.some((c) => c.args[1] === "remove" || c.args[1] === "close"), false);
 			assert.equal(app.calls.some((c) => c.args[0] === "pull"), false);
 		});
 	});
@@ -276,7 +283,6 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "error: the following file is dirty", code: 1 },
 			}));
 			await assert.rejects(app.command("", context()), /dirty/);
-			assert.equal(app.calls.length, 5);
 			assert.equal(app.calls.some((call) => call.args[1] === "close"), false);
 		});
 	});
@@ -302,7 +308,7 @@ test("/done fails safely before any execution and preserves removal errors", asy
 				removeResult: { stdout: "", stderr: "", code: 0, killed: true },
 			}));
 			await assert.rejects(app.command("", context()), /killed/);
-			assert.equal(app.calls.length, 5);
+			assert.equal(app.calls.some((call) => call.args[1] === "close"), false);
 		});
 	});
 });
@@ -315,5 +321,40 @@ test("forced completion cannot bypass managed-command ownership", async () => {
 		});
 		await assert.rejects(app.command("--force", context()), /Active or unknown/);
 		assert.equal(app.calls.some((call) => call.args.includes("remove") || call.args.includes("close")), false);
+	});
+});
+
+test("/done fails closed for folder workspaces, other checkouts, and stale pane ownership, including force", async () => {
+	for (const force of ["", "--force"]) for (const mode of ["folder", "other-checkout", "other-repository", "other-pane", "other-tab", "outside-pane", "nested-repository", "missing-pane"] as const) {
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			if (mode === "missing-pane") delete process.env.HERDR_PANE_ID;
+			const fallback = snapshotExecutor();
+			const app = harness(async (call) => {
+				const { command, args, options } = call;
+				if (args[0] === "workspace") return ok(JSON.stringify({ result: { workspace: { workspace_id: "w1", worktree: mode === "folder" ? null : {
+					checkout_path: mode === "other-checkout" ? mainCheckoutDir : checkout,
+					repo_root: mainCheckoutDir, repo_key: mode === "other-repository" ? "/other/.git" : join(mainCheckoutDir, ".git"), is_linked_worktree: true,
+				} } } }));
+				if (args[0] === "pane") return ok(JSON.stringify({ result: { pane: {
+					pane_id: mode === "other-pane" ? "p2" : "p1", tab_id: mode === "other-tab" ? "w1:t2" : "w1:t1", workspace_id: "w1",
+					cwd: mode === "outside-pane" ? mainCheckoutDir : mode === "nested-repository" ? `${checkout}/nested` : checkout,
+				} } }));
+				if (command === "git" && options.cwd === `${checkout}/nested`) return ok(`${checkout}/nested\n`);
+				return fallback(call);
+			});
+			await assert.rejects(app.command(force, context()), /linked checkout|does not own|HERDR_PANE_ID/, mode);
+			assert.equal(app.calls.some((call) => call.args[1] === "remove" || call.args[1] === "close" || call.args[0] === "pull"), false, mode);
+		});
+	}
+});
+
+test("/done accepts a pane in a subdirectory of its exact linked checkout", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const fallback = snapshotExecutor();
+		const app = harness((call) => call.args[0] === "pane"
+			? ok(JSON.stringify({ result: { pane: { pane_id: "p1", tab_id: "w1:t1", workspace_id: "w1", cwd: `${checkout}/nested` } } }))
+			: fallback(call));
+		await app.command("--force", context());
+		assert.ok(app.calls.some((call) => call.args[1] === "remove"));
 	});
 });

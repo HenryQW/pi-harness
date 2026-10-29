@@ -36,6 +36,15 @@ An isolated-graph task whose result is bounded text rather than a changeset. Com
 **Changeset task**:
 An isolated-graph task that produces a committed change in its own worker worktree.
 
+**Repository set**:
+The explicitly selected independent Git repositories that one workspace task reads, checks, and changes. An unchanged member remains part of the exact input set.
+
+**Workspace input**:
+An explicitly selected non-Git file copied for read-only task use. It is never a Git candidate or a promotion target.
+
+**Promotion receipt**:
+The durable record of one repository's proved movement to its checked integration tip. A receipt does not imply that other repositories moved.
+
 ### Checked integration
 
 **Candidate**:

@@ -51,7 +51,7 @@ Some settings disable a feature when they are invalid, and do not use a default.
 
 Each row shows an active extension. A filled square marks a **direct** runtime or peer dependency on the package above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
 
-![Matrix showing 30 direct internal dependency edges across 21 active Pi extensions and seven dependency packages; Pi Subagent uses Pi Task Models for routes and fallback selection reports; the optional Pi Goal query adds no dependency edge](./docs/extension-dependencies.svg)
+![Matrix showing 30 direct internal dependency edges across 21 active Pi extensions and seven dependency packages; Pi Subagent uses Pi Task Models for routes and Pi Herdr for selected-checkout admission; the optional Pi Goal query adds no dependency edge](./docs/extension-dependencies.svg)
 
 The matrix excludes development and transitive dependencies, deprecated extensions, and `@deprecated/`.
 

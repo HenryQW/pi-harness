@@ -11,7 +11,9 @@ Use `session_search` for session history. Do not scan Pi session files directly.
 
 ## Prepare once
 
-Choose the requested scope. Use `repository` for the current Git repository. Use `all` for a cross-repository request or work outside Git.
+Choose the requested scope. Use `repository` for one Git repository. Use `all` for a cross-repository request or non-repository work.
+
+If the session directory is outside Git, ask for a repository path before repository preparation. Do not scan or select child repositories. For an explicit repository, set `projectPath` to its absolute path or its path relative to the session directory. This selects only the preparation target, not a session-wide active project. Do not infer this path from CodeGraph selection.
 
 Before interpretation, call `session_search` exactly once with:
 
@@ -23,7 +25,9 @@ Before interpretation, call `session_search` exactly once with:
 }
 ```
 
-Change only `scope` when needed. Do not run manual browse, read, scroll, or inventory rounds during preparation.
+Change `scope` when needed. Add `projectPath` only for an explicit repository target with `scope: "repository"`. Other modes and `scope: "all"` reject it. Browse and keyword search remain global.
+
+Do not run manual browse, read, scroll, or inventory rounds during preparation.
 
 State the returned scope and sample count. If `sync.complete` is false, report the incomplete walk or positive backlog as a sample limitation.
 

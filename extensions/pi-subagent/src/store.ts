@@ -109,7 +109,7 @@ export class RunStateHandle {
 }
 
 export class FileRunStore {
-	private readonly agentDir?: string;
+	readonly agentDir?: string;
 	private readonly onStateSaved?: (state: RunState) => void;
 	private readonly productiveRunLeases = new WeakMap<ProductiveRunLease, string>();
 

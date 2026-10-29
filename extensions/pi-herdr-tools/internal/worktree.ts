@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { absolutePath, type WorktreeSource } from "./repository.ts";
 import { herdrCommandFailure, startPiAgent, type HerdrClient, type HerdrExecResult } from "@henryqw/pi-herdr";
 
 type Herdr = HerdrClient<{ cwd: string }>;
@@ -8,6 +9,7 @@ type WorkspaceInfo = {
 	worktree?: {
 		checkout_path?: unknown;
 		repo_root?: unknown;
+		repo_key?: unknown;
 		is_linked_worktree?: unknown;
 	} | null;
 };
@@ -16,6 +18,7 @@ export type HerdrWorkspace = {
 	workspaceId: string;
 	checkout: string | undefined;
 	repoRoot: string | undefined;
+	repoKey: string | undefined;
 	isLinkedWorktree: boolean;
 };
 
@@ -55,23 +58,25 @@ export async function resolveWorkspace(herdr: Herdr, cwd: string, paneId: string
 	if (isLinkedWorktree && !repoRoot) {
 		throw new Error("Herdr workspace response is missing worktree.repo_root for a linked worktree.");
 	}
-	return { workspaceId, checkout, repoRoot, isLinkedWorktree };
+	const repoKey = typeof workspace?.worktree?.repo_key === "string" ? workspace.worktree.repo_key : undefined;
+	return { workspaceId, checkout, repoRoot, repoKey, isLinkedWorktree };
 }
 
-/**
- * Herdr only creates worktrees from the repo parent workspace; a linked
- * worktree must retarget the parent.
- */
-export async function worktreeParentWorkspace(herdr: Herdr, cwd: string, workspace: HerdrWorkspace): Promise<string> {
-	if (!workspace.isLinkedWorktree) return workspace.workspaceId;
-	const listing = await herdr.json(["workspace", "list"], { cwd });
-	const result = (listing as { result?: { workspaces?: WorkspaceInfo[] } }).result;
-	const parent = (Array.isArray(result?.workspaces) ? result.workspaces : []).find((entry) =>
-		entry.worktree != null && !entry.worktree.is_linked_worktree &&
-		entry.worktree.checkout_path === workspace.repoRoot);
-	return typeof parent?.workspace_id === "string"
-		? parent.workspace_id
-		: requiredString(undefined, `Repo parent workspace for ${workspace.repoRoot} in herdr workspace list`);
+/** Prove the exact pane, tab, workspace, and checkout relationship before mutation. */
+export async function verifyPaneTarget(herdr: Herdr, cwd: string, target: CreatedWorktree, source: { repoRoot: string; repoKey: string }, allowNested = false): Promise<string> {
+	const response = await herdr.json(["pane", "get", target.rootPaneId], { cwd });
+	const pane = (response.result as { pane?: { pane_id?: unknown; tab_id?: unknown; workspace_id?: unknown; cwd?: unknown } } | undefined)?.pane;
+	if (pane?.pane_id !== target.rootPaneId || pane.tab_id !== target.tabId || pane.workspace_id !== target.workspaceId ||
+		(pane.cwd !== target.checkoutPath && !(allowNested && typeof pane.cwd === "string" && absolutePath(pane.cwd, "Pane cwd").startsWith(`${target.checkoutPath}/`)))) {
+		throw new Error("Herdr pane does not own the exact tab, workspace, and checkout.");
+	}
+	const tabResponse = await herdr.json(["tab", "get", target.tabId], { cwd });
+	const tab = (tabResponse.result as { tab?: { tab_id?: unknown; workspace_id?: unknown } } | undefined)?.tab;
+	if (tab?.tab_id !== target.tabId || tab.workspace_id !== target.workspaceId) throw new Error("Herdr tab does not belong to the target workspace.");
+	const workspace = await resolveWorkspace(herdr, cwd, target.rootPaneId);
+	if (workspace.workspaceId !== target.workspaceId || workspace.checkout !== target.checkoutPath || !workspace.isLinkedWorktree ||
+		workspace.repoRoot !== source.repoRoot || workspace.repoKey !== source.repoKey) throw new Error("Herdr workspace does not own the selected linked checkout.");
+	return requiredString(pane.cwd, "Herdr pane cwd");
 }
 
 /**
@@ -84,16 +89,18 @@ export async function createWorktree(
 	cwd: string,
 	args: readonly string[],
 	action: string,
+	source: WorktreeSource,
 ): Promise<CreatedWorktree> {
-	const createdWorktree = await herdr.exec(args, { cwd });
-	if (createdWorktree.code !== 0 && !createdWorktree.killed) {
-		throw new Error(herdrCommandFailure(args, createdWorktree));
-	}
+	let createdWorktree: HerdrExecResult;
+	try { createdWorktree = await herdr.exec(args, { cwd }); }
+	catch (error) { throw new Error(`${action} allocation is uncertain; inspect Herdr workspaces for repository ${source.repoRoot}. Do not replay or delete it: ${errorMessage(error)}`, { cause: error }); }
 
 	let workspaceId: string | undefined;
 	let tabId: string | undefined;
 	let rootPaneId: string | undefined;
 	let checkoutPath: string | undefined;
+	let returnedPath: string | undefined;
+	let returnedBranch: string | undefined;
 	try {
 		const response: unknown = JSON.parse(createdWorktree.stdout);
 		if (!response || typeof response !== "object" || Array.isArray(response)) {
@@ -103,9 +110,11 @@ export async function createWorktree(
 		// result.worktree uses `path` instead.
 		const result = (response as {
 			result?: {
-				workspace?: { workspace_id?: unknown; worktree?: { checkout_path?: unknown } };
-				tab?: { tab_id?: unknown };
-				root_pane?: { pane_id?: unknown };
+				type?: unknown;
+				workspace?: WorkspaceInfo;
+				tab?: { tab_id?: unknown; workspace_id?: unknown };
+				root_pane?: { pane_id?: unknown; tab_id?: unknown; workspace_id?: unknown; cwd?: unknown };
+				worktree?: { path?: unknown; is_linked_worktree?: unknown; open_workspace_id?: unknown; branch?: unknown };
 			};
 		}).result;
 		// Collect every returned identifier before validating so recovery
@@ -116,6 +125,8 @@ export async function createWorktree(
 		checkoutPath = typeof result?.workspace?.worktree?.checkout_path === "string" && result.workspace.worktree.checkout_path.trim()
 			? result.workspace.worktree.checkout_path
 			: undefined;
+		returnedPath = typeof result?.worktree?.path === "string" ? result.worktree.path : undefined;
+		returnedBranch = typeof result?.worktree?.branch === "string" ? result.worktree.branch : source.branch;
 		if (createdWorktree.killed) {
 			throw new Error("Herdr worktree create was killed before completion.");
 		}
@@ -128,22 +139,34 @@ export async function createWorktree(
 		if (missing.length > 0) {
 			throw new Error(`Herdr worktree create response is missing ${missing.join(", ")}.`);
 		}
+		if (createdWorktree.code !== 0) throw new Error(herdrCommandFailure(args, createdWorktree));
+		absolutePath(checkoutPath, "Created checkout");
+		if (result?.type !== "worktree_created" || result.workspace?.worktree?.repo_root !== source.repoRoot ||
+			result.workspace.worktree.repo_key !== source.repoKey || result.workspace.worktree.is_linked_worktree !== true ||
+			result.worktree?.path !== checkoutPath || result.worktree?.is_linked_worktree !== true || result.worktree?.open_workspace_id !== workspaceId ||
+			(source.branch !== undefined && result.worktree?.branch !== source.branch) ||
+			result.tab?.workspace_id !== workspaceId || result.root_pane?.workspace_id !== workspaceId ||
+			result.root_pane?.tab_id !== tabId || result.root_pane?.cwd !== checkoutPath) {
+			throw new Error("Herdr creation response repository, checkout, workspace, tab, or pane did not match.");
+		}
 	} catch (error) {
 		const known = [
 			workspaceId && `workspace ${workspaceId}`,
 			tabId && `tab ${tabId}`,
 			rootPaneId && `root pane ${rootPaneId}`,
 			checkoutPath && `checkout ${checkoutPath}`,
+			returnedPath && returnedPath !== checkoutPath && `returned worktree path ${returnedPath}`,
+			returnedBranch && `branch ${returnedBranch}`,
 		].filter(Boolean).join(", ");
 		throw new Error(
-			`${action} could not be confirmed after creating a Herdr worktree${known ? ` (${known})` : ""}; Herdr may have retained a partial worktree workspace, inspect herdr workspace list: ${errorMessage(error)}`,
+			`${action} could not be confirmed after creating a Herdr worktree${known ? ` (${known})` : ""}; Herdr may have retained a partial worktree workspace for ${source.repoRoot}. Do not replay or delete it; inspect herdr workspace list: ${errorMessage(error)}${createdWorktree.code !== 0 || createdWorktree.killed ? ` (${herdrCommandFailure(args, createdWorktree)})` : ""}`,
 			{ cause: error },
 		);
 	}
 	return { workspaceId: workspaceId!, tabId: tabId!, rootPaneId: rootPaneId!, checkoutPath: checkoutPath! };
 }
 
-export function parseCreatedTab(createdTab: HerdrExecResult, workspaceId: string): { tabId: string; rootPaneId: string } {
+export function parseCreatedTab(createdTab: HerdrExecResult, workspaceId: string, checkoutPath?: string): { tabId: string; rootPaneId: string } {
 	let tabId: string | undefined;
 	let rootPaneId: string | undefined;
 	try {
@@ -151,18 +174,21 @@ export function parseCreatedTab(createdTab: HerdrExecResult, workspaceId: string
 		if (!response || typeof response !== "object" || Array.isArray(response)) {
 			throw new Error("Herdr tab create returned invalid JSON");
 		}
-		const result = (response as { result?: { tab?: { tab_id?: unknown }; root_pane?: { pane_id?: unknown } } }).result;
+		const result = (response as { result?: { tab?: { tab_id?: unknown; workspace_id?: unknown }; root_pane?: { pane_id?: unknown; tab_id?: unknown; workspace_id?: unknown; cwd?: unknown } } }).result;
 		tabId = typeof result?.tab?.tab_id === "string" && result.tab.tab_id.trim() ? result.tab.tab_id : undefined;
 		rootPaneId = typeof result?.root_pane?.pane_id === "string" && result.root_pane.pane_id.trim()
 			? result.root_pane.pane_id
 			: undefined;
 		const missing = [!tabId && "tab_id", !rootPaneId && "root_pane.pane_id"].filter(Boolean).join(", ");
 		if (missing) throw new Error(`Herdr tab create response is missing ${missing}.`);
+		if (createdTab.code !== 0 || createdTab.killed) throw new Error(herdrCommandFailure(["tab", "create"], createdTab));
+		if (checkoutPath !== undefined && (result?.tab?.workspace_id !== workspaceId || result.root_pane?.workspace_id !== workspaceId ||
+			result.root_pane?.tab_id !== tabId || result.root_pane?.cwd !== checkoutPath)) throw new Error("Created tab does not match the workspace and checkout.");
 		return { tabId: tabId!, rootPaneId: rootPaneId! };
 	} catch (error) {
 		const retained = [`workspace ${workspaceId}`, tabId && `tab ${tabId}`, rootPaneId && `root pane ${rootPaneId}`]
 			.filter(Boolean).join(", ");
-		throw new Error(`Herdr tab create response could not be parsed; retained ${retained}: ${errorMessage(error)}`, { cause: error });
+		throw new Error(`Herdr tab create response could not be parsed; retained ${retained}: ${errorMessage(error)}${createdTab.code !== 0 || createdTab.killed ? ` (${herdrCommandFailure(["tab", "create"], createdTab)})` : ""}`, { cause: error });
 	}
 }
 
@@ -188,19 +214,32 @@ export async function prepareWorktreeLaunch(
 	herdr: Herdr,
 	cwd: string,
 	worktree: CreatedWorktree,
-): Promise<{ target: LaunchTarget; onPaneBusy?: () => Promise<string> }> {
+	source: WorktreeSource,
+	verifyGit: () => Promise<void>,
+): Promise<{ target: LaunchTarget; onPaneBusy?: () => Promise<string>; verify: () => Promise<void> }> {
 	const target: LaunchTarget = { tabId: worktree.tabId, paneId: worktree.rootPaneId };
+	const verify = async () => {
+		try {
+			await verifyGit();
+			await verifyPaneTarget(herdr, cwd, { ...worktree, tabId: target.tabId, rootPaneId: target.paneId }, source);
+		} catch (error) {
+			throw new Error(`Launch verification failed; retained workspace ${worktree.workspaceId}, tab ${target.tabId}, pane ${target.paneId}, checkout ${worktree.checkoutPath}: ${errorMessage(error)}`, { cause: error });
+		}
+	};
+	await verify();
 	const createTab = async (): Promise<string> => {
 		const tabArgs = ["tab", "create", "--workspace", worktree.workspaceId, "--cwd", worktree.checkoutPath, "--no-focus"] as const;
 		const createdTab = await herdr.exec(tabArgs, { cwd });
-		if (createdTab.code !== 0 || createdTab.killed) {
-			throw new Error(herdrCommandFailure(tabArgs, createdTab));
-		}
-		({ tabId: target.tabId, rootPaneId: target.paneId } = parseCreatedTab(createdTab, worktree.workspaceId));
+		({ tabId: target.tabId, rootPaneId: target.paneId } = parseCreatedTab(createdTab, worktree.workspaceId, worktree.checkoutPath));
+		await verify();
 		return target.paneId;
 	};
-	if (await waitForRootPaneAgent(herdr, cwd, worktree.rootPaneId)) await createTab();
-	return { target, onPaneBusy: target.paneId === worktree.rootPaneId ? createTab : undefined };
+	try {
+		if (await waitForRootPaneAgent(herdr, cwd, worktree.rootPaneId)) await createTab();
+	} catch (error) {
+		throw new Error(`Launch preparation failed; retained workspace ${worktree.workspaceId}, tab ${target.tabId}, pane ${target.paneId}, checkout ${worktree.checkoutPath}: ${errorMessage(error)}`, { cause: error });
+	}
+	return { target, onPaneBusy: target.paneId === worktree.rootPaneId ? createTab : undefined, verify };
 }
 
 /**
@@ -218,9 +257,12 @@ export async function launchPiAgent(
 		args: readonly string[];
 		retained: () => string;
 		onPaneBusy?: () => Promise<string>;
+		verify?: () => Promise<void>;
 	},
 ): Promise<void> {
 	let pane = input.pane;
+	try { await input.verify?.(); }
+	catch (error) { throw new Error(`${input.action} was not launched; retained ${input.retained()}: ${errorMessage(error)}`, { cause: error }); }
 	try {
 		const result = await startPiAgent(herdr, {
 			name: input.name,

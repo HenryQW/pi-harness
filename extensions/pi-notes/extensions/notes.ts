@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
 	type ExtensionAPI,
@@ -127,12 +127,31 @@ async function persist(identity: WorktreeIdentity, notes: string[]): Promise<voi
 	await writePrivateTextFileAtomically(notesPath(identity.worktree), `${JSON.stringify({ ...identity, notes }, null, "\t")}\n`);
 }
 
-async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext): Promise<{ identity: WorktreeIdentity; notes: string[] } | undefined> {
+function noteTarget(args: string, cwd: string, withText: boolean): { cwd: string; text: string; explicit: boolean } {
+	const input = args.trim();
+	if (!/^--project(?:\s|$)/.test(input)) {
+		if (!withText && input) throw new Error("Unexpected note command arguments.");
+		return { cwd, text: input, explicit: false };
+	}
+	const match = withText ? /^--project\s+(.+?)\s+--\s+([\s\S]+)$/.exec(input) : /^--project\s+(.+)$/.exec(input);
+	if (!match || !match[1]!.trim()) throw new Error("A project path is required.");
+	return { cwd: resolve(cwd, match[1]!.trim()), text: match[2] ?? "", explicit: true };
+}
+
+async function showNotes(pi: ExtensionAPI, ctx: ExtensionContext, identity: WorktreeIdentity, notes: string[], explicit: boolean): Promise<void> {
+	if (!explicit) setNotesWidget(ctx, notes);
+	else {
+		await refresh(pi, ctx);
+		ctx.ui.notify(`Notes for ${identity.worktree}:\n${renderNotes(notes).join("\n") || "No notes."}`, "info");
+	}
+}
+
+async function readCurrent(pi: ExtensionAPI, ctx: ExtensionContext, cwd = ctx.cwd): Promise<{ identity: WorktreeIdentity; notes: string[] } | undefined> {
 	try {
-		const identity = await resolveWorktree(pi, ctx.cwd);
+		const identity = await resolveWorktree(pi, cwd);
 		const { notes, message } = await loadNotes(identity);
 		if (message) {
-			ctx.ui.notify(message, "error");
+			ctx.ui.notify(cwd === ctx.cwd ? message : message.replace("/note-clear", `/note-clear --project ${identity.worktree}`), "error");
 			return undefined;
 		}
 		return { identity, notes };
@@ -217,24 +236,30 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("note", {
 		description: `Add a note to this Git worktree (max ${MAX_NOTES})`,
 		handler: async (args, ctx) => {
-			const text = args.replace(/\s+/g, " ").trim();
+			let target: ReturnType<typeof noteTarget>;
+			try { target = noteTarget(args, ctx.cwd, true); }
+			catch {
+				ctx.ui.notify("Usage: /note <text> or /note --project <path> -- <text>", "warning");
+				return;
+			}
+			const text = target.text.replace(/\s+/g, " ").trim();
 			if (!text) {
-				ctx.ui.notify("Usage: /note <text>", "warning");
+				ctx.ui.notify("Usage: /note <text> or /note --project <path> -- <text>", "warning");
 				return;
 			}
 			if (!isSafeNote(text)) {
 				ctx.ui.notify("Notes cannot contain terminal control characters.", "warning");
 				return;
 			}
-			const current = await readCurrent(pi, ctx);
+			const current = await readCurrent(pi, ctx, target.cwd);
 			if (!current) return;
 			if (current.notes.length >= MAX_NOTES) {
-				ctx.ui.notify(`Widget full (${MAX_NOTES} notes). Remove one with /note-rm.`, "warning");
+				ctx.ui.notify(`Widget full (${MAX_NOTES} notes). Remove one with /note-rm${target.explicit ? ` --project ${current.identity.worktree}` : ""}.`, "warning");
 				return;
 			}
 			current.notes.push(text);
 			await persist(current.identity, current.notes);
-			setNotesWidget(ctx, current.notes);
+			await showNotes(pi, ctx, current.identity, current.notes, target.explicit);
 			await pruneStaleNotes(pi, ctx);
 		},
 	});
@@ -242,29 +267,31 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("note-rm", {
 		description: "Remove a note from this Git worktree",
 		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /note-rm", "warning");
+			let target: ReturnType<typeof noteTarget>;
+			try { target = noteTarget(args, ctx.cwd, false); }
+			catch {
+				ctx.ui.notify("Usage: /note-rm [--project <path>]", "warning");
 				return;
 			}
-			const snapshot = await readCurrent(pi, ctx);
+			const snapshot = await readCurrent(pi, ctx, target.cwd);
 			if (!snapshot) return;
 			if (!snapshot.notes.length) {
 				ctx.ui.notify("No notes to remove.", "info");
 				return;
 			}
 			const options = renderNotes(snapshot.notes);
-			const choice = await ctx.ui.select("Remove note:", options);
+			const choice = await ctx.ui.select(`Remove note from ${snapshot.identity.worktree}:`, options);
 			if (!choice) return;
-			const current = await readCurrent(pi, ctx);
+			const current = await readCurrent(pi, ctx, target.cwd);
 			if (!current) return;
 			const index = options.indexOf(choice);
 			if (!isDeepStrictEqual(current, snapshot)) {
-				ctx.ui.notify("Notes changed elsewhere; try /note-rm again.", "warning");
+				ctx.ui.notify(`Notes changed elsewhere; try /note-rm${target.explicit ? ` --project ${snapshot.identity.worktree}` : ""} again.`, "warning");
 				return;
 			}
 			current.notes.splice(index, 1);
 			await persist(current.identity, current.notes);
-			setNotesWidget(ctx, current.notes);
+			await showNotes(pi, ctx, current.identity, current.notes, target.explicit);
 			await pruneStaleNotes(pi, ctx);
 		},
 	});
@@ -272,14 +299,16 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("note-clear", {
 		description: "Clear notes for this Git worktree",
 		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /note-clear", "warning");
+			let target: ReturnType<typeof noteTarget>;
+			try { target = noteTarget(args, ctx.cwd, false); }
+			catch {
+				ctx.ui.notify("Usage: /note-clear [--project <path>]", "warning");
 				return;
 			}
 			try {
-				const identity = await resolveWorktree(pi, ctx.cwd);
+				const identity = await resolveWorktree(pi, target.cwd);
 				await rm(notesPath(identity.worktree), { force: true });
-				setNotesWidget(ctx, []);
+				await showNotes(pi, ctx, identity, [], target.explicit);
 				await pruneStaleNotes(pi, ctx);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

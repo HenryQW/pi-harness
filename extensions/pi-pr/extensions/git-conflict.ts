@@ -42,7 +42,7 @@ class WholeFileConflict extends Error {}
  * edited or shifted block gets a new id. A marker out of sequence, a closing marker outside a
  * block, or an unclosed block makes block extents uncertain, so the whole file is refused.
  */
-export function parseConflicts(lines: readonly string[], path: string, width = 7): ConflictBlock[] {
+export function parseConflicts(lines: readonly string[], path: string, width = 7, identity = path): ConflictBlock[] {
 	const blocks: ConflictBlock[] = [];
 	let open: Omit<ConflictBlock, "block" | "id" | "end" | "theirsLabel"> | undefined;
 	let phase: "ours" | "base" | "theirs" = "ours";
@@ -72,7 +72,7 @@ export function parseConflicts(lines: readonly string[], path: string, width = 7
 		}
 		if (theirsLabel !== undefined) {
 			if (phase !== "theirs") throw ambiguous(index);
-			const id = createHash("sha256").update(`${open.start}\0${lines.slice(open.start, index + 1).join("\n")}`).digest("hex").slice(0, 12);
+			const id = createHash("sha256").update(`${identity}\0${open.start}\0${lines.slice(open.start, index + 1).join("\n")}`).digest("hex").slice(0, 12);
 			blocks.push({ ...open, block: blocks.length + 1, id, end: index, theirsLabel });
 			open = undefined;
 			continue;
@@ -95,9 +95,9 @@ function sideLines(block: ConflictBlock, side: ConflictSide, path: string): stri
 }
 
 /** Apply every resolution to one parse, or throw before any change when a block is stale or invalid. */
-export function resolveConflicts(text: string, path: string, resolutions: readonly ConflictResolution[], width = 7): string {
+export function resolveConflicts(text: string, path: string, resolutions: readonly ConflictResolution[], width = 7, identity = path): string {
 	const lines = text.split("\n");
-	const blocks = parseConflicts(lines, path, width);
+	const blocks = parseConflicts(lines, path, width, identity);
 	if (new Set(resolutions.map(({ block }) => block)).size !== resolutions.length) throw new Error("Each conflict block can be resolved only once per call");
 	const planned = resolutions.map(({ block, id, side }) => {
 		const current = blocks[block - 1];
@@ -295,7 +295,7 @@ export class GitConflicts {
 		const { root, path, stages, width } = entry;
 		const text = await this.text(entry, signal);
 		const lines = text.split("\n");
-		const blocks = parseConflicts(lines, path, width);
+		const blocks = parseConflicts(lines, path, width, entry.absolute);
 		const plain = lines.map(withoutCr);
 		const blobs = new Map<string, StageText>();
 		const blob = async (stage: string) => {
@@ -355,7 +355,7 @@ export class GitConflicts {
 		const entry = await this.target(cwd, input, signal);
 		const { path, absolute } = entry;
 		return await withWorktreeLock(cwd, () => withFileMutationQueue(absolute, async () => {
-			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width);
+			const text = resolveConflicts((await this.parse(entry, signal)).text, path, resolutions, entry.width, absolute);
 			signal?.throwIfAborted();
 			// Replace the file atomically so a failed write cannot truncate manual edits outside the blocks.
 			const temporary = join(dirname(absolute), `.git-conflict-${randomUUID()}`);
@@ -366,7 +366,7 @@ export class GitConflicts {
 				await rm(temporary, { force: true });
 				throw error;
 			}
-			const { blocks, note } = await summaries(async () => parseConflicts(text.split("\n"), path, entry.width));
+			const { blocks, note } = await summaries(async () => parseConflicts(text.split("\n"), path, entry.width, absolute));
 			return { path, resolved: resolutions.map(({ block }) => block), remaining: blocks, ...(note ? { note } : {}) };
 		}), { agentDir: this.agentDir, signal });
 	}

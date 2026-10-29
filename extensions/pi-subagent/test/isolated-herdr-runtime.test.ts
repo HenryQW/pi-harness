@@ -2790,3 +2790,44 @@ for (const scenario of ["collected", "active", "stale", "occupied"] as const) te
 	assert.deepEqual(script.calls.slice(before).filter(({ args }) => args[1] === "close").map(({ args }) => args), scenario === "collected" ? [["tab", "close", WORKER_TAB_ID]] : []);
 	script.done();
 });
+
+for (const activity of ["none", "unrecognized", "message"] as const) {
+	test(`workspace observation bounds a working agent with ${activity} activity`, async (t) => {
+		const fixture = await paths(t), script = new ScriptedProcess();
+		let now = 1_000, polls = 0, session = "";
+		let leasePath: string;
+		const host = runtime(fixture, script, undefined, {
+			now: () => now,
+			delay: async (milliseconds) => {
+				assert.equal(milliseconds, 250);
+				now += milliseconds; polls++;
+				if (activity !== "none") {
+					session += JSON.stringify(activity === "message"
+						? { type: "message", message: { role: "assistant", content: [] } }
+						: { type: "noise" }) + "\n";
+					await writeFile(`${leasePath}.session.jsonl`, session, { mode: 0o600 });
+				}
+			},
+		});
+		const allocated = await fullAttempt(fixture, host, script);
+		leasePath = allocated.leasePath;
+		await privateLease(leasePath);
+		script.push(
+			{ command: "herdr", args: () => {}, result: success({ type: "agent_info", agent: agentInfo("idle", true, { cwd: fixture.worktree }) }) },
+			{ command: "herdr", args: (args, options) => {
+				assert.equal(args[1], "prompt"); assert.equal(options.timeoutMs, 500);
+			}, result: success({ type: "agent_prompted", agent: agentInfo("working", false, { cwd: fixture.worktree }) }) },
+		);
+		const expectedPolls = activity === "message" ? 4 : 2;
+		for (let i = 0; i < expectedPolls; i++) script.push({ command: "herdr", args: (args, options) => {
+			assert.deepEqual(args.slice(0, 3), ["agent", "wait", AGENT_NAME]);
+			assert.equal(options.timeoutMs, Math.min(activity === "message" ? 500 : 1_500 - now, 2_000 - now));
+		}, result: success({ type: "agent_info", agent: agentInfo("working", false, { cwd: fixture.worktree }) }) });
+		await assert.rejects(host.runWorker({ goal: GOAL, contexts: [], task, attempt: allocated.attempt, workerId: AGENT_NAME,
+			kind: "initial", preCandidate: baseIdentity(), workspacePaths: { service: fixture.worktree }, idleMs: 500 },
+		{ signal: new AbortController().signal, deadline: 2_000 }), activity === "message" ? /maximum runtime/ : /no progress for 500ms/);
+		assert.equal(polls, expectedPolls);
+		assert.equal(script.calls.filter(({ args }) => args[1] === "prompt").length, 1);
+		script.done();
+	});
+}

@@ -9,6 +9,8 @@ import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { runGit } from "../dist/git-process.js";
 import { ExecuteRequestSchema, parseExecuteRequest, type ExecuteRequest } from "../dist/schema.js";
+import { WorkspaceRequestSchema, parseWorkspaceRequest, type WorkspaceRequest } from "../dist/workspace-schema.js";
+import { RepositorySelectionSchema, parseRepositorySelection, type RepositorySelection } from "../dist/workspace-scope.js";
 
 export const MAX_WORKFLOW_ENTRIES = 8;
 
@@ -53,6 +55,7 @@ export const DelegationSchema = Type.Object({
 
 export const DirectWorkflowSchema = Type.Object({
 	mode: Type.Literal("direct"),
+	repositories: Type.Optional(RepositorySelectionSchema),
 	role: Type.Optional(RoleSchema),
 	name: Type.Optional(TaskNameSchema),
 	task: Type.Optional(TaskSchema),
@@ -75,19 +78,20 @@ export const DelegateTaskParameters = Type.Object({
 	tasks: Type.Optional(Type.Union([
 		Type.Array(DelegationSchema, { minItems: 1, maxItems: MAX_WORKFLOW_ENTRIES }),
 		ExecuteRequestSchema.properties.tasks,
+		WorkspaceRequestSchema.properties.tasks,
 	])),
-	finalChecks: ExecuteRequestSchema.properties.finalChecks,
+	finalChecks: Type.Optional(Type.Union([ExecuteRequestSchema.properties.finalChecks, WorkspaceRequestSchema.properties.finalChecks])),
 	finalJudgment: ExecuteRequestSchema.properties.finalJudgment,
 	dryRun: Type.Optional(DryRunSchema),
 }, { additionalProperties: false });
 
 export type Delegation = Static<typeof DelegationSchema> & { kind: "text" };
 export type WorkflowMode = "single" | "parallel" | "chain";
-export type ParsedWorkflow =
+export type ParsedWorkflow = (
 	| { mode: "single"; delegations: [Delegation] }
 	| { mode: "parallel"; delegations: Delegation[] }
-	| { mode: "chain"; delegations: Delegation[] };
-export type ParsedDelegateTask = ({ mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest }) & { dryRun: boolean };
+	| { mode: "chain"; delegations: Delegation[] }) & { repositories?: RepositorySelection };
+export type ParsedDelegateTask = ({ mode: "direct"; workflow: ParsedWorkflow } | { mode: "isolated"; request: ExecuteRequest } | { mode: "workspace"; request: WorkspaceRequest }) & { dryRun: boolean };
 
 type DirectInput = Static<typeof DirectWorkflowSchema>;
 const DELEGATION_KEYS = ["role", "name", "task", "access", "paths", "continueFrom", "kind", "model", "modelClass"] as const;
@@ -167,6 +171,10 @@ export function parseWorkflow(value: unknown): ParsedWorkflow {
 	const workflow: ParsedWorkflow = mode === "single" ? { mode, delegations: [normalizeDelegation(input as Static<typeof DelegationSchema>, "workflow")] }
 		: mode === "parallel" ? { mode, delegations: input.tasks!.map((item, index) => normalizeDelegation(item, `tasks[${index}]`)) }
 		: { mode, delegations: input.chain!.map((item, index) => normalizeDelegation(item, `chain[${index}]`)) };
+	if (input.repositories) {
+		workflow.repositories = parseRepositorySelection(input.repositories);
+		if (workflow.delegations.some((task) => task.continueFrom || task.paths)) throw new Error("Selected direct repositories do not support continueFrom or paths; use the repository-labelled change report and explicit task scope.");
+	}
 	const continued = workflow.delegations.flatMap(({ continueFrom }) => continueFrom === undefined ? [] : [continueFrom]);
 	if (new Set(continued).size !== continued.length) throw new Error("A direct request may continue each worker at most once.");
 	return workflow;
@@ -185,6 +193,7 @@ export function parseDelegateTask(value: unknown): ParsedDelegateTask {
 		value = rest;
 	}
 	if (value && typeof value === "object" && !Array.isArray(value) && (value as { mode?: unknown }).mode === "isolated") {
+		if (Object.hasOwn(value, "repositories")) return { mode: "workspace", request: parseWorkspaceRequest(value), dryRun };
 		return { mode: "isolated", request: parseExecuteRequest(value), dryRun };
 	}
 	return { mode: "direct", workflow: parseWorkflow(value), dryRun };
@@ -203,6 +212,7 @@ export type ChangeReport = {
 };
 
 export type CheckoutNote =
+	| { kind: "repositories"; notes: Record<string, CheckoutNote | undefined> }
 	| { kind: "changes"; report: ChangeReport }
 	| { kind: "stale" }
 	| { kind: "unavailable"; check: "change report" | "stale-read check"; reason: string };

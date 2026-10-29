@@ -19,6 +19,18 @@ Run `/deps` in a trusted repository. Create a worktree through Git, then open Pi
 
 The shared `post-checkout` hook applies to every worktree. The extension never overwrites or removes hooks without its marker.
 
+### Select a repository
+
+Use `--project`, which selects a project or worktree path for one command:
+
+```text
+/deps --project first repo
+```
+
+Paths are absolute or relative to the session directory. Enter the path without shell quotes; spaces are allowed. Only the selected repository's shared hook changes. Enable only repositories that you trust: dependency installs can run their scripts.
+
+Without a path, `/deps` uses the session directory and fails outside Git. Pi does not scan or select child repositories. Selection does not change the session directory, the startup status watcher, or the default for later commands. It does not select a project for other tools.
+
 For the version 4 cutover, use [the migration steps](#migration-to-version-4). A package update does not replace an installed hook. For later updates, run `/deps` twice in each opted-in repository to replace it.
 
 ## Flow

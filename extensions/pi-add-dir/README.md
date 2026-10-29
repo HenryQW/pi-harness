@@ -28,6 +28,14 @@ Pi adds root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` to l
 
 `/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. If `add_directory` asks for `/reload`, run it to update skills.
 
+### Child repository context
+
+From a parent directory, run `/dir-add first repo` or call `add_directory` with `path: "first repo"`. The path is relative to the session directory. Absolute paths also work.
+
+Session-only additions can load an explicitly selected child directory. Pi does not scan or load child repositories automatically. Only add directories whose instructions and skills you trust. This does not change the session directory or select a project for CodeGraph or other tools.
+
+Project and global additions still reject child directories that overlap the session directory. These persistent overlap protections also apply when you promote a session addition.
+
 ### Search results
 
 In `search_external_files` results, `truncated: true` means more matches may exist.
@@ -44,7 +52,7 @@ Pi skips invalid or duplicate entries and loads the valid directories. Global ad
 
 ## State and storage
 
-Session directories belong to the current session branch. New additions reject directories inside or containing Pi's working directory, or overlapping active external directories. Restored session entries do not repeat overlap checks when the working directory changes.
+Session directories belong to the current session branch. New session additions accept child directories but reject the session directory itself, its ancestors, and overlaps with active external directories. Restored session entries do not repeat overlap checks when the working directory changes.
 
 Project directories use repeatable local Git config key `pi-add-dir.directory`, shared by linked worktrees. This machine-local config cannot come from a clone. `/dir-add --project` requires a Git repository.
 

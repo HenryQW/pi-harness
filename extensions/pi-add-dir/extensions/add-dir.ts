@@ -428,7 +428,8 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 				resourcesChanged: false,
 			};
 		}
-		if (overlaps(resolveDir(ctx.cwd, ctx.cwd), absolutePath)) {
+		const cwdPath = resolveDir(ctx.cwd, ctx.cwd);
+		if (source === "session" ? isWithinDir(absolutePath, cwdPath) : overlaps(cwdPath, absolutePath)) {
 			return { ok: false, message: "Directory overlaps current working directory scope.", resourcesChanged: false };
 		}
 		const overlap = addedDirs.find(
@@ -578,10 +579,10 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 		label: "Add Directory",
 		description:
 			"Add an external directory to this session so its AGENTS.md, CLAUDE.md, and skills are loaded into context. " +
-			"Use this when you need to reference or work with code outside the current working directory.",
+			"Use this for another directory, including an explicitly selected child of the session directory. Child directories are not loaded automatically.",
 		promptSnippet: "Add an external directory to this session (loads its AGENTS.md, skills, etc.)",
 		promptGuidelines: [
-			"Use add_directory when you need context from another project or directory outside cwd.",
+			"Use add_directory when you need context from another project, including a child of the session directory. This does not select a project for other tools.",
 			"The directory's AGENTS.md and CLAUDE.md are returned now and injected into future system prompts.",
 			"After adding, you can read/edit/write files in the external directory using absolute paths.",
 		],

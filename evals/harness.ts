@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { devNull, homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -224,7 +224,7 @@ export async function runTrial(
 	trial: number,
 	options: { root: string; resultsDir: string; model?: string },
 ): Promise<TrialResult> {
-	const dir = mkdtempSync(join(options.root, "trial-"));
+	const dir = realpathSync(mkdtempSync(join(options.root, "trial-")));
 	const cwd = join(dir, "cwd");
 	mkdirSync(cwd);
 	const started = Date.now();
@@ -239,7 +239,7 @@ export async function runTrial(
 	}
 	for (const path of c.extensions ?? []) args.push("-e", join(repoRoot, path));
 	if (options.model) args.push("--model", options.model);
-	args.push("--", c.prompt);
+	args.push("--", c.prompt.replaceAll("{{projectPath}}", JSON.stringify(cwd)));
 
 	let parsed: ParsedRun | undefined;
 	let grade: Grade;

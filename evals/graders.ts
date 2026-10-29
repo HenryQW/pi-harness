@@ -1,5 +1,6 @@
 // Grader checks return a failure reason, or undefined when the check passes. Combine them with `check`.
 import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { Grade, ToolCall, Trace } from "./types.ts";
 
@@ -43,6 +44,13 @@ export function calledWith(trace: Trace, name: string, pattern: ArgPattern): Rea
 
 export function notCalled(trace: Trace, name: string, pattern: ArgPattern = {}): Reason {
 	return calledTimes(trace, name, 0, pattern);
+}
+
+/** Route skills must pass the launch path even when a tool permits omission. */
+export function projectPathPropagation(trace: Trace, cwd: string, names: string[]): Reason {
+	const projectPath = realpathSync(cwd);
+	const wrong = trace.calls.find((call) => names.includes(call.name) && call.args.projectPath !== projectPath);
+	return wrong && `${wrong.name} projectPath must equal the canonical launch path ${JSON.stringify(projectPath)}, got ${JSON.stringify(wrong.args.projectPath)}`;
 }
 
 /** Fails when any built-in `bash` call runs a command that matches `command`. */

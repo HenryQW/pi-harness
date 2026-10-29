@@ -23,9 +23,10 @@ import {
 	prepareWorktreeLaunch,
 	requiredString,
 	resolveWorkspace,
-	worktreeParentWorkspace,
 	type HerdrWorkspace,
 } from "./worktree.ts";
+
+import { selectWorktreeSource, verifyCheckout } from "./repository.ts";
 
 type SourceContext = HerdrWorkspace & {
 	sessionFile: string;
@@ -175,24 +176,25 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("clone-worktree", {
-		description: "Clone the current conversation into Pi in a new Herdr Git worktree",
-		handler: async (_args, ctx) => {
+		description: "Clone into a new Herdr worktree: /clone-worktree [project path]",
+		handler: async (args, ctx) => {
 			const source = await resolveSource("clone-worktree", herdr, ctx);
+			const project = args.trim() || undefined;
+			const repository = await selectWorktreeSource(pi, herdr, ctx.cwd, source, project, "clone");
 
 			// Create the worktree before the clone so the session header can be
 			// stamped with the fresh checkout cwd.
 			const worktreeCreateArgs = [
-				"worktree", "create", "--workspace", await worktreeParentWorkspace(herdr, ctx.cwd, source), "--no-focus",
+				"worktree", "create", "--cwd", repository.repoRoot, "--base", repository.base, "--no-focus",
 			];
-			const worktree = await createWorktree(herdr, ctx.cwd, worktreeCreateArgs, "Clone");
+			const worktree = await createWorktree(herdr, ctx.cwd, worktreeCreateArgs, "Clone", repository);
 			const { workspaceId, tabId, checkoutPath } = worktree;
-			const { target, onPaneBusy } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree);
+			const { target, onPaneBusy, verify } = await prepareWorktreeLaunch(herdr, ctx.cwd, worktree, repository,
+				() => verifyCheckout(pi, worktree.checkoutPath, repository));
 
 			let cloneFile: string;
 			try {
-				cloneFile = source.checkout
-					? await withWorktreeLock(source.checkout, () => createBranchedClone(ctx, source, checkoutPath))
-					: await createBranchedClone(ctx, source, checkoutPath);
+				cloneFile = await withWorktreeLock(repository.checkout, () => createBranchedClone(ctx, source, checkoutPath));
 			} catch (error) {
 				throw new Error(
 					`Clone session could not be created for Herdr worktree workspace ${workspaceId} (tab ${tabId}, checkout ${checkoutPath}); retained worktree without a clone session: ${errorMessage(error)}`,
@@ -207,6 +209,7 @@ export default function herdrCloneExtension(pi: ExtensionAPI): void {
 				args: ["--session", cloneFile],
 				retained: () => `Herdr workspace ${workspaceId}, tab ${target.tabId}, root pane ${target.paneId}, and session ${cloneFile}`,
 				onPaneBusy,
+				verify,
 			});
 			const targetTabId = target.tabId;
 

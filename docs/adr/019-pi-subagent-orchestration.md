@@ -30,6 +30,18 @@ The command keeps termination, ownership, lease, session, and Herdr pane checks.
 
 Execution policy comes only from `config/pi-subagent/config.json`; requests cannot override or replenish limits. Child turn/token/idle/runtime, external I/O, status, termination, and cleanup remain independently bounded. Pi is the Role and model authority; Herdr owns worker tabs and isolated workspaces. The extension stops at Main-authorized checked local integration and never pushes, publishes, deploys, or opens a pull request.
 
+## Explicit independent repository sets
+
+A non-Git workspace can select a set of independent primary repositories by absolute paths. One changeset worker owns a separate worktree in every selected repository. The set, including unchanged members and explicit read-only root inputs, is the validation unit. Scalar identities must not stand in for a repository set.
+
+Workspace state has a separate versioned format and uses existing exact worktree, process-lease, Git stage, and guarded promotion mechanisms. This avoids weakening the existing single-repository state validator. The first workspace contract supports one changeset task and automated checks. It explicitly rejects dependencies, text tasks, and judgment rather than pretending that one repository's evidence covers the others.
+
+Inputs are private copies with content identities. Source or copy drift blocks checks and promotion. Inputs are not promoted as Git changes. The worker's path map and file permissions are not a sandbox.
+
+Main selects the complete candidate set, stages separate integration worktrees, and validates the complete tip set. All Main targets must pass preflight before the first promotion and between serial promotions. Each repository gets a durable intent before its mutation and a receipt before the next mutation. Cross-repository promotion is not atomic. Interruption requires explicit endpoint reconciliation and a separate action to promote remaining targets; no automatic rollback or replay is permitted. Uncertain allocations and prompts remain retained for manual inspection.
+
+Direct selection reserves all selected checkouts and the workspace together through shared process-local admission. One conflicting member refuses the whole reservation. Reporting names each repository; it does not enforce scope. Existing single-repository workflows and saved state remain unchanged when no set is selected.
+
 ## Consequences
 
 One package owns delegation. Main continues while workers run visibly in Herdr. Direct writes and commits affect Main immediately and require explicit bounded authorization; they have no isolated validation, rollback, or integration guarantees. Isolated mode remains the checked-worktree workflow. Checkout admission only coordinates this Main's Pi calls; other sessions and external processes remain outside it. Task access declarations are not an OS sandbox, and concurrent changes can make a read stale. A missed delivery or uncertain worker outcome requires status/recovery rather than guessed completion. Rejected candidate resources and superseded checkouts require Main's explicit guarded release; a rejected predecessor can make dependent work impossible within the bounded fresh-attempt rules, requiring a new request. This changed documented automatic integration contract requires a new major pi-subagent release. State v5 rejects v4 and older files rather than migrating them silently. The retired package record remains in [`deprecated/pi-orchestrator`](../../deprecated/pi-orchestrator/README.md).

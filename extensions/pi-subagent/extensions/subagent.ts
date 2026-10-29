@@ -8,6 +8,8 @@ import { resolveExecutionPolicy } from "./config.ts";
 import { captureFallbackWarning } from "./task-model-fallback.ts";
 import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
+import { registerWorkspaceExtension } from "./workspace.ts";
+import { resolveWorkspaceScope } from "../dist/workspace-scope.js";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
 import { MODEL_CLASS_GUIDANCE } from "./model-class-policy.ts";
 import { compactCost, compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowResult, workerOutputForMain, type BackgroundWorkflowTransportDetails, type WorkflowTransportEntry } from "./result-transport.ts";
@@ -233,7 +235,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			return true;
 		}
 	};
-	const holdAdmission = registerCheckoutAdmission(pi, canWrite);
+	const holdAdmission = registerCheckoutAdmission(pi, canWrite, async (input, ctx) => {
+		if (!input || typeof input !== "object" || !Object.hasOwn(input, "repositories")) return [];
+		const parsed = parseDelegateTask(input);
+		if (parsed.mode !== "direct" || !parsed.workflow.repositories) return [];
+		const scope = await resolveWorkspaceScope(ctx.cwd, parsed.workflow.repositories);
+		return Object.values(scope.repositories).map(({ root }) => root);
+	});
+	const workspaceSurface = registerWorkspaceExtension(pi, currentPolicy);
 	/** Resolve a Role's package resources and route for a direct Herdr launch. */
 	const prepareDirectLaunch = async (role: Role, context: ExtensionContext, options: { modelClass?: ProfileName; model?: string }) => {
 		const resources = await resolveRolePackageResources(role, context);
@@ -336,7 +345,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		if (!data || typeof data !== "object" || !("sessionId" in data) || typeof data.sessionId !== "string"
 			|| !("pending" in data) || typeof data.pending !== "boolean") return;
 		const { sessionId } = data;
-		if ([...directTasks.values()].some((task) => task.pendingResult?.(sessionId)) || isolatedSurface.hasPendingResult(sessionId)) {
+		if ([...directTasks.values()].some((task) => task.pendingResult?.(sessionId)) || isolatedSurface.hasPendingResult(sessionId) || workspaceSurface.hasPendingResult(sessionId)) {
 			data.pending = true;
 		}
 	});
@@ -777,11 +786,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			try {
 				const parsed = parseDelegateTask(args);
 				const dryRun = parsed.dryRun ? { dryRun: true } : {};
-				if (parsed.mode === "isolated") return { ...parsed.request, ...dryRun };
+				if (parsed.mode === "isolated" || parsed.mode === "workspace") return { ...parsed.request, ...dryRun };
 				const workflow = parsed.workflow;
-				if (workflow.mode === "single") return { mode: "direct" as const, ...workflow.delegations[0], ...dryRun };
-				if (workflow.mode === "parallel") return { mode: "direct" as const, tasks: workflow.delegations, ...dryRun };
-				return { mode: "direct" as const, chain: workflow.delegations, ...dryRun };
+				const selection = workflow.repositories ? { repositories: workflow.repositories } : {};
+				if (workflow.mode === "single") return { mode: "direct" as const, ...workflow.delegations[0], ...selection, ...dryRun };
+				if (workflow.mode === "parallel") return { mode: "direct" as const, tasks: workflow.delegations, ...selection, ...dryRun };
+				return { mode: "direct" as const, chain: workflow.delegations, ...selection, ...dryRun };
 			} catch (error) { throw boundedError(error); }
 		},
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
@@ -789,10 +799,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			// Isolated requests read the policy in the runner; report it here with the tool's context.
 			reportConfig(ctx);
 			const parsed = parseDelegateTask(params);
+			if (parsed.mode === "workspace") return parsed.dryRun ? await workspaceSurface.plan(parsed.request, signal, ctx) : await workspaceSurface.execute(parsed.request, signal, ctx);
 			if (parsed.mode === "isolated") {
 				return parsed.dryRun ? await isolatedSurface.plan(parsed.request, signal, ctx) : await isolatedSurface.execute(parsed.request, signal, ctx);
 			}
 			const workflow = parsed.workflow;
+			const selected = workflow.repositories ? await resolveWorkspaceScope(ctx.cwd, workflow.repositories, signal) : undefined;
 			const catalog = loadRoleCatalog();
 			for (const delegation of workflow.delegations) {
 				try { findRole(catalog, delegation.role); } catch (error) { throw boundedError(error); }
@@ -830,7 +842,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const startedAt = new Map<string, number>();
 			// Launch snapshots: write requests report changes; read requests detect a stale checkout.
 			const snapshots = new Map<string, CheckoutSnapshot | Error | undefined>();
+			const selectedSnapshots = new Map<string, Map<string, CheckoutSnapshot | Error | undefined>>();
 			const checkout = async ({ id, delegation }: WorkflowEntry) => {
+				if (selected && selectedSnapshots.has(id)) {
+					const notes = await Promise.all(Object.entries(selected.repositories).map(async ([name, repo]) => [name, await checkoutNote(repo.root, selectedSnapshots.get(id)!.get(name), writes)] as const));
+					return { checkout: { kind: "repositories" as const, notes: Object.fromEntries(notes.filter((entry) => entry[1] !== undefined)) } };
+				}
 				if (!snapshots.has(id)) return {};
 				const note = await checkoutNote(ctx.cwd, snapshots.get(id), writes, delegation.paths);
 				return note ? { checkout: note } : {};
@@ -916,12 +933,16 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				startWidgetItem(entry.id, taskId, display, prepared.model.id, prepared.thinkingLevel, ctx);
 				const transient = await materializeTransientLaunch({ launch: prepared, prompt: prepared.systemPrompt,
 					promptArgIndex: prepared.promptArgIndex }, activeSignal);
-				snapshots.set(entry.id, await snapshotCheckout(ctx.cwd).catch((error: unknown) => error instanceof Error ? error : new Error(String(error))));
+				if (selected) {
+					await resolveWorkspaceScope(ctx.cwd, workflow.repositories!, activeSignal);
+					selectedSnapshots.set(entry.id, new Map(await Promise.all(Object.entries(selected.repositories).map(async ([name, repo]) => [name,
+						await snapshotCheckout(repo.root).catch((error: unknown) => error instanceof Error ? error : new Error(String(error)))] as const))));
+				} else snapshots.set(entry.id, await snapshotCheckout(ctx.cwd).catch((error: unknown) => error instanceof Error ? error : new Error(String(error))));
 				let handle: DirectHandle;
 				try {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
 						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`,
-						`${entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task}\n\nFinal answer budget: ${answerBytes} bytes, conclusions first. Main sees only that much inline; a longer answer is saved to a file.`, activeSignal, (tab) => {
+						`${entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task}${selected ? `\n\nExplicit selected repository map: ${JSON.stringify(workflow.repositories)}. Do not modify other repositories or workspace-root files. Selection and admission are not a sandbox.` : ""}\n\nFinal answer budget: ${answerBytes} bytes, conclusions first. Main sees only that much inline; a longer answer is saved to a file.`, activeSignal, (tab) => {
 							const record = { taskId, entryId: entry.id, display, ...tab };
 							// Persist before agent start, or let the new session carry the exact identity after settlement.
 							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
