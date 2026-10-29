@@ -142,7 +142,7 @@ Staging, validation, and promotion require clean, unchanged Main. After a defini
 
 ### Inspect work
 
-Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
+Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history. In the terminal, the menu replaces the editor and uses at most half the terminal height. It does not overlay the report or the transcript.
 
 Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. Terminal requests stay hidden until you select **Completed / history**; this filter deletes no records. `/subagent` reports show as transcript entries that the model does not get.
 
@@ -225,6 +225,8 @@ The extension never pushes, opens pull requests, publishes, deploys, or silently
 Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set and authorize write scope explicitly. Admission coordinates this Main's Pi calls, not other sessions, trusted extension lifecycle code, or external processes. Concurrent edits can make direct reads stale.
 
 For uncertain direct termination, open `/subagent`, select the exact workflow, and choose **Close/cancel-and-release ALL owned workers in this workflow**. This stops all owned workers, not only the selected one. Resolve reported blockers and repeat the action. Recorded-only tasks cannot release admission. Restarting Pi does not prove termination. Inspect partial changes before new writes; never blindly repeat commits or delete work.
+
+After Close/cancel-and-release proves pane absence, it terminates the processes that hold the exact private process lease of an owned worker (`SIGTERM`, then `SIGKILL`). Automatic completion, continuation, and Subagent Collection never send signals.
 
 Unverified tab allocations retain evidence but offer no Close action. Reconcile them manually against Herdr; do not recreate tabs, guess IDs, or restart to bypass admission. See [Direct contract](./docs/orchestration.md#direct-contract).
 

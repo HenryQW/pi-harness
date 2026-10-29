@@ -12,7 +12,7 @@ const plainLines = (component: Box, width: number) => component.render(width).ma
 
 const WORKING = "Current subagent work";
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
-type Picker = { component: Component; terminal: { rows: number }; render: (width?: number) => string[] };
+type Picker = { component: Component; terminal: { rows: number }; render: (width?: number) => string[]; options: Parameters<ExtensionContext["ui"]["custom"]>[1] };
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -96,7 +96,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 		},
 		ui: {
 			setStatus: (key: string, value: string | undefined) => { assert.equal(key, "subagent-prune"); statuses.push(value); },
-			custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0]) => {
+			custom: async (factory: Parameters<ExtensionContext["ui"]["custom"]>[0], options: Parameters<ExtensionContext["ui"]["custom"]>[1]) => {
 				const terminal = { rows: 10_000 };
 				let result: unknown;
 				let finished = false;
@@ -109,7 +109,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 				const dialog: Dialog = { kind: "select", title: lines[0]!, options: lines.slice(1, -1).map((line) => line.slice(2)) };
 				dialogs.push(dialog);
 				const interact = pickers.shift();
-				if (interact) interact({ component, terminal, render });
+				if (interact) interact({ component, terminal, render, options });
 				else {
 					const answer = responses.shift();
 					const selected = typeof answer === "function" ? await answer(dialog) : answer;
@@ -205,6 +205,17 @@ test("long single-choice menus scroll to exact same-named records and retain sel
 	assert.deepEqual(h.discarded, []);
 });
 
+test("menus open in the editor area and leave the transcript visible above them", async () => {
+	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", workers: [], tabs: [] })) });
+	h.pickers.push((picker) => {
+		assert.ok(!picker.options?.overlay, "an overlay hides the transcript and the working report");
+		assert.ok(screen(picker, 24).split("\n").length <= 12, "the menu leaves half the terminal for the transcript");
+		picker.component.handleInput!("\x1b");
+	});
+	await h.run();
+	assert.equal(h.working.length, 1);
+});
+
 test("long multiple-choice menus reach bottom actions and keep focus after each toggle", async () => {
 	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", canClose: true, workers: [], tabs: [] })),
 		inventory: { root: "/git", leaseLive: false, requests: [], invalidIds: [] } });
@@ -238,16 +249,16 @@ test("long prune menus keep Select all and Clear reachable; cancellation removes
 		branch: `pi-subagent/subagent-${index}`, tip: "a".repeat(40), prunable: true, reason: "merged", blockers: [], ignored: [],
 	})) } });
 	h.pickers.push((picker) => {
-		screen(picker, 10);
+		screen(picker, 20);
 		down(picker, 41);
-		assert.match(screen(picker, 10), /→ Clear/);
+		assert.match(screen(picker, 20), /→ Clear/);
 		picker.component.handleInput!("\r");
 	}, (picker) => {
-		assert.match(screen(picker, 10), /→ Clear[\s\S]*Continue \(0 selected\)/);
+		assert.match(screen(picker, 20), /→ Clear[\s\S]*Continue \(0 selected\)/);
 		picker.component.handleInput!("\x1b[A");
 		picker.component.handleInput!("\r");
 	}, (picker) => {
-		assert.match(screen(picker, 10), /→ Select all[\s\S]*Continue \(40 selected\)/);
+		assert.match(screen(picker, 20), /→ Select all[\s\S]*Continue \(40 selected\)/);
 		picker.component.handleInput!("\x1b");
 	});
 	await h.reviewPrune();

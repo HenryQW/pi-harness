@@ -905,6 +905,9 @@ test("failed direct termination retains admission and exact Close retries withou
 			git("-c", "user.name=Test", "-c", "user.email=test@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "preserve");
 			const head = git("rev-parse", "HEAD");
 			await writeFile(join(cwd, "owned.txt"), "partial dirty work");
+			// Fake holders are never real processes: record signals instead of sending them.
+			const signals: Array<[number, NodeJS.Signals | number | undefined]> = [];
+			t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => { signals.push([pid, signal]); return true; });
 			for (const failure of ["close", "holders", "identity", "inventory"] as const) {
 				let blocked = true;
 				let staleOnList = false;
@@ -937,6 +940,7 @@ test("failed direct termination retains admission and exact Close retries withou
 				const write = () => app.handlers.get("tool_call")!({ toolCallId: "main-write", toolName: "add_directory", input: {} }, app.ctx);
 				assert.equal((await write()).block, true);
 				if (failure === "identity") assert.ok(!fake.calls.some((args) => args[1] === "close"), "mismatched workers are never touched");
+				assert.deepEqual(signals, [], "automatic write completion only proves termination");
 				const close = async () => {
 					let menu = 0;
 					app.ctx.hasUI = true;
@@ -946,6 +950,8 @@ test("failed direct termination retains admission and exact Close retries withou
 				};
 				await close();
 				assert.equal((await write()).block, true, "failed explicit recovery must not unlock");
+				assert.deepEqual(signals.splice(0), failure === "holders" ? [[123, "SIGTERM"], [123, "SIGKILL"]] : [],
+					"explicit Close signals only verified lease holders, and a survivor keeps admission");
 				blocked = false;
 				if (failure === "close") {
 					const saved = app.sessionEntries;
@@ -1988,7 +1994,7 @@ test("Stop this worker ends one read worker while siblings finish and Main gets 
 	});
 });
 
-test("an unproved Stop this worker keeps ownership so Close stays available", async () => {
+test("an unproved Stop this worker keeps ownership so Close stays available", async (t) => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -1996,6 +2002,8 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 			const gate = new Promise<void>((resolve) => { release = resolve; });
 			let waiting = 0;
 			const fake = fakeHerdr(cwd, () => "answer", gate);
+			const signals: Array<[number, NodeJS.Signals | number | undefined]> = [];
+			t.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => { signals.push([pid, signal]); return true; });
 			const app = harness({ cwd, ui: true, lsof: async () => ({ code: 0, stdout: "p4242\n", stderr: "" }), herdr: async (args, options) => {
 				if (args[0] === "agent" && args[1] === "wait") {
 					waiting++;
@@ -2020,9 +2028,11 @@ test("an unproved Stop this worker keeps ownership so Close stays available", as
 				return undefined;
 			};
 			await app.commands.get("subagent")!.handler("", app.ctx);
-			assert.ok(app.notifications.some(({ message }) => message.startsWith("Worker stop failed:") && message.includes("still has holders")));
+			assert.ok(app.notifications.some(({ message }) => message.startsWith("Worker stop failed:") && message.includes("still has holders after SIGTERM and SIGKILL")));
+			assert.deepEqual(signals, [[4242, "SIGTERM"], [4242, "SIGKILL"]]);
 			release();
 			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(signals.length, 2, "automatic settlement after an unproved stop never signals");
 			assert.match(app.sentMessages[0]!.message.content, /Stopped by user from \/subagent; termination unproved.*ownership retained/s);
 			menu = 0;
 			app.ctx.ui.select = async (_title: string, choices: string[]) => {

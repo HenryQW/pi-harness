@@ -97,11 +97,11 @@ A write request runs its tasks in sequence. It holds checkout admission after th
 
 A failure in a write request stops further dispatch, but a worker with an uncertain state can still run. Chains replace each literal `{previous}` with the preceding successful answer and stop on failure. Task outcome and worker termination are separate.
 
-After settlement, the coordinator closes exact owned writer panes. It releases admission only after pane absence and two empty private process-lease scans. This proof requires native `lsof`. The coordinator removes no Git files, commits, or saved sessions. A failure stays a failure even when the coordinator releases admission.
+After settlement, the coordinator closes exact owned writer panes. It releases admission only after pane absence and two empty private process-lease scans. This proof requires native `lsof`. This automatic step sends no signals, so a background process that the worker started and that holds its lease keeps admission held. The coordinator removes no Git files, commits, or saved sessions. A failure stays a failure even when the coordinator releases admission.
 
 Admission stays held if the close fails, identity changes, a leased child survives, or inspection is uncertain. In that case, open `/subagent`. Select the exact direct workflow. Then choose **Close/cancel-and-release ALL owned workers in this workflow** to cancel dispatch and try termination again. This action stops every owned worker of that workflow, not one selected worker.
 
-The action checks session, branch, epoch, and live ownership. Recorded-only tasks cannot unlock anything. Resolve the reported blocker, including any surviving owned process. Then do the same action again. A restart of Pi is not termination proof.
+The action checks session, branch, epoch, and live ownership. Recorded-only tasks cannot unlock anything. After it proves pane absence, it sends `SIGTERM` to each process that holds the exact private lease of an owned worker. Then it sends `SIGKILL` to each process that survives. Before each signal, it scans the lease again for that PID, and it does not signal a PID that no longer holds the lease. If a holder survives, a scan fails, or ownership changes, admission stays held. Resolve the reported blocker, then do the same action again. A restart of Pi is not termination proof.
 
 Inspect partial changes before new writes. To recover, never retry a commit or delete work without inspection.
 
@@ -127,11 +127,11 @@ Before launch, the request fails if the reference is unknown or matches more tha
 
 If Herdr still lists the old agent, the agent must match the recorded name, pane, tab, workspace, and checkout. It must also be idle or done. The extension never closes a working or blocked agent. The extension closes the old pane, then proves pane absence and two empty lease scans.
 
-An absent old agent still requires two empty lease scans.
+An absent old agent still requires two empty lease scans. Continuation and Subagent Collection never send signals to lease holders.
 
 Records saved before 27.0.0 have no turn identity. The extension cannot continue them. For these records, start a new task.
 
-In a running workflow that has only `read` tasks, `/subagent` shows **Stop this worker** for each running worker. It aborts only that worker, sends Ctrl-C, closes its exact pane, and proves pane absence and two empty lease scans. The result of the worker becomes a failure, `Stopped by user from /subagent`, and keeps any partial output. Other workers continue, but a chain stops its later steps.
+In a running workflow that has only `read` tasks, `/subagent` shows **Stop this worker** for each running worker. It aborts only that worker, sends Ctrl-C, closes its exact pane, and proves pane absence. Then it terminates the remaining lease holders of that worker as Close does, and proves two empty lease scans. The result of the worker becomes a failure, `Stopped by user from /subagent`, and keeps any partial output. Other workers continue, but a chain stops its later steps.
 
 If the extension cannot prove termination of the stopped worker, the workflow keeps local ownership. So **Close/cancel-and-release** stays available. Main receives one result when the workflow finishes. A workflow with a `write` task offers only **Close/cancel-and-release ALL owned workers in this workflow**. Both actions check session, branch, and epoch, so a stale dialog cannot act.
 

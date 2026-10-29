@@ -274,6 +274,44 @@ test("stop accepts native unnamed unrelated agents without authorizing mutations
 	}
 });
 
+test("only explicit terminate signals exact holders that a per-PID lease scan still proves", async (t) => {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-terminate-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const leasePath = join(cwd, "process.lease");
+	await writeFile(leasePath, "", { mode: 0o600 });
+	const previous = { ...process.env };
+	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "owned", HERDR_PANE_ID: "caller" });
+	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
+		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+	} });
+	const tab = { name: "worker", tabId: "tab", paneId: "pane", leasePath };
+	for (const scenario of ["terminated", "survivor", "changed", "stale", "stale-during-scan", "proof", "settled"] as const) {
+		let held = true, current = true;
+		const signals: Array<[number, NodeJS.Signals]> = [];
+		const exec: ExtensionAPI["exec"] = async (command, args) => {
+			if (command === "lsof") {
+				const exact = args.includes("-p");
+				if ((!exact && scenario === "stale") || (exact && scenario === "stale-during-scan")) current = false;
+				const holds = held && !(exact && scenario === "changed");
+				return { code: holds ? 0 : 1, stdout: holds ? "p4242\nf3\n" : "", stderr: "", killed: false };
+			}
+			const result = args[0] === "agent" ? { type: "agent_list", agents: [] } : { type: "pane_list", panes: [] };
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+		};
+		const kill = (pid: number, signal: NodeJS.Signals) => {
+			signals.push([pid, signal]);
+			if (scenario === "terminated") held = false;
+		};
+		const stopping = createDirectHerdr({ exec }, cwd, 1000, kill).stop(tab, () => current, scenario === "proof" || scenario === "settled" ? scenario : "terminate");
+		if (scenario === "terminated") await stopping;
+		else await assert.rejects(stopping, {
+			survivor: /after SIGTERM and SIGKILL: 4242/, changed: /after SIGTERM and SIGKILL/, stale: /scope changed/, "stale-during-scan": /scope changed/,
+			proof: /still has holders: 4242/, settled: /still has holders: 4242/,
+		}[scenario], scenario);
+		assert.deepEqual(signals, { terminated: [[4242, "SIGTERM"]], survivor: [[4242, "SIGTERM"], [4242, "SIGKILL"]] }[scenario as string] ?? [], scenario);
+	}
+});
+
 test("collection triggers above ten tabs, not at ten, and rejects foreign or duplicate inventory", async () => {
 	for (const count of [10, 11, 15]) {
 		const tabs = Array.from({ length: count }, (_, id) => ({ tab_id: `tab-${id}`, workspace_id: "owned" }));
