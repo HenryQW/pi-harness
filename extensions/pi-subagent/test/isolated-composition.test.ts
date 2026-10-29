@@ -125,20 +125,24 @@ test("canonical Git root resolver rejects malformed, non-canonical, and unrelate
 
 test("exact Judgment adapter runs the exact launch, packet, cwd, and prompt", async () => {
 	let nextOutput = "PASS";
+	let fallbackUses = 0;
 	const prepared: Awaited<ReturnType<EphemeralSubagentRunInput["prepare"]>>[] = [];
 	const signals: (AbortSignal | undefined)[] = [];
 	const executor: EphemeralSubagentExecutor = {
 		run: async (input) => {
 			signals.push(input.signal);
 			prepared.push(await input.prepare());
+			input.onActivity?.({ type: "message_end" });
 			return result({ output: nextOutput });
 		},
 	};
 	const executeReview = createExactJudgmentExecutor(executor);
 	const input = reviewInput();
+	input.launch = { ...input.launch, onFallbackUse: () => { fallbackUses += 1; } };
 	const context = operationContext();
 
 	assert.deepEqual(await executeReview(input, context), { verdict: "PASS" });
+	assert.equal(fallbackUses, 1);
 	assert.equal(signals[0], context.signal);
 	assert.deepEqual(prepared[0]!.launch, { args: [...REVIEWER_LAUNCH.args], env: {} });
 	assert.equal(prepared[0]!.cwd, input.cwd);

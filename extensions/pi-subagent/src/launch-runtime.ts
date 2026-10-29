@@ -7,7 +7,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { resolveConfiguredRoleLaunch } from "./index.ts";
+import { resolveConfiguredRoleLaunch, type TaskModelFallback } from "./index.ts";
 import { registerModelTask } from "@henryqw/pi-task-models";
 import type {
 	CoordinatorRuntime,
@@ -40,11 +40,13 @@ type PreparedLaunch = {
 	launch: VerifiedLaunch;
 	prompt: string;
 	promptArgIndex: number;
+	fallback?: TaskModelFallback;
 };
 
 export interface LaunchRuntimeOptions {
 	pi: LaunchPi;
 	context(): ExtensionContext;
+	captureFallbackWarning?(signal: AbortSignal): (fallback: TaskModelFallback) => void;
 	resolveRoot(cwd: string, context: OperationContext): Promise<string>;
 	preflightHost?(input: { request: ExecuteRequest; cwd: string; root: string }, context: OperationContext): Promise<void>;
 	inspectMainBase(input: { root: string }, context: OperationContext): Promise<WorkspaceIdentity>;
@@ -168,6 +170,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 	): Promise<PreparedLaunch> {
 		context.signal?.throwIfAborted();
 		const prepared = await resolveConfiguredRoleLaunch(this.options.pi, this.options.context(), { role, modelClass });
+		context.signal.throwIfAborted();
 		return Object.freeze({
 			launch: Object.freeze({
 				role: prepared.role,
@@ -180,6 +183,7 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 			}),
 			prompt: prepared.systemPrompt,
 			promptArgIndex: prepared.promptArgIndex,
+			...(prepared.fallback ? { fallback: prepared.fallback } : {}),
 		});
 	}
 
@@ -230,7 +234,14 @@ export class RoleLaunchRuntime implements CoordinatorRuntime {
 		modelClass: ModelClass,
 		context: OperationContext,
 	): Promise<TransientLaunchHandle<VerifiedLaunch>> {
+		context.signal.throwIfAborted();
+		const reportFallback = this.options.captureFallbackWarning?.(context.signal);
 		const prepared = await this.prepareLaunch(role, modelClass, context);
-		return await materializeTransientLaunch(prepared, context.signal);
+		const fallback = prepared.fallback;
+		const launch = fallback && reportFallback ? Object.freeze({
+			...prepared.launch,
+			onFallbackUse: () => { if (!context.signal.aborted) reportFallback(fallback); },
+		}) : prepared.launch;
+		return await materializeTransientLaunch({ ...prepared, launch }, context.signal);
 	}
 }

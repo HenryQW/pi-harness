@@ -107,6 +107,7 @@ export function createExactJudgmentExecutor(executor: EphemeralSubagentExecutor)
 		};
 		const result = await executor.run({
 			signal: context.signal,
+			onActivity: input.launch.onFallbackUse,
 			prepare: async () => ({ launch, task, cwd: input.cwd }),
 		});
 		context.signal.throwIfAborted();

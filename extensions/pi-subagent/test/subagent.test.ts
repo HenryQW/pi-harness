@@ -331,6 +331,7 @@ const model = {
 function harness(options: {
 	ui?: boolean;
 	skills?: Array<{ name: string; path: string }>;
+	onGetCommands?: () => void;
 	trusted?: boolean;
 	availableModels?: any[];
 	currentModel?: any;
@@ -402,6 +403,7 @@ function harness(options: {
 		},
 		registerCommand(name: string, candidate: { handler: (...args: any[]) => any }) { commands.set(name, candidate); },
 		getCommands() {
+			options.onGetCommands?.();
 			return (options.skills ?? []).map((skill) => ({
 				name: `skill:${skill.name}`,
 				description: skill.name,
@@ -1735,6 +1737,83 @@ test("direct tasks require an access declaration and only write access reserves 
 		assert.equal((await call("write", "delegate_task", write)).block, true);
 		assert.equal((await call("unparsed", "delegate_task", { mode: "direct", role: "worker", name: "One", task: "one" })).block, true, "invalid input fails closed");
 		app.handlers.get("tool_result")!({ toolCallId: "main-edit" });
+	});
+});
+
+test("direct launches warn in the parent only for productive fallback use, not previews or model overrides", async (t) => {
+	const stderr: string[] = [];
+	t.mock.method(process.stderr, "write", (text: string) => { stderr.push(text); return true; });
+	for (const ui of [true, false]) await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({
+			profiles: { balanced: {
+				primary: { model: "test/missing", thinkingLevel: "high" },
+				fallback: { model: "test/text-model", thinkingLevel: "low" },
+			} },
+			tasks: { "pi-subagent/delegateTask": "balanced" },
+		}));
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const override = { ...model, id: "override-model" };
+			const app = harness({ ui, cwd, herdr: fake.exec, availableModels: [model, override] });
+			app.handlers.get("session_start")?.({}, app.ctx);
+			const chain = [
+				{ role: "worker", name: "First", task: "first", access: "read" },
+				{ role: "worker", name: "Second", task: "review {previous}", access: "read" },
+			];
+			const plan = await app.tool.execute("dry", { chain, dryRun: true }, undefined, undefined, app.ctx);
+			assert.deepEqual(plan.details.entries.map(({ model, thinkingLevel }: any) => [model, thinkingLevel]), [["test/text-model", "low"], ["test/text-model", "low"]]);
+			assert.deepEqual([app.notifications, app.sentMessages, stderr], [[], [], []], "a dry run does not deliver or consume a warning");
+			await app.tool.execute("override", { ...chain[0], model: "test/override-model" }, undefined, undefined, app.ctx);
+			const results = () => app.sentMessages.filter(({ message }) => message.customType === "subagent-direct-result");
+			await waitFor(() => results().length === 1);
+			assert.deepEqual([app.notifications, stderr], [[], []]);
+			assert.equal(app.sentMessages.length, 1, "an explicit model replaces the fallback model without a warning");
+			assert.equal(results()[0]!.message.details.entries[0].model, "test/override-model");
+			assert.equal(results()[0]!.message.details.entries[0].thinkingLevel, "low", "the override keeps fallback thinking resolution");
+			await app.tool.execute("chain", { chain }, undefined, undefined, app.ctx);
+			await waitFor(() => results().length === 2);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").length, 3);
+			const message = 'Task model profile balanced: primary route is unavailable; selected fallback "test/text-model" (thinking low).';
+			assert.deepEqual(app.notifications, ui ? [{ message, type: "warning" }] : []);
+			assert.deepEqual(stderr, []);
+			assert.deepEqual(app.sentMessages.filter(({ message }) => message.customType === "pi-subagent-model-fallback"), ui ? [] : [{
+				message: { customType: "pi-subagent-model-fallback", content: message, display: true },
+				options: { triggerTurn: false, deliverAs: "followUp" },
+			}]);
+		});
+	});
+});
+
+test("cancelled direct preparation cannot notify a replacement parent or consume its fallback warning", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await writeFile(join(agentDir, "config", "pi-task-models", "config.json"), JSON.stringify({ profiles: { fast: {
+			primary: { model: "test/missing", thinkingLevel: "high" },
+			fallback: { model: "test/text-model", thinkingLevel: "low" },
+		} } }));
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			const controller = new AbortController();
+			let sessionId = "original-parent";
+			let switched: Promise<unknown> | undefined;
+			const app = harness({ cwd, herdr: fake.exec, onGetCommands: () => {
+				if (sessionId !== "original-parent") return;
+				controller.abort();
+				sessionId = "replacement-parent";
+				switched = Promise.resolve(app.handlers.get("session_start")?.({}, app.ctx));
+			} });
+			app.ctx.sessionManager.getSessionId = () => sessionId;
+			await app.handlers.get("session_start")?.({}, app.ctx);
+			const input = { role: "worker", name: "Inspect", task: "Inspect", access: "read" };
+			await assert.rejects(app.tool.execute("cancelled", input, controller.signal, undefined, app.ctx), /aborted|session/i);
+			await switched;
+			assert.deepEqual([app.notifications, app.sentMessages], [[], []]);
+			assert.equal(fake.calls.filter(([kind, command]) => kind === "agent" && command === "start").length, 0);
+			await app.tool.execute("current", input, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.some(({ message }) => message.customType === "subagent-direct-result"));
+			assert.equal(app.sentMessages.filter(({ message }) => message.customType === "pi-subagent-model-fallback").length, 1);
+		});
 	});
 });
 

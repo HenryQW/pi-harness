@@ -854,6 +854,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 	const agentIntent = await plannedIntent(host, attempt, "agent", fixture, script);
 	let acquired = false;
 	let cleanups = 0;
+	let fallbackUses = 0;
 	script.push(
 		lsof(tabDetails.leasePath),
 		...startablePaneSteps(fixture),
@@ -862,6 +863,7 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 			command: "herdr",
 			args: (args) => {
 				assert.equal(acquired, true);
+				assert.equal(fallbackUses, 0, "preparation must not report productive fallback use");
 				assert.deepEqual(args, [
 					"agent", "start", AGENT_NAME, "--kind", "pi", "--pane", WORKER_PANE_ID, "--",
 					...launch.args.filter((arg) => arg !== "--no-session"), "--session", `${tabDetails.leasePath}.session.jsonl`,
@@ -889,10 +891,12 @@ test("allocation uses token-bound non-focused resources, a mode-0600 lease, and 
 				["herdr", "pane", "process-info", "--pane", WORKER_PANE_ID],
 			]);
 			acquired = true;
-			return transientLaunch(async () => { cleanups += 1; });
+			return { ...transientLaunch(async () => { cleanups += 1; }),
+				launch: { ...launch, onFallbackUse: () => { fallbackUses += 1; } } };
 		},
 	}, context());
 	assert.deepEqual(agent, { kind: "agent", outcome: "owned" });
+	assert.equal(fallbackUses, 1);
 	assert.equal(cleanups, 1);
 	assert.equal(script.calls.some(({ command }) => command === "ps"), false, "fresh allocation must not inspect same-TTY shell helpers");
 	script.done();
@@ -1159,7 +1163,8 @@ test("agent pane contention is never retried by the non-idempotent start helper"
 		intent,
 		task,
 		attempt,
-		acquireLaunch: async () => transientLaunch(async () => { cleanups += 1; }),
+		acquireLaunch: async () => ({ ...transientLaunch(async () => { cleanups += 1; }),
+			launch: { ...launch, onFallbackUse: () => assert.fail("failed start must not report fallback use") } }),
 	}, context()), {
 		kind: "agent",
 		outcome: "absent",

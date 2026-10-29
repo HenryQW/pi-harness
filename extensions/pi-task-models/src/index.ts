@@ -318,6 +318,7 @@ export function resolveConfiguredTaskRoutes(
 	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
+	onFallback?: (profileName: ProfileName, route: ResolvedTaskRoute) => void,
 ): ResolvedTaskRoute[] {
 	const declaration = validatedModelTask(task);
 	const store = taskModelsConfigStore(agentDir);
@@ -340,9 +341,13 @@ export function resolveConfiguredTaskRoutes(
 		);
 	}
 	const routes: ResolvedTaskRoute[] = [];
+	let selectedFallback = false;
 	for (const route of orderedProfileRoutes(profile)) {
 		const resolved = resolveTaskModelRoute(ctx, route, thinking);
-		if (resolved) routes.push(resolved);
+		if (resolved) {
+			if (!routes.length && route === profile.fallback) selectedFallback = true;
+			routes.push(resolved);
+		}
 	}
 	if (!routes.length) {
 		throw taskRouteError(
@@ -351,6 +356,7 @@ export function resolveConfiguredTaskRoutes(
 			profileName,
 		);
 	}
+	if (selectedFallback) onFallback?.(profileName, routes[0]);
 	return routes;
 }
 
@@ -367,8 +373,9 @@ export function resolveConfiguredTaskRoute(
 	task: ModelTask,
 	agentDir = getAgentDir(),
 	thinking?: ThinkingLevel,
+	onFallback?: (profileName: ProfileName, route: ResolvedTaskRoute) => void,
 ): ResolvedTaskRoute {
-	return resolveConfiguredTaskRoutes(ctx, task, agentDir, thinking)[0];
+	return resolveConfiguredTaskRoutes(ctx, task, agentDir, thinking, onFallback)[0];
 }
 
 export async function executeTaskRoutes<T>(

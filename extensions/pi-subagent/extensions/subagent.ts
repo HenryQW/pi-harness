@@ -5,6 +5,7 @@ import { availableTaskModels, loadTaskModelsConfig, modelReference, type Profile
 import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type ExecutionPolicySnapshot, type Role } from "@henryqw/pi-subagent";
 import { resolveExecutionPolicy } from "./config.ts";
+import { captureFallbackWarning } from "./task-model-fallback.ts";
 import { registerCheckoutAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { directRef, registerSubagentCommand, type DirectDisplay, type DirectTask } from "./subagent-command.ts";
@@ -433,9 +434,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (Buffer.byteLength(snapshot, "utf8") > 32_000) throw new Error("Status exceeds the 32 KiB inspection limit; use subagent_status for exact evidence.");
 			reportConfig(ctx);
 			const role = findRole(loadRoleCatalog(), "scout");
+			const controller = new AbortController();
+			const reportFallback = captureFallbackWarning(pi, ctx, current, controller.signal);
 			const prepared = await prepareDirectLaunch(role, ctx, { modelClass: "fast" });
 			const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
-			const controller = new AbortController();
 			const taskId = `inspect-${id}-${randomUUID()}`;
 			const display: DirectDisplay = { workflow: nextWorkflow(ctx), worker: 1, workers: 1, title: `Inspect ${id}`, role: role.name };
 			const recordEpoch = directRecordEpoch;
@@ -466,6 +468,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					await handle.cancel();
 					throw new Error(`Session changed during inspection launch; inspect Herdr tab ${handle.tabId}.`);
 				}
+				if (prepared.fallback) reportFallback(prepared.fallback);
 				return { ref: directRef(display), tabId: handle.tabId, name: handle.name, sessionFile: handle.sessionFile };
 			} finally {
 				directTasks.delete(taskId);
@@ -898,12 +901,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const answerBytes = Math.floor(40 * 1024 / entries.length);
 			const launch = async (entry: WorkflowEntry, activeSignal: AbortSignal) => {
 				activeSignal.throwIfAborted();
+				const reportFallback = captureFallbackWarning(pi, ctx, () => launchEpoch === sessionEpoch
+					&& (latestCtx ?? ctx).sessionManager.getSessionId() === launchSessionId, activeSignal);
 				// A later worker launches after earlier ones finish; report and revalidate config edits made meanwhile.
 				beforeRoleLaunch(latestCtx ?? ctx);
 				const role = findRole(loadRoleCatalog(), entry.delegation.role);
 				const { modelClass, model } = entry.delegation;
 				const prepared = await prepareDirectLaunch(role, latestCtx ?? ctx, {
 					...(modelClass === undefined ? {} : { modelClass }), ...(model === undefined ? {} : { model }) });
+				activeSignal.throwIfAborted();
 				states.set(entry.id, { ...states.get(entry.id)!, model: modelReference(prepared.model), thinkingLevel: prepared.thinkingLevel, status: "running", assistantOutput: "" });
 				startedAt.set(entry.id, Date.now());
 				const display = displayOf(entry);
@@ -934,6 +940,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				handles.push(handle);
 				handleByEntry.set(entry.id, handle);
 				if (widgetItems.has(entry.id)) tokenHandles.set(entry.id, handle);
+				if (prepared.fallback) reportFallback(prepared.fallback);
 				if (launchEpoch === sessionEpoch) automaticCollection(ctx);
 				return handle;
 			};
