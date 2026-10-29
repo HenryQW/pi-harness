@@ -238,6 +238,8 @@ export interface HostRuntime {
 		preCandidate: WorkspaceIdentity;
 		/** Explicit complete repository worktree map; the caller validates every member. */
 		workspacePaths?: Readonly<Record<string, string>>;
+		/** Optional idle bound for exact worker session observation. */
+		idleMs?: number;
 		failure?: string;
 		instruction?: string;
 	}, context: OperationContext): Promise<WorkerResult>;
@@ -375,7 +377,7 @@ class ProductiveScope implements RuntimeScope {
 
 }
 
-class DeadlineScope implements RuntimeScope {
+export class DeadlineScope implements RuntimeScope {
 	readonly deadline: number;
 	readonly signal: AbortSignal;
 	private readonly now: () => number;

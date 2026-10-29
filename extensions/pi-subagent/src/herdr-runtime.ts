@@ -95,6 +95,7 @@ export interface HerdrHostRuntimeOptions {
 	executionBudget?: () => Omit<EphemeralSubagentExecutionBudget, "startedAt">;
 }
 
+type WorkerObservationContext = OperationContext & { observe?: () => Promise<void> };
 type RepositoryIdentity = Pick<WorkspaceAllocationIntent, "repoKey" | "herdrRepoRoot">;
 type JsonRecord = Record<string, unknown>;
 
@@ -592,10 +593,11 @@ export class HerdrHostRuntime implements HostRuntime {
 			kind: "initial" | "correction" | "followup";
 			preCandidate: WorkspaceIdentity;
 			workspacePaths?: Readonly<Record<string, string>>;
+			idleMs?: number;
 			failure?: string;
 			instruction?: string;
 		},
-		context: OperationContext,
+		context: WorkerObservationContext,
 	): Promise<WorkerResult> {
 		const allocation = ownedIntent(input.attempt, "agent");
 		requireIntentIdentity(allocation, input.attempt);
@@ -620,6 +622,7 @@ export class HerdrHostRuntime implements HostRuntime {
 		} catch (error) {
 			return { outcome: "not_prompted", diagnostic: `Worker assignment was not submitted: ${safeText(error)}` };
 		}
+		if (input.idleMs !== undefined) context = await this.observeWorker(allocation, input.idleMs, context);
 		let ready;
 		try {
 			ready = await this.waitForSettledAgent(allocation, context);
@@ -1022,14 +1025,41 @@ export class HerdrHostRuntime implements HostRuntime {
 		});
 	}
 
+	/** Reuse exact lifecycle polling; only complete Pi messages renew the idle deadline. */
+	private async observeWorker(allocation: AgentAllocationIntent, idleMs: number, outer: OperationContext): Promise<WorkerObservationContext> {
+		const path = this.workerSessionFile(allocation.leasePath, allocation.token);
+		await this.assertPrivateLeaseDirectories(allocation.leasePath, false);
+		let offset = (await this.privateSessionFile(path))?.length ?? 0;
+		let idleDeadline = this.now() + idleMs;
+		return {
+			...outer,
+			get deadline() { return Math.min(outer.deadline ?? Infinity, idleDeadline); },
+			observe: async () => {
+				outer.signal.throwIfAborted();
+				if (outer.deadline !== undefined && this.now() >= outer.deadline) throw new Error("Worker maximum runtime is exhausted.");
+				const session = await this.privateSessionFile(path) ?? "";
+				if (session.length < offset) throw new Error("Worker session shrank during observation.");
+				let end: number;
+				while ((end = session.indexOf("\n", offset)) >= 0) {
+					const line = session.slice(offset, end); offset = end + 1;
+					if (!line.trim()) continue;
+					const entry = JSON.parse(line);
+					if (entry?.type === "message" && ["user", "assistant", "toolResult"].includes(entry.message?.role)) idleDeadline = this.now() + idleMs;
+				}
+				if (this.now() >= idleDeadline) throw new Error(`Worker made no progress for ${idleMs}ms; its exact session is retained.`);
+			},
+		};
+	}
+
 	private async reconcileDeliveredPrompt(
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity; workspacePaths?: Readonly<Record<string, string>> },
 		allocation: AgentAllocationIntent,
-		context: OperationContext,
+		context: WorkerObservationContext,
 		prompt: string,
 		promptMayBeInFlight = true,
 	): Promise<WorkerResult> {
 		for (;;) {
+			await context.observe?.();
 			let lifecycle;
 			try {
 				lifecycle = await this.waitForAgentLifecycle(allocation, context, true);
@@ -1112,9 +1142,10 @@ export class HerdrHostRuntime implements HostRuntime {
 	private async candidateResult(
 		input: { task: TaskRequest; attempt: TaskAttempt; preCandidate: WorkspaceIdentity; workspacePaths?: Readonly<Record<string, string>> },
 		allocation: AgentAllocationIntent,
-		context: OperationContext,
+		context: WorkerObservationContext,
 		prompt: string,
 	): Promise<WorkerResult> {
+		await context.observe?.();
 		let inspection: InFlightTaskCandidateInspection;
 		try {
 			inspection = await this.inspectInFlightCandidate(

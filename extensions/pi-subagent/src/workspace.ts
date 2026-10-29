@@ -12,7 +12,7 @@ import { runProcess } from "./process.ts";
 import { runGit } from "./git-process.ts";
 import { utf8Prefix } from "./ephemeral.ts";
 import { CLEANUP_KINDS, sameIdentity, type AllocationIntent, type ExecutionPolicySnapshot, type TaskAttempt, type WorkspaceIdentity, type WorktreeAllocationIntent } from "./schema.ts";
-import type { CoordinatorRuntime, HostRuntime, OperationContext } from "./runner.ts";
+import { DeadlineScope, type CoordinatorRuntime, type HostRuntime, type OperationContext } from "./runner.ts";
 import { parseWorkspaceRequest, parseWorkspaceState, sameSet, setFrom, workerTask, WorkspaceActionSchema, type IdentitySet, type WorkspaceAction, type WorkspaceCheck, type WorkspaceEvidence, type WorkspaceRequest, type WorkspaceState } from "./workspace-schema.ts";
 import { resolveWorkspaceScope, workspaceInputPath, type WorkspaceScope } from "./workspace-scope.ts";
 
@@ -26,9 +26,10 @@ const owned = (attempt: TaskAttempt) => {
 	return intent.worktree;
 };
 const branchBase = (repo: WorkspaceState["repositories"][string]) => ({ ...repo.base, branch: `refs/heads/${owned(repo.attempt).branch}` });
-function suite(manifest: string): string {
+function suite(manifest: string): string | undefined {
 	const value = JSON.parse(manifest);
-	if (typeof value?.scripts?.test !== "string" || !value.scripts.test.trim()) throw new Error("Every selected repository needs a root package.json test script.");
+	if (value?.scripts?.test === undefined) return undefined;
+	if (typeof value.scripts.test !== "string" || !value.scripts.test.trim()) throw new Error("Root package.json test script must be a non-empty string.");
 	return value.scripts.test;
 }
 const passes = (evidence: WorkspaceEvidence | undefined, checks: readonly WorkspaceCheck[], expected: IdentitySet): boolean => Boolean(evidence
@@ -120,12 +121,13 @@ export class WorkspaceRunner {
 		const bases: IdentitySet = {}, scripts: Record<string, string> = {};
 		for (const [name, repo] of Object.entries(scope.repositories)) {
 			bases[name] = await this.git.inspectMainBase({ root: repo.root }, context(signal));
-			if ([...request.tasks[0]!.checks, ...request.finalChecks].some((check) => check.repository === name && check.command === "pnpm"
-				&& (check.args[0] === "test" || check.args[0] === "run" && check.args[1] === "test"))) {
-				const manifest = await runGit(["show", `${bases[name]!.head}:package.json`], repo.root, signal);
-				if (manifest.code !== 0) throw new Error(`Cannot read committed test script for repository ${name}: ${manifest.stderr}`);
-				scripts[name] = suite(manifest.stdout);
-			}
+			const entry = await runGit(["ls-tree", bases[name]!.head, "--", "package.json"], repo.root, signal);
+			if (entry.code !== 0) throw new Error(`Cannot inspect committed manifest for repository ${name}: ${entry.stderr}`);
+			if (!entry.stdout) continue;
+			const manifest = await runGit(["show", `${bases[name]!.head}:package.json`], repo.root, signal);
+			if (manifest.code !== 0) throw new Error(`Cannot read committed test script for repository ${name}: ${manifest.stderr}`);
+			const script = suite(manifest.stdout);
+			if (script !== undefined) scripts[name] = script;
 		}
 		for (const path of Object.values(request.tasks[0]!.inputs ?? {})) {
 			await workspaceInputPath(scope, path);
@@ -241,10 +243,22 @@ export class WorkspaceRunner {
 		const preCandidate = branchBase(Object.values(state.repositories)[0]!);
 		attempt.prompts.push({ kind: "initial", status: "submitting", preCandidate, at: Date.now() });
 		state.status = "working"; await this.save(state);
-		const result = await host.runWorker({ goal, contexts: [], task, attempt, workerId: agent.agentName, kind: "initial", preCandidate, workspacePaths: paths }, context(signal));
-		if (result.outcome !== "candidate") throw new Error(result.diagnostic ?? "Workspace worker did not finish with an exact candidate.");
-		attempt.prompts[0]!.status = "settled"; attempt.prompts[0]!.candidate = result.candidate;
-		await this.save(state);
+		const observation = new DeadlineScope(this.options.coordinator.now() + state.policy.childMaxMs, () => this.options.coordinator.now(), signal);
+		const prompt = attempt.prompts[0]!;
+		try {
+			const result = await observation.call((operation) => host.runWorker({ goal, contexts: [], task, attempt, workerId: agent.agentName,
+				kind: "initial", preCandidate, workspacePaths: paths, idleMs: state.policy.childIdleMs }, operation));
+			if (result.outcome !== "candidate") {
+				prompt.status = result.outcome === "not_prompted" ? "not_sent" : result.outcome === "unknown" || result.outcome === "interrupted" ? "ambiguous" : "settled";
+				throw new Error(result.diagnostic ?? "Workspace worker did not finish with an exact candidate.");
+			}
+			prompt.status = "settled"; prompt.candidate = result.candidate;
+			await this.save(state);
+		} catch (error) {
+			if (prompt.status === "submitting") prompt.status = "ambiguous";
+			prompt.failure = diagnostic(error); await this.save(state);
+			throw error;
+		} finally { observation.close(); }
 	}
 	private async inspectWorkers(state: WorkspaceState, signal: AbortSignal): Promise<IdentitySet> {
 		await this.verifyScope(state, signal);

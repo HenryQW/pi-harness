@@ -7,7 +7,7 @@ import test from "node:test";
 import { CheckedGitRuntime } from "../src/git-runtime.ts";
 import { IntegrationGit } from "../src/integration-git.ts";
 import { runProcess } from "../src/process.ts";
-import type { CoordinatorRuntime, HostRuntime } from "../src/runner.ts";
+import type { CoordinatorRuntime, HostRuntime, OperationContext } from "../src/runner.ts";
 import type { ExecutionPolicySnapshot } from "../src/schema.ts";
 import { WorkspaceRunner, workspacePruneOwners } from "../src/workspace.ts";
 import { parseWorkspaceRequest, type WorkspaceRequest, type WorkspaceState } from "../src/workspace-schema.ts";
@@ -68,7 +68,7 @@ async function fixture(t: test.TestContext, integration = new IntegrationGit(), 
 			if (command === "pnpm") { assert.deepEqual(args, ["test"]); return await runProcess(process.execPath, ["-e", "if (!process.env.PI_SUBAGENT_REPOSITORIES) process.exit(2)"], options); }
 			return await runProcess(command, args, options);
 		} };
-	return { root, request, repositories, input, agentDir, runner: new WorkspaceRunner(options), reload: () => new WorkspaceRunner(options), launches: () => launches, running: () => running };
+	return { root, request, repositories, input, agentDir, host, options, runner: new WorkspaceRunner(options), reload: () => new WorkspaceRunner(options), launches: () => launches, running: () => running };
 }
 async function commit(path: string, text: string) { await writeFile(join(path, "file.txt"), text); git(path, "add", "file.txt"); git(path, "commit", "-qm", "change"); }
 async function staged(f: Awaited<ReturnType<typeof fixture>>) {
@@ -120,13 +120,19 @@ test("dirty Main is preserved during worker execution and blocks every target be
 	assert.equal(await readFile(join(f.repositories.client, "unrelated.txt"), "utf8"), "keep again\n");
 });
 
-test("native checks work without a package manifest and require final coverage for each repository", async (t) => {
+test("native checks work without manifests or test scripts and require task and final coverage", async (t) => {
 	const f = await fixture(t);
 	await rm(join(f.repositories.service, "package.json"));
 	git(f.repositories.service, "add", "package.json"); git(f.repositories.service, "commit", "-qm", "remove manifest");
+	await writeFile(join(f.repositories.client, "package.json"), JSON.stringify({ name: "no-test-script" }));
+	git(f.repositories.client, "add", "package.json"); git(f.repositories.client, "commit", "-qm", "remove test script");
+	f.request.tasks[0]!.checks = f.request.finalChecks = Object.keys(f.repositories).map((repository) => ({ repository, command: "git", args: ["diff", "--check"] }));
 	assert.throws(() => parseWorkspaceRequest({ ...f.request, finalChecks: [f.request.finalChecks[0]] }), /Final checks are missing/);
+	assert.throws(() => parseWorkspaceRequest({ ...f.request, tasks: [{ ...f.request.tasks[0], checks: [f.request.tasks[0]!.checks[0]] }] }), /Task checks are missing/);
 	const state = await staged(f);
 	assert.equal(state.repositories.service!.testScript, undefined);
+	assert.equal(state.repositories.client!.testScript, undefined);
+	assert.deepEqual(state.final!.results.map(({ repository }) => repository), ["service", "client"]);
 });
 
 test("pnpm checks pin the committed script instead of dirty Main", async (t) => {
@@ -235,4 +241,78 @@ test("selection rejects aliases, unselected Git input sources, and unsupported g
 	assert.throws(() => parseWorkspaceRequest({ ...f.request, tasks: [...f.request.tasks, ...f.request.tasks] }), /one changeset/);
 	assert.throws(() => parseWorkspaceRequest({ ...f.request, finalJudgment: { role: "reviewer", modelClass: "balanced", criterion: "Review" } }), /judgment/);
 	assert.equal(f.launches(), 0);
+});
+
+test("worker deadlines retain exact failure and termination evidence, release leases, and permit recovery", async (t) => {
+	const f = await fixture(t);
+	f.options.coordinator.now = () => 1_000;
+	let started!: () => void;
+	const start = new Promise<void>((resolve) => { started = resolve; });
+	let operation!: OperationContext;
+	let prompts = 0;
+	f.host.runWorker = async (input, context) => {
+		prompts++;
+		assert.equal(input.idleMs, policy.childIdleMs);
+		operation = context;
+		started();
+		return await new Promise((_resolve, reject) => context.signal.addEventListener("abort", () => reject(context.signal.reason), { once: true }));
+	};
+	const terminate = f.host.terminateWorker.bind(f.host);
+	let uncertain = true;
+	f.host.terminateWorker = async (input, context) => {
+		const saved = await f.reload().status(f.root, f.request.id);
+		const attempt = saved.repositories.service!.attempt;
+		assert.equal(attempt.prompts[0]!.status, "ambiguous");
+		assert.match(attempt.prompts[0]!.failure!, /deadline/);
+		assert.equal(attempt.termination!.workerId, input.workerId);
+		assert.equal(attempt.termination!.status, "terminating");
+		assert.equal(context.signal.aborted, false, "termination has its own safety budget");
+		if (uncertain) return { outcome: "unknown", failure: "exact stop not yet proved" };
+		return await terminate(input, context);
+	};
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const run = f.runner.execute(f.request, f.root);
+	await start;
+	assert.equal(operation.deadline, 1_000 + policy.childMaxMs);
+	assert.equal(operation.timeoutMs, policy.childMaxMs);
+	t.mock.timers.tick(policy.childMaxMs);
+	let state = await run;
+	assert.equal(state.status, "attention");
+	assert.match(state.failure!, /deadline.*\nTermination: exact stop not yet proved/);
+	assert.equal(operation.signal.aborted, true);
+	assert.equal(state.repositories.service!.attempt.termination!.status, "unknown");
+	assert.equal(state.preliminary, undefined);
+	assert.equal(f.running(), true);
+	uncertain = false;
+	state = await f.reload().action({ id: f.request.id, action: "abort" }, f.root);
+	assert.equal(state.status, "aborted", state.failure ?? "");
+	assert.equal(state.repositories.service!.attempt.termination!.status, "terminated");
+	assert.equal(f.running(), false);
+	assert.equal(prompts, 1, "recovery never replays the uncertain prompt");
+	for (const repo of Object.values(state.repositories)) {
+		const allocation = repo.attempt.allocations.find((item) => item.kind === "worktree")!;
+		assert.equal(allocation.kind, "worktree");
+		assert.equal(await realpath(allocation.worktree!.path), allocation.worktree!.path);
+	}
+});
+
+for (const check of [
+	{ command: "pnpm", args: ["--silent", "test"] },
+	{ command: "/usr/local/bin/pnpm", args: ["test"] },
+	{ command: process.execPath, args: ["-e", "process.exit(0)"] },
+]) test(`committed test scripts stay pinned for ${check.command} ${check.args.join(" ")}`, async (t) => {
+	const f = await fixture(t, new IntegrationGit(), async (paths) => {
+		await writeFile(join(paths.client!, "package.json"), JSON.stringify({ scripts: { test: "echo changed" } }));
+		git(paths.client!, "add", "package.json"); git(paths.client!, "commit", "-qm", "replace test script");
+	});
+	f.request.tasks[0]!.checks = Object.keys(f.repositories).map((repository) => ({ ...check, repository }));
+	await writeFile(join(f.repositories.client, "package.json"), JSON.stringify({ scripts: { test: "echo changed" } }));
+	const committed = JSON.parse(git(f.repositories.client, "show", "HEAD:package.json")).scripts.test;
+	f.options.execute = async () => assert.fail("changed pinned scripts must block every check command");
+	const state = await f.runner.execute(f.request, f.root);
+	assert.equal(state.repositories.client!.testScript, committed);
+	assert.equal(state.status, "attention");
+	assert.match(state.failure!, /test script changed: client/);
+	assert.equal((await f.reload().status(f.root, f.request.id)).failure, state.failure);
+	assert.equal(JSON.parse(await readFile(join(f.repositories.client, "package.json"), "utf8")).scripts.test, "echo changed");
 });

@@ -42,7 +42,7 @@ Call from `/work/app`. Each repository must be a canonical direct child with its
 
 Workspace mode supports exactly one changeset task. It rejects text tasks, dependencies, task judgment, and final judgment. It has no automatic correction, retry, refresh, or restaging. The existing single-repository graph remains unchanged when `repositories` is absent.
 
-Every selected repository needs task checks and final checks. Select commands that test that repository. The complete final command list must contain at most 32 entries. Checks must leave the tracked and untracked state clean. If a check runs `pnpm test`, the committed root `package.json` must have a test script, and the worker must not change it.
+Every selected repository needs task checks and final checks. Select commands that test that repository. The complete final command list must contain at most 32 entries. Checks must leave the tracked and untracked state clean. If the committed root `package.json` has a test script, that script is pinned from the exact Main base commit. Dirty Main files do not change the pinned script. All task and final checks reject a changed pinned script, regardless of the command name, path, or arguments. Repositories without a root manifest or test script can use their native check commands.
 
 `PI_SUBAGENT_REPOSITORIES` contains the absolute repository-to-worktree map as JSON, which is a structured text format. `PI_SUBAGENT_INPUTS` contains the input-name-to-copy map. Check commands receive both environment variables. Task checks use worker worktrees; final checks use integration worktrees. The complete repository set is checked before and after commands, including unchanged members.
 
@@ -73,6 +73,8 @@ Dirty Main files are preserved. Worker execution can start from the committed Ma
 **Promotion is not atomic.** A later repository can fail after an earlier repository moved. No rollback is attempted. After an interrupted promotion, call `reconcile`. It compares each uncertain target with its saved endpoints. A target at the promoted endpoint gets a receipt; a target still at its base becomes pending. Then explicitly call `promote` with the complete `tips` to continue. No proven promotion is repeated. Any other Main state requires manual reconciliation.
 
 A crash during allocation does not grant ownership. Uncertain allocations and worker prompts are retained and are never adopted or replayed automatically. A completed exact merge can be reconciled after manual conflict resolution. An unstarted merge or incomplete allocation needs manual inspection and a new request. Failed and aborted work is retained; automatic discard is not available.
+
+Worker observation uses the request's saved `childMaxMs` maximum runtime and `childIdleMs` idle limit. Only complete Pi session messages renew the idle limit; the maximum runtime does not renew. When a limit expires, the runner saves prompt failure evidence and attempts exact worker termination with a separate safety budget. Unproved termination stays visible for recovery. Every repository worktree is retained, and uncertain prompts are not replayed. These are worker limits, not a deadline for the complete request.
 
 An active `abort` can first report a busy lifecycle lock while cancellation settles. Inspect status and repeat `abort` after the active operation ends. Session replacement cancels local observation and suppresses stale delivery, but preserves saved recovery identities.
 

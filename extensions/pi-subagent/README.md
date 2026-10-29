@@ -109,7 +109,7 @@ The verdict is **Ship** only if each reviewer task succeeded and answered exactl
 
 Add an explicit `repositories` map to `delegate_task` to select independent Git repositories in a non-Git workspace. One isolated worker can change the complete set. Use `subagent_workspace` for status, checks, serial promotion, and recovery.
 
-Workspace mode supports one changeset task with repository-specific checks and optional read-only root inputs. It rejects dependencies and judgment. Promotion is not atomic and never rolls back. See [Checked workspace tasks](./docs/workspace.md) for the request, limits, and partial-promotion procedure.
+Workspace mode supports one changeset task with repository-specific checks and optional read-only root inputs. It rejects dependencies and judgment. Saved worker idle and maximum limits apply. Each committed root test script stays pinned, regardless of the check command; repositories without that script can use native checks. Promotion is not atomic and never rolls back. See [Checked workspace tasks](./docs/workspace.md) for the request, limits, and partial-promotion procedure.
 
 Direct requests can select the same repository set for admission and labelled change reports. This does not provide a sandbox.
 
