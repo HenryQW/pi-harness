@@ -1,5 +1,5 @@
 import { getMarkdownTheme, getSelectListTheme, keyHint, keyText, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import type { PruneItem, PruneProgress } from "../dist/prune.js";
 import { TERMINAL_RUN_STATUSES } from "../dist/schema.js";
@@ -346,9 +346,12 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 		const rows = labels.map((label, index) => ({ label, value: String(index) }));
 		// The menu replaces the editor, not the screen; cap its height to leave room for other content.
 		const menuHeight = () => Math.max(1, Math.floor(tui.terminal.rows / 2));
+		let height = menuHeight();
+		let listHeight = 0;
+		let pressed = false;
+		let cancelClick = false;
 		const createList = () => {
 			// Reserve title, key hints, and the native scroll indicator. Very short menus show only the list.
-			const height = menuHeight();
 			const list = new SelectList(rows, Math.max(1, height - (height >= 4 ? 3 : 1)), getSelectListTheme());
 			list.setSelectedIndex(selectedIndex);
 			list.onSelectionChange = ({ value }) => { selectedIndex = Number(value); };
@@ -359,14 +362,30 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 		let list = createList();
 		return {
 			render(width) {
-				list = createList();
+				// Keep the pressed item across redraws: a press can recenter the visible rows before its click.
+				if (height !== menuHeight()) {
+					if (pressed) cancelClick = true;
+					pressed = false;
+					height = menuHeight(); list = createList();
+				}
 				const lines = list.render(width);
-				if (menuHeight() < 4) return lines.slice(0, menuHeight());
+				listHeight = Math.min(lines.length, height);
+				if (height < 4) return lines.slice(0, height);
 				return [truncateToWidth(theme.fg("accent", title), width), ...lines,
 					truncateToWidth([`${keyText("tui.select.up")}/${keyText("tui.select.down")} scroll`,
 						keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel")].join(" · "), width)];
 			},
 			handleInput(data) { list.handleInput(data); tui.requestRender(); },
+			handleMouse(event: TuiMouseEvent) {
+				if (event.type === "click" && cancelClick) { cancelClick = false; return { handled: true }; }
+				if (event.type === "press") cancelClick = false;
+				const y = event.y - (height >= 4 ? 1 : 0);
+				if (y < 0 || y >= listHeight) return undefined;
+				const result = list.handleMouse({ ...event, y, height: listHeight });
+				if (event.type === "press") pressed = result?.handled === true;
+				if (event.type === "click") pressed = false;
+				return result;
+			},
 			invalidate() { list.invalidate(); },
 		};
 	});

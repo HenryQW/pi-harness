@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type KeybindingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, getKeybindings, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { Box, getKeybindings, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../src/discard.ts";
 import { registerSubagentCommand, reportMarkdown, type IsolatedInventory, type PrunePlan, type Report, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
@@ -203,6 +203,59 @@ test("long single-choice menus scroll to exact same-named records and retain sel
 	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-50`/);
 	assert.deepEqual(h.closed, []);
 	assert.deepEqual(h.discarded, []);
+});
+
+const mouse = (picker: Picker, type: TuiMouseEvent["type"], y: number, wheelDelta?: number) => {
+	const height = picker.render(80).length;
+	assert.ok(picker.component.handleMouse, "The menu must forward normalized mouse events");
+	return picker.component.handleMouse({ type, button: type === "wheel" ? "none" : "left", x: 3, y,
+		screenX: 13, screenY: 30 + y, width: 80, height, shift: false, alt: false, ctrl: false, wheelDelta });
+};
+
+test("menu mouse input scrolls and selects the pressed record across redraws without hitting title or hints", async () => {
+	const h = harness({ direct: Array.from({ length: 20 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })) });
+	h.pickers.push((picker) => {
+		const lines = screen(picker, 16).split("\n");
+		assert.equal(mouse(picker, "wheel", 0, 1), undefined, "the title is not part of the list");
+		assert.equal(mouse(picker, "wheel", lines.length - 1, 1), undefined, "key hints are not part of the list");
+		assert.equal(mouse(picker, "click", lines.length - 2), undefined, "the scroll indicator is not a choice");
+		assert.equal(mouse(picker, "wheel", 2, 1)?.handled, true);
+		assert.match(screen(picker, 16), /→ .*direct-0/);
+		assert.equal(mouse(picker, "wheel", 2, -1)?.handled, true);
+		assert.match(screen(picker, 16).split("\n")[1]!, /^→ ── Direct/);
+		assert.match(screen(picker, 16).split("\n")[5]!, /direct-3/);
+		assert.equal(mouse(picker, "press", 5)?.focus, true);
+		assert.match(screen(picker, 16).split("\n")[5]!, /direct-5/, "pressing recenters the visible list");
+		assert.equal(mouse(picker, "click", 5)?.handled, true);
+	}, (picker) => { picker.component.handleInput!("\x1b"); });
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-3`/);
+	assert.deepEqual([h.closed, h.discarded], [[], []]);
+});
+
+test("resizing between a mouse press and click does not select a different record", async () => {
+	const h = harness({ direct: Array.from({ length: 20 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })) });
+	h.pickers.push((picker) => {
+		screen(picker, 16);
+		mouse(picker, "press", 5);
+		screen(picker, 20);
+		mouse(picker, "click", 5);
+		picker.component.handleInput!("\r");
+	}, (picker) => { picker.component.handleInput!("\x1b"); });
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-3`/);
+});
+
+test("menu mouse coordinates omit the title offset in a short terminal", async () => {
+	const h = harness({ direct: [{ id: "direct", name: "Worker", status: "working", workers: [], tabs: [] }] });
+	h.pickers.push((picker) => {
+		screen(picker, 2);
+		down(picker, 1);
+		assert.match(screen(picker, 2), /^→ .*direct/);
+		assert.equal(mouse(picker, "click", 0)?.handled, true);
+	}, (picker) => { picker.component.handleInput!("\x1b"); });
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct`/);
 });
 
 test("menus open in the editor area and leave the transcript visible above them", async () => {

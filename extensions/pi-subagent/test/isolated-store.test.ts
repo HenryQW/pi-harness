@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -178,6 +178,50 @@ test("invalid and oversized state files are rejected without replacement", async
 		});
 		assert.equal((await stat(oversizedPath)).size, STATE_MAX_BYTES + 1);
 		assert.match(await readFile(handle.path, "utf8"), /request-one/);
+	} finally {
+		await rm(sandbox, { recursive: true, force: true });
+	}
+});
+
+test("orphan scans skip Finder metadata but preserve and report unexpected state entries", async () => {
+	const sandbox = await realpath(await mkdtemp(join(tmpdir(), "pi-subagent-store-")));
+	try {
+		await mkdir(join(sandbox, "repo"));
+		const root = await realpath(join(sandbox, "repo"));
+		const store = new FileRunStore(join(sandbox, "agent"));
+		const orphan = state(root);
+		orphan.tasks[0]!.attempts[0]!.cleanup = { outcome: "retained", path: join(sandbox, ".worktrees", "worker"), branch: "pi-subagent/worker", commits: 1, dirty: false };
+		const handle = await store.create(orphan);
+		const directory = dirname(handle.path);
+		const parent = dirname(directory);
+		const unrelated = join(parent, ".DS_Store");
+		await writeFile(unrelated, "Finder metadata");
+		await mkdir(join(parent, "notes"));
+		const note = join(parent, "notes", "keep.json");
+		await writeFile(note, "unrelated content");
+		const candidateFile = join(parent, "a".repeat(64));
+		await writeFile(candidateFile, "not a directory");
+		const candidateLink = join(parent, "b".repeat(64));
+		await symlink(directory, candidateLink);
+		const malformedDirectory = join(parent, "c".repeat(64));
+		await mkdir(malformedDirectory);
+		const malformed = join(malformedDirectory, "broken.json");
+		await writeFile(malformed, "not state");
+		const mismatched = join(malformedDirectory, "request-one.json");
+		await writeFile(mismatched, await readFile(handle.path));
+		const wrongId = join(directory, "wrong-id.json");
+		await writeFile(wrongId, await readFile(handle.path));
+		const files = [unrelated, note, candidateFile, malformed, mismatched, wrongId, handle.path];
+		const before = await Promise.all(files.map((file) => readFile(file)));
+		await rm(root, { recursive: true });
+
+		const scanned = await store.listOrphans(sandbox);
+		assert.deepEqual(scanned.states.map(({ path }) => path), [handle.path]);
+		assert.deepEqual(scanned.invalidIds.sort(), [join(parent, "notes"), candidateFile, candidateLink, malformed, mismatched, wrongId].sort());
+		await assert.rejects(store.loadFromDirectory(candidateLink, "request-one"), /Invalid Pi Subagent state directory/);
+		await assert.rejects(store.loadFromDirectory(malformedDirectory, "request-one"), /identity does not match/);
+		assert.deepEqual(await Promise.all(files.map((file) => readFile(file))), before);
+		assert.ok((await lstat(candidateLink)).isSymbolicLink());
 	} finally {
 		await rm(sandbox, { recursive: true, force: true });
 	}

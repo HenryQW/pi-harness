@@ -17,6 +17,7 @@ const INITIAL_STATE_MAX_BYTES = 2 * 1024 * 1024;
  * Reads use the same finite ceiling and preserve rejected files.
  */
 const STATE_MAX_BYTES = 128 * 1024 * 1024;
+const STATE_DIRECTORY_NAME = /^[a-f0-9]{64}$/;
 const ADMISSION_MAX_FILES = 256;
 const ADMISSION_MAX_BYTES = STATE_MAX_BYTES;
 const V4_TERMINAL_STATUSES = new Set(["completed", "final_failed", "superseded", "aborted"]);
@@ -252,7 +253,7 @@ export class FileRunStore {
 	/** Address saved state without resolving a parent checkout that may no longer exist. */
 	private async validateDirectory(directory: string): Promise<void> {
 		const parent = join(extensionConfigDir("pi-subagent", this.agentDir), "state");
-		if (dirname(directory) !== parent || !/^[a-f0-9]{64}$/.test(basename(directory))
+		if (dirname(directory) !== parent || !STATE_DIRECTORY_NAME.test(basename(directory))
 			|| !(await lstat(directory)).isDirectory() || await realpath(directory) !== join(await realpath(parent), basename(directory))) {
 			throw new Error("Invalid Pi Subagent state directory.");
 		}
@@ -298,6 +299,7 @@ export class FileRunStore {
 		const states: RunStateHandle[] = [];
 		const invalidIds: string[] = [];
 		for (const entry of directories) {
+			if (entry.name === ".DS_Store" && entry.isFile()) continue;
 			const directory = join(parent, entry.name);
 			try {
 				await this.validateDirectory(directory);
