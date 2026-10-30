@@ -52,7 +52,9 @@ Automatic conflicts enter a private, durable review inbox. They never open a dia
 
 ### Review inbox
 
-Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and uses the verdict stored with each candidate, so the approval question opens without another review request. When the sources changed since the candidate was queued, the command runs candidate review again and stores the new verdict. It shows each complete mutation. Approval applies the complete mutation, not selected parts of a batch.
+Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and uses the verdict stored with each candidate, so the approval question opens without another review request. It shows each complete mutation. Approval applies the complete mutation, not selected parts of a batch.
+
+If the stored verdict is missing or its sources changed, the command runs candidate review again before the approval question. If you defer or cancel, it stores the new verdict only if the candidate is unchanged.
 
 For a single add with one same-store conflict, the command offers replacement, discard, and merge when the reviewer supplies an exact merge. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
 
@@ -68,7 +70,9 @@ Linked Git worktrees share the canonical common Git directory as their group. Ou
 
 The inbox is `~/.pi/agent/config/pi-memory/review-inbox.json`, outside the possibly synced memory directory. Locked updates preserve concurrent additions and removals. New files use mode `0600`; the containing directory uses mode `0700`. On Windows, access follows the operating system's permission rules.
 
-The complete inbox has a 65,536-byte limit. A candidate that stores a review verdict uses more space, because the verdict holds the evidence, the explanation, and an optional exact merge. A full, malformed, or unwritable inbox rejects additions without a partial batch or a false success message. Existing candidates stay intact. Review pending items to free space; preserve a damaged inbox before repair.
+The complete inbox has a 65,536-byte limit. A candidate that stores a review verdict uses more space, because the verdict holds the evidence, the explanation, and an optional exact merge. A full, malformed, or unwritable inbox rejects additions without a partial batch or a false success message. Existing candidates stay intact.
+
+A failed verdict update does not block the approval question. If you defer or cancel and the update fails, the candidate stays unchanged and Pi reports that the next review will run again. Review pending items to free space; preserve a damaged inbox before repair.
 
 ### `/remember` and queued work
 

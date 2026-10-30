@@ -1213,7 +1213,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				})),
 			};
 			const validated = validateMutation(mutation);
-			let pending = typeof origin === "object" ? origin : undefined;
+			const pending = typeof origin === "object" ? origin : undefined;
 			if (pending && (pending.group !== state.group || pending.directory !== await realpath(state.config.directory))) {
 				throw new MemoryReviewError("Review group or memory directory changed; candidate retained.");
 			}
@@ -1293,18 +1293,6 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			const review: CandidateReview = duplicate ? { verdict: "distinct", explanation: "The complete addition already exists; approval adds no duplicate." } : stored ?? await reviewMutation(mutation, snapshot, ctx, signal);
 			signal?.throwIfAborted();
 			if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
-			if (pending && !stored) {
-				const refreshed: InboxItem = { ...pending, review, sources: fingerprint };
-				try {
-					await inbox.update((current) => {
-						if (!current.items.some((entry) => entry.id === pending!.id)) throw new MemoryReviewError("Inbox candidate changed or was already resolved.");
-						return { items: current.items.map((entry) => entry.id === pending!.id ? refreshed : entry) };
-					});
-				} catch (error) {
-					throw new MemoryReviewError(`Cannot store the refreshed review in the review inbox; nothing was written. ${error instanceof Error ? error.message : String(error)}`);
-				}
-				pending = refreshed;
-			}
 			let resolved: Extract<MemoryOperation, { action: "replace" }> | undefined;
 			if (review.verdict !== "distinct" && !origin) {
 				if (!state.group) throw new MemoryReviewError(`${state.groupError ?? "Memory review group is unavailable"} Candidate was not saved to the inbox or memory.`);
@@ -1336,6 +1324,19 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 						if (expectedGeneration !== state.sessionGeneration || !ctx.isIdle()) throw new MemoryReviewError("Session changed or became busy; candidate retained.");
 						await removePending(pending);
 					});
+					if (decision.action === "defer" && pending && !stored && !duplicate) {
+						try {
+							await inbox.update((current) => {
+								signal?.throwIfAborted();
+								if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed; candidate retained.");
+								const existing = current.items.find((entry) => entry.id === pending.id);
+								if (!existing || JSON.stringify(existing) !== JSON.stringify(pending)) throw new MemoryReviewError("Inbox candidate changed or was already resolved.");
+								return { items: current.items.map((entry) => entry.id === pending.id ? { ...pending, review, sources: fingerprint } : entry) };
+							});
+						} catch (error) {
+							throw new MemoryReviewError(`Cannot store the refreshed review; candidate retained. The next review will run again. ${error instanceof Error ? error.message : String(error)}`);
+						}
+					}
 					const status = decision.action === "discard" ? "User discarded the candidate; nothing was written." : pending ? "Review deferred; candidate retained in the inbox." : "Request cancelled; candidate was not saved.";
 					return {
 						content: [{ type: "text" as const, text: JSON.stringify({ success: true, done: true, saved: false, message: status }) }],

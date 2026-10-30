@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { unwatchFile, watchFile } from "node:fs";
-import fs, { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1573,6 +1573,149 @@ test("candidates from an inbox without a stored verdict are still reviewed once"
 		assert.match(questions[0]!, /existing/);
 		assert.equal(pendingItems(agentDir).length, 0);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+	});
+});
+
+test("a full old-format inbox permits discard and apply; deferral and cancellation preserve it", async () => {
+	for (const choice of ["Discard", "Save complete mutation", "Review later", undefined]) {
+		let path: string;
+		let original: string;
+		await withReviewFixture({
+			memory: "existing",
+			select: async (choices) => {
+				assert.equal(await readFile(path, "utf8"), original, "review must not write before the decision");
+				return choice && choices.find((line) => line.includes(choice));
+			},
+		}, async ({ agentDir, memoryDir, ctx, commands, calls, questions, notifications }) => {
+			path = reviewInboxStore(validateMutation, agentDir).path;
+			const items = [
+				{ id: "pending", group: await reviewGroup(ctx.sessionManager.getCwd()), directory: await realpath(memoryDir), mutation: { target: "memory", action: "add", content: "candidate" } },
+				{ id: "other-group", group: `cwd:${memoryDir}`, directory: memoryDir, mutation: { target: "memory", action: "add", content: "" } },
+			];
+			const serialize = () => `${JSON.stringify({ items }, null, 2)}\n`;
+			items[1]!.mutation.content = "x".repeat(65_520 - Buffer.byteLength(serialize()));
+			original = serialize();
+			await writeFile(path, original);
+			assert.equal(Buffer.byteLength(original), 65_520);
+			assert.equal(pendingItems(agentDir).length, 2);
+
+			await commands.get("memory-review")!.handler("", ctx);
+			assert.equal(questions.length, 1, notifications.join("\n"));
+			assert.equal(calls.length, 1);
+			if (choice === "Discard" || choice === "Save complete mutation") {
+				assert.deepEqual(pendingItems(agentDir), [items[1]]);
+			} else {
+				assert.equal(await readFile(path, "utf8"), original);
+				assert.match(notifications.join("\n"), /Cannot store the refreshed review; candidate retained\. The next review will run again/);
+				await commands.get("memory-review")!.handler("", ctx);
+				assert.equal(calls.length, 2);
+				assert.equal(await readFile(path, "utf8"), original);
+			}
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), choice === "Save complete mutation" ? "existing\n§\ncandidate" : "existing");
+		});
+	}
+});
+
+test("a failed deferred review write retains the candidate and reviews again", async (t) => {
+	await withReviewFixture({
+		memory: "existing", responses: [overlap(), overlap(), overlap()],
+		select: (choices) => choices.find((choice) => choice.includes("Review later")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, calls, questions, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		// Make the saved verdict stale without changing the candidate.
+		await writeFile(join(memoryDir, "USER.md"), "new source");
+		const path = reviewInboxStore(validateMutation, agentDir).path;
+		const original = await readFile(path, "utf8");
+		const rename = fs.rename;
+		const failure = t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
+			if (args[1] === path) throw new Error("PRIVATE_REFRESH_SENTINEL");
+			return rename(...args);
+		});
+		syncBuiltinESMExports();
+		try { await commands.get("memory-review")!.handler("", ctx); }
+		finally { failure.mock.restore(); syncBuiltinESMExports(); }
+		assert.equal(questions.length, 1);
+		assert.equal(await readFile(path, "utf8"), original);
+		assert.match(notifications.join("\n"), /The next review will run again/);
+		assert.doesNotMatch(notifications.join("\n"), /PRIVATE_REFRESH_SENTINEL/);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 3);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 3);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+	});
+});
+
+test("fresh review never replaces or resolves a changed candidate", async () => {
+	for (const phase of ["review", "decision"]) {
+		for (const choice of ["Discard", "Save complete mutation", "Review later"]) {
+			let changeCandidate: () => Promise<unknown>;
+			await withReviewFixture({
+				memory: "existing",
+				responses: [overlap(), async () => {
+					if (phase === "review") await changeCandidate();
+					return JSON.stringify({ verdict: "distinct", explanation: "New fact." });
+				}],
+				select: async (choices) => {
+					if (phase === "decision") await changeCandidate();
+					return choices.find((line) => line.includes(choice));
+				},
+			}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+				await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+				await writeFile(join(memoryDir, "USER.md"), "new source");
+				const inbox = reviewInboxStore(validateMutation, agentDir);
+				const changed = { ...pendingItems(agentDir)[0]!, mutation: { target: "memory" as const, action: "add" as const, content: "other session's candidate" } };
+				changeCandidate = () => inbox.update(() => ({ items: [changed] }));
+				await commands.get("memory-review")!.handler("", ctx);
+				assert.deepEqual(pendingItems(agentDir), [changed]);
+				assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+				assert.match(notifications.join("\n"), /Cannot complete memory review/);
+			});
+		}
+	}
+});
+
+test("fresh review preserves source and session checks before discard or apply", async () => {
+	for (const change of ["source", "session"]) {
+		for (const choice of ["Discard", "Save complete mutation"]) {
+			let fixture: ReviewFixture;
+			await withReviewFixture({
+				memory: "existing", responses: [overlap()],
+				select: async (choices) => {
+					if (change === "source") await writeFile(join(fixture.memoryDir, "USER.md"), "changed during approval");
+					else await fixture.handlers.get("before_agent_start")!(promptEvent());
+					return choices.find((line) => line.includes(choice));
+				},
+			}, async (value) => {
+				fixture = value;
+				const { agentDir, memoryDir, tool, ctx, commands, notifications } = value;
+				await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+				await writeFile(join(memoryDir, "USER.md"), "new source");
+				const original = pendingItems(agentDir);
+				await commands.get("memory-review")!.handler("", ctx);
+				assert.deepEqual(pendingItems(agentDir), original);
+				assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+				assert.match(notifications.join("\n"), change === "source" ? /[Rr]eview sources changed/ : /Session changed/);
+			});
+		}
+	}
+});
+
+test("deferring an exact duplicate does not store its synthetic distinct verdict", async () => {
+	await withReviewFixture({
+		memory: "existing", responses: [overlap()],
+		select: (choices) => choices.find((choice) => choice.includes("Review later")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, calls, questions }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		const original = pendingItems(agentDir);
+		await writeFile(join(memoryDir, "MEMORY.md"), "existing\n§\ncandidate");
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.match(questions[0]!, /complete addition already exists/);
+		assert.deepEqual(pendingItems(agentDir), original);
+		await writeFile(join(memoryDir, "MEMORY.md"), "existing");
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.match(questions[1]!, /overlap/);
+		assert.equal(calls.length, 1);
 	});
 });
 
