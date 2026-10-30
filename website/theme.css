@@ -46,3 +46,16 @@
     display: none !important;
   }
 }
+
+/* The footer's About Henry link shows Henry's picture, as on rounds.henry.wang. Inline, so the text keeps the
+   baseline of the other footer links. */
+footer a[href="https://henry.wang"]::before {
+  background: url("/apple-icon.png") center / cover;
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 20px;
+  margin-right: 6px;
+  vertical-align: middle;
+  width: 20px;
+}
