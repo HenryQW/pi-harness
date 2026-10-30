@@ -325,7 +325,7 @@ The skill owns diagram type selection, layout, connectors, accessibility, comple
 The current sources of truth are:
 
 - `blume.config.ts` for background, accent, fonts, and radius;
-- `theme.css` for foreground, muted surfaces, borders, and code surfaces;
+- `theme.css`, which imports `@henryqw/theme`, for foreground, muted surfaces, borders, and code surfaces;
 - `pages/index.astro` for the website's visual hierarchy;
 - `../extensions/pi-task-models/docs/task-routing-architecture.svg` as a skin example, not a layout template.
 

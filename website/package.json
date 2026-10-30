@@ -12,6 +12,7 @@
     "validate": "pnpm run check:installer && pnpm test && blume validate --strict"
   },
   "devDependencies": {
+    "@henryqw/theme": "^0.1.0",
     "blume": "2.2.4",
     "mdast-util-from-markdown": "^2.1.0",
     "mdast-util-gfm-table": "^2.0.0",

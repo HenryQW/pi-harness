@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { defineConfig } from "blume";
 import { orama } from "blume/search";
 import { custom, type ContentSource } from "blume/sources";
+import { colors } from "@henryqw/theme/tokens";
 
 import { catalog, extensions, repoRoot, supportLibraries } from "./extension-catalog.ts";
 import { licenseBadgeUrl, npmBadgeUrl, versionBadgeUrl } from "./npm-badge.ts";
@@ -176,11 +177,11 @@ export default defineConfig({
       description: "Built on Pi. Tuned by Henry.",
       logo: "/og-logo.svg",
       palette: {
-        accent: "oklch(0.488 0.217 264.4)",
-        background: "oklch(0.21 0.034 263.4)",
-        border: "oklch(0.949 0.007 88.6 / 0.18)",
-        foreground: "oklch(0.949 0.007 88.6)",
-        muted: "oklch(0.86 0.012 264.5)",
+        accent: colors.accent,
+        background: colors.inverseBackground,
+        border: colors.inverseBorder,
+        foreground: colors.inverseForeground,
+        muted: colors.inverseMuted,
       },
     },
   },
@@ -196,12 +197,12 @@ export default defineConfig({
   },
   theme: {
     accent: {
-      dark: "oklch(0.77 0.116 264.4)",
-      light: "oklch(0.488 0.217 264.4)",
+      dark: colors.accentSoft,
+      light: colors.accent,
     },
     background: {
-      dark: "oklch(0.21 0.034 263.4)",
-      light: "oklch(0.949 0.007 88.6)",
+      dark: colors.inverseBackground,
+      light: colors.background,
     },
     fonts: { body: "geist", display: "geist", mono: "geist-mono" },
     radius: "sm",
