@@ -18,7 +18,37 @@ export type InboxItem = {
 	group: string;
 	directory: string;
 	mutation: MemoryMutation;
+	/** The review that deferred this candidate, reusable while `sources` still matches. */
+	review?: StoredReview;
+	/** Fingerprint of the SYSTEM and store sources that produced `review`. */
+	sources?: string;
 };
+
+/** Bounds of a review response; the inbox persists one per deferred candidate. */
+export const REVIEW_MAX_EXPLANATION_CHARS = 800;
+export const REVIEW_MAX_EVIDENCE_CHARS = 2_000;
+export const REVIEW_MAX_MERGE_CHARS = 2_000;
+
+export type StoredReview =
+	| { verdict: "distinct"; explanation: string }
+	| { verdict: "overlap" | "contradiction"; explanation: string; source: "system" | Target; evidence: string; proposedMerge?: string };
+
+const ITEM_KEYS = new Set(["directory,group,id,mutation", "directory,group,id,mutation,review,sources"]);
+
+/** Reject unknown shapes: a stored review is replayed as if the model returned it. */
+function validStoredReview(review: unknown): review is StoredReview {
+	if (!review || typeof review !== "object" || Array.isArray(review)) return false;
+	const value = review as Record<string, unknown>;
+	const keys = Object.keys(value).sort().join();
+	const text = (input: unknown, limit: number) => typeof input === "string" && input.length > 0 && input.length <= limit;
+	if (!text(value.explanation, REVIEW_MAX_EXPLANATION_CHARS)) return false;
+	if (value.verdict === "distinct") return keys === "explanation,verdict";
+	if (value.verdict !== "overlap" && value.verdict !== "contradiction") return false;
+	if (!text(value.evidence, REVIEW_MAX_EVIDENCE_CHARS)) return false;
+	if (value.source !== "system" && value.source !== "memory" && value.source !== "user") return false;
+	if (value.proposedMerge === undefined) return keys === "evidence,explanation,source,verdict";
+	return text(value.proposedMerge, REVIEW_MAX_MERGE_CHARS) && keys === "evidence,explanation,proposedMerge,source,verdict";
+}
 
 const exec = promisify(execFile);
 
@@ -49,10 +79,13 @@ export function reviewInboxStore(validate: (mutation: MemoryMutation) => unknown
 				if (!Array.isArray(raw)) throw new Error("items must be an array");
 				const ids = new Set<string>();
 				for (const item of raw) {
-					if (!item || typeof item !== "object" || Object.keys(item).sort().join() !== "directory,group,id,mutation"
+					if (!item || typeof item !== "object" || !ITEM_KEYS.has(Object.keys(item).sort().join())
 						|| typeof item.id !== "string" || !item.id || ids.has(item.id)
 						|| typeof item.group !== "string" || !/^(git|cwd):/.test(item.group) || !isAbsolute(item.group.slice(4))
 						|| typeof item.directory !== "string" || !isAbsolute(item.directory)) throw new Error("Invalid inbox item");
+					if ((item.review === undefined) !== (item.sources === undefined)) throw new Error("Invalid inbox review");
+					if (item.review !== undefined && (!validStoredReview(item.review)
+						|| typeof item.sources !== "string" || !/^[0-9a-f]{64}$/.test(item.sources))) throw new Error("Invalid inbox review");
 					const mutation = item.mutation;
 					if (!mutation || typeof mutation !== "object" || Array.isArray(mutation)
 						|| !Object.keys(mutation).every((key) => ["target", "action", "content", "old_text", "operations"].includes(key))
