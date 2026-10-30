@@ -1730,13 +1730,160 @@ test("deferring an exact duplicate does not store its synthetic distinct verdict
 	});
 });
 
+test("review treats a conflict the replaced entry alone supports as expected", async () => {
+	const conflicting: ReviewReply = (call) => {
+		const { mutation } = JSON.parse(call.context.messages[0]!.content);
+		if (mutation.action === "replace") return JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", explanation: "Same fact." });
+		return JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", explanation: "Same fact.", proposedMerge: "merged" });
+	};
+	for (const action of ["Merge", "Replace"]) {
+		await withReviewFixture({
+			memory: "existing\n§\nother fact", responses: [conflicting, conflicting],
+			select: (choices) => choices.find((choice) => choice.includes(action)),
+		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
+			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+			await commands.get("memory-review")!.handler("", ctx);
+			assert.equal(calls.length, 2);
+			assert.doesNotMatch(calls[0]!.context.systemPrompt, /repeats that operation's old_text/);
+			assert.match(calls[1]!.context.systemPrompt, /repeats that operation's old_text/);
+			const request = JSON.parse(calls.at(-1)!.context.messages[0]!.content);
+			assert.deepEqual(request.mutation, { target: "memory", action: "replace", old_text: "existing", content: action === "Merge" ? "merged" : "candidate" });
+			assert.deepEqual(request.sources.memory, ["existing", "other fact"]);
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), `${action === "Merge" ? "merged" : "candidate"}\n§\nother fact`);
+			assert.equal(pendingItems(agentDir).length, 0);
+		});
+	}
+});
+
+test("review blocks a replacement whose evidence a retained entry also supports", async () => {
+	await withReviewFixture({
+		memory: "alpha shared\n§\nbeta shared",
+		responses: [overlap("alpha shared"), JSON.stringify({ verdict: "overlap", source: "memory", evidence: "shared", explanation: "Same fact." })],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "alpha shared\n§\nbeta shared");
+		assert.ok(notifications.some((text) => /still conflicts with another MEMORY entry: "shared"/.test(text)), notifications.join("\n"));
+		assert.ok(notifications.some((text) => /the candidate stays in the review inbox/.test(text)), notifications.join("\n"));
+	});
+});
+
+test("review names the store a cross-store conflict comes from", async () => {
+	await withReviewFixture({
+		memory: "existing", user: "user fact",
+		responses: [overlap("existing", "merged"), JSON.stringify({ verdict: "overlap", source: "user", evidence: "user fact", explanation: "Same fact." })],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+		assert.ok(notifications.some((text) => /still conflicts with a USER entry: "user fact"/.test(text)), notifications.join("\n"));
+		assert.doesNotMatch(notifications.join("\n"), /another MEMORY entry/);
+	});
+});
+
+test("an immediate /remember conflict states that nothing was saved", async () => {
+	await withReviewFixture({
+		memory: "existing\n§\nother fact",
+		responses: [
+			JSON.stringify({ target: "memory", content: "candidate" }),
+			overlap("existing", "merged"),
+			JSON.stringify({ verdict: "overlap", source: "memory", evidence: "other fact", explanation: "Same fact." }),
+		],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, ctx, commands, notifications }) => {
+		await commands.get("remember")!.handler("candidate", ctx);
+		assert.equal(pendingItems(agentDir).length, 0);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\nother fact");
+		assert.ok(notifications.some((text) => /still conflicts with another MEMORY entry: "other fact"/.test(text)), notifications.join("\n"));
+		assert.ok(notifications.some((text) => /the candidate was not saved/.test(text)), notifications.join("\n"));
+		assert.doesNotMatch(notifications.join("\n"), /review inbox/);
+	});
+});
+
+test("review blocks a replacement the SYSTEM.md instructions still conflict with", async () => {
+	await withReviewFixture({
+		memory: "existing", system: "Global rule: concise replies.",
+		responses: [overlap("existing", "merged"), JSON.stringify({ verdict: "overlap", source: "system", evidence: "Global rule", explanation: "Same instruction." })],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+		assert.ok(notifications.some((text) => /still conflicts with SYSTEM\.md: "Global rule"/.test(text)), notifications.join("\n"));
+		assert.ok(notifications.some((text) => /Edit SYSTEM\.md or discard the new entry, then retry\./.test(text)), notifications.join("\n"));
+	});
+});
+
+test("review names the other store for a USER replacement", async () => {
+	await withReviewFixture({
+		memory: "existing fact", user: "user fact",
+		responses: [
+			JSON.stringify({ verdict: "overlap", source: "user", evidence: "user fact", explanation: "Same fact.", proposedMerge: "merged" }),
+			JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing fact", explanation: "Same fact." }),
+		],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { target: "user", action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "user fact");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing fact");
+		assert.ok(notifications.some((text) => /still conflicts with a MEMORY entry: "existing fact"/.test(text)), notifications.join("\n"));
+	});
+});
+
+test("review lets a USER replacement overlap the entry it replaces", async () => {
+	const onTarget: ReviewReply = (call) => {
+		const { mutation } = JSON.parse(call.context.messages[0]!.content);
+		const verdict = mutation.action === "replace"
+			? { verdict: "overlap", source: "user", evidence: "user fact", explanation: "Same fact." }
+			: { verdict: "overlap", source: "user", evidence: "user fact", explanation: "Same fact.", proposedMerge: "merged fact" };
+		return JSON.stringify(verdict);
+	};
+	await withReviewFixture({
+		memory: "existing fact", user: "user fact",
+		responses: [onTarget, onTarget],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands }) => {
+		await tool.execute("queue", { target: "user", action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(await readFile(join(memoryDir, "USER.md"), "utf8"), "candidate");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing fact");
+		assert.equal(pendingItems(agentDir).length, 0);
+	});
+});
+
+test("review blocks cross-store evidence that also sits in the replaced entry", async () => {
+	await withReviewFixture({
+		memory: "existing shared\n§\nother", user: "user shared fact",
+		responses: [
+			JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing shared", explanation: "Same fact.", proposedMerge: "merged" }),
+			JSON.stringify({ verdict: "overlap", source: "user", evidence: "shared", explanation: "Same fact." }),
+		],
+		select: (choices) => choices.find((choice) => choice.includes("Replace current entry")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing shared\n§\nother");
+		assert.ok(notifications.some((text) => /still conflicts with a USER entry: "shared"/.test(text)), notifications.join("\n"));
+	});
+});
+
 test("review preserves and applies a complete atomic batch", async () => {
 	const operations = [{ action: "remove", old_text: "existing" }, { action: "add", content: "replacement" }, { action: "add", content: "other" }];
-	await withReviewFixture({ memory: "existing", responses: [overlap(), overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, questions }) => {
+	await withReviewFixture({ memory: "existing", responses: [overlap(), overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, questions, calls }) => {
 		await tool.execute("batch", { operations }, undefined, undefined, ctx);
 		assert.deepEqual(pendingItems(agentDir)[0]!.mutation.operations, operations);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
 		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 1);
+		assert.doesNotMatch(calls[0]!.context.systemPrompt, /repeats that operation's old_text/);
 		assert.match(questions[0]!, /replacement/);
 		assert.match(questions[0]!, /other/);
 		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "replacement\n§\nother");
@@ -2042,6 +2189,7 @@ test("batch adds review the full mutation, while batches without adds bypass rev
 		];
 		await tool.execute("batch-add", { operations }, undefined, undefined, ctx);
 		assert.equal(calls.length, 1);
+		assert.match(calls[0]!.context.systemPrompt, /repeats that operation's old_text/);
 		assert.deepEqual(JSON.parse(calls[0]!.context.messages[0]!.content), {
 			mutation: { target: "memory", operations },
 			sources: { system: "global rule", memory: ["replace me"], user: ["user fact"] },
