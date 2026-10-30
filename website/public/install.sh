@@ -32,7 +32,6 @@ EXTENSIONS='
 @henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-pr
-@henryqw/pi-prompt-creator
 @henryqw/pi-rtk-test
 @henryqw/pi-session-recall
 @henryqw/pi-subagent
