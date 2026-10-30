@@ -73,7 +73,6 @@ export { PI_SUBAGENT_PROCESS_LEASE } from "./process-lease.ts";
 export const ROLE_MCP_POLICY_FLAG = "pi-subagent-role-mcps";
 
 export const ROLE_TOOL_POLICY_FLAG = "pi-subagent-role-tools";
-const CODEMODE_TOOL = "codemode";
 
 /** The value after a flag that must appear exactly once in a child's argv. */
 function flagValueFromArgv(args: readonly string[], flag: string): unknown {
@@ -107,13 +106,6 @@ export function roleToolPolicyFromArgv(args: readonly string[]): string[] {
 	return parseRoleToolPolicy(flagValueFromArgv(args, `--${ROLE_TOOL_POLICY_FLAG}`));
 }
 
-/**
- * Whether a tool policy activates `codemode` in the child, so scripts can reach tools with
- * `codemode` or `deferred` exposure. Loading `builtin:codemode` alone registers the tool inactive.
- */
-export function roleActivatesCodemode(tools: readonly string[]): boolean {
-	return tools.includes(CODEMODE_TOOL);
-}
 export const CHILD_EXCLUDED_TOOL_NAMES = [
 	"delegate_task",
 	"ask_question",
@@ -663,7 +655,9 @@ function prepareRoleLaunchFromSkills(
 		if (typeof value !== "string" || value.includes("\0")) throw new Error(`Invalid launch environment value: ${key}`);
 		return [key, value];
 	}));
-	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", CHILD_EXCLUDED_TOOL_NAMES.join(",")];
+	// Native MCP registry changes can activate tool_search again unless registration is excluded.
+	const excludedTools = [...CHILD_EXCLUDED_TOOL_NAMES, ...(!tools.includes("tool_search") ? ["tool_search"] : [])];
+	const args = ["--no-session", "--no-extensions", "--no-skills", "--exclude-tools", excludedTools.join(",")];
 	args.push(`--${ROLE_MCP_POLICY_FLAG}`, JSON.stringify(mcps));
 	for (const extension of new Set(extensions)) args.push("--extension", extension);
 	for (const skill of skills.paths) args.push("--skill", skill);
@@ -741,7 +735,7 @@ export function prepareRoleLaunch(
 	assertNoMissingRoleSkills(input.role, prepared);
 	// Validate the mcp.json the child reads: its environment inherits Main's, with launch overrides on top.
 	if (input.role.mcps?.length) {
-		loadRoleMcpConfig(prepared.env.PI_CODING_AGENT_DIR ?? getAgentDir(), input.role.mcps, { codemode: roleActivatesCodemode(prepared.tools) });
+		loadRoleMcpConfig(prepared.env.PI_CODING_AGENT_DIR ?? getAgentDir(), input.role.mcps);
 	}
 	return { ...prepared, role };
 }
@@ -755,7 +749,7 @@ export async function resolveConfiguredRoleLaunch(
 	const roleName = parseRoleName(input.role);
 	if (input.modelClass === undefined) throw new Error("Configured Role launch requires an explicit modelClass.");
 	const role = findRole(loadRoleCatalog(), roleName);
-	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps, { codemode: roleActivatesCodemode(role.tools) });
+	if (role.mcps?.length) loadRoleMcpConfig(getAgentDir(), role.mcps);
 	const resources = await resolveRolePackageResources(role, ctx);
 	const effectiveRole: Role = { ...role, extensions: resources.extensions };
 	const namedSkills = resolveRoleSkills(pi, effectiveRole);

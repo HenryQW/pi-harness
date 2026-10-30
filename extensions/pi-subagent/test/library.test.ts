@@ -19,7 +19,6 @@ import {
 	resolveRolePackageResources,
 	ROLE_MCP_POLICY_FLAG,
 	ROLE_TOOL_POLICY_FLAG,
-	roleActivatesCodemode,
 	roleMcpAllowlistFromArgv,
 	roleToolPolicyFromArgv,
 	type Role,
@@ -506,7 +505,18 @@ test("only a Role declaring git_read loads and activates the internal Git tool",
 	} finally { process.argv = originalArgv; }
 });
 
-test("Role MCP allowlists load the native MCP extension with direct exposure only", async (t) => {
+test("Role launch excludes tool_search unless the Role or caller selects it", () => {
+	for (const [tools, additions] of [[[], []], [["tool_search"], []], [[], ["tool_search"]]]) {
+		const launch = createRoleLaunch({ getCommands: () => [] }, { isProjectTrusted: () => true }, {
+			role: { name: "worker", description: "Local discovery", tools, extensions: ["builtin:tool-search"], skills: [], systemPrompt: "Use selected tools." },
+			route: { model, thinkingLevel: "high" }, tools: additions,
+		});
+		assert.equal(valueAfter(launch.args, "--exclude-tools")!.split(",").includes("tool_search"), ![...tools, ...additions].includes("tool_search"));
+		assert.deepEqual(roleToolPolicyFromArgv(launch.args), [...tools, ...additions]);
+	}
+});
+
+test("Role MCP allowlists preserve validated native exposure without automatic codemode", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-subagent-mcp-"));
 	t.after(async () => { await rm(agentDir, { recursive: true, force: true }); });
 	const role: Role = {
@@ -551,16 +561,8 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 			browser: { command: "browser", args: ["--headless"] },
 		},
 	}));
+	// Keep Pi's default when exposure is absent, exclude other servers, and ignore automatic activation.
 	assert.deepEqual(loadRoleMcpConfig(agentDir, role.mcps!), {
-		servers: [
-			{ name: "docs", config: { url: "https://docs.test", exposure: "direct" }, source: mcpPath, scope: "global" },
-			{ name: "browser", config: { command: "browser", args: ["--headless"], exposure: "direct" }, source: mcpPath, scope: "global" },
-		],
-		autoEnableCodemode: false,
-		errors: [],
-	});
-	// A codemode Role keeps each server's configured exposure (Pi defaults an absent one to codemode) and never auto-activates codemode.
-	assert.deepEqual(loadRoleMcpConfig(agentDir, role.mcps!, { codemode: true }), {
 		servers: [
 			{ name: "docs", config: { url: "https://docs.test", exposure: "codemode", toolExposure: { search: "hidden" } }, source: mcpPath, scope: "global" },
 			{ name: "browser", config: { command: "browser", args: ["--headless"] }, source: mcpPath, scope: "global" },
@@ -573,11 +575,9 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		route: { model, thinkingLevel: "high" },
 	});
 	assert.deepEqual(roleToolPolicyFromArgv(codemodeLaunch.args), ["read", "codemode"]);
-	assert.equal(roleActivatesCodemode(roleToolPolicyFromArgv(codemodeLaunch.args)), true);
-	assert.equal(roleActivatesCodemode(roleToolPolicyFromArgv(launch.args)), false);
 	assert.throws(() => roleToolPolicyFromArgv(["pi", "--no-extensions"]), /must appear exactly once/);
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: { url: "https://docs.test", exposure: "codemode-deferred", toolExposure: { "get_*": "codemode-deferred", search: "direct" } } } }));
-	assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"], { codemode: true }).servers[0]!.config, {
+	assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, {
 		url: "https://docs.test", exposure: "codemode", toolExposure: { "get_*": "codemode", search: "direct" },
 	});
 	for (const [docs, message] of [
@@ -585,8 +585,10 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 		[{ url: "https://docs.test", toolExposure: { search: 42 } }, /field "toolExposure" must be an object mapping tool names to exposures\./],
 	] as const) {
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs } }));
-		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"], { codemode: true }), message);
-		assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, { url: "https://docs.test", exposure: "direct" });
+		assert.throws(() => loadRoleMcpConfig(agentDir, ["docs"]), message);
+		assert.throws(() => prepareRoleLaunch(pi, { isProjectTrusted: () => true, model, scopedModels: [], modelRegistry: { getAvailable: () => [model] } }, {
+			role: { ...role, mcps: ["docs"] }, route: { model, thinkingLevel: "high" }, env: { PI_CODING_AGENT_DIR: agentDir },
+		}), message);
 	}
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["docs", "missing"]), /Role MCP servers are not configured: missing\./);
 	for (const [docs, message] of [
@@ -620,12 +622,12 @@ test("Role MCP allowlists load the native MCP extension with direct exposure onl
 	for (const clientRegistration of ["dcr", "cimd"]) {
 		const config = { url: "https://docs.test", oauth: { clientRegistration, callbackUrl: "http://127.0.0.1:8080/callback", callbackPort: 8080 } };
 		await writeFile(mcpPath, JSON.stringify({ mcpServers: { docs: config } }));
-		assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, { ...config, exposure: "direct" });
+		assert.deepEqual(loadRoleMcpConfig(agentDir, ["docs"]).servers[0]!.config, config);
 	}
 	await writeFile(mcpPath, JSON.stringify({ mcpServers: { secure, loopback, oauth, "dev-docs": secure, dev_docs: secure, "dev docs": secure } }));
 	assert.deepEqual(
 		loadRoleMcpConfig(agentDir, ["secure", "loopback", "oauth"]).servers.map((server) => server.config),
-		[{ ...secure, exposure: "direct" }, { ...loopback, exposure: "direct" }, { ...oauth, exposure: "direct" }],
+		[secure, loopback, oauth],
 	);
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["dev-docs", "dev_docs"]), /Role MCP server "dev_docs" conflicts with "dev-docs"/);
 	assert.throws(() => loadRoleMcpConfig(agentDir, ["dev docs"]), /MCP server "dev docs" has an invalid name/);
@@ -718,7 +720,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 	assert.deepEqual(launch.missingSkills, []);
 	assert.deepEqual(launch.args.slice(0, 5), [
 		"--no-session", "--no-extensions", "--no-skills",
-		"--exclude-tools", "delegate_task,ask_question,subagent_status,subagent_resume,subagent_stage,subagent_abort,subagent_workspace",
+		"--exclude-tools", "delegate_task,ask_question,subagent_status,subagent_resume,subagent_stage,subagent_abort,subagent_workspace,tool_search",
 	]);
 	assert.deepEqual(valuesAfter(launch.args, "--extension").slice(0, 2), ["/roles/reviewer.ts", "/caller/adapter.ts"]);
 	assert.equal(valuesAfter(launch.args, "--extension").filter((path) => path.endsWith("/pi-multi-codex/extensions/multi-codex.ts")).length, 1);
@@ -736,7 +738,7 @@ test("Role launch resolves call, Role, then Model Task routes", async (t) => {
 		"You are a delegated Pi Subagent, not Main. Execute the assigned Role and task directly. Main-only delegation rules do not apply. Recursive delegation is unavailable; do not seek or invoke delegation tools.\n\nReview only the requested change.",
 	);
 
-	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,subagent_status,subagent_resume,subagent_stage,subagent_abort,subagent_workspace");
+	assert.equal(valueAfter(launch.args, "--exclude-tools"), "delegate_task,ask_question,subagent_status,subagent_resume,subagent_stage,subagent_abort,subagent_workspace,tool_search");
 
 	const missingRole = { ...role, skills: [...role.skills, "missing"] };
 	assert.throws(
