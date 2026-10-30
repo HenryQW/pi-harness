@@ -1537,6 +1537,39 @@ test("review applies exact merge or replacement only after a second review", asy
 	}
 });
 
+test("review tolerates replacement overlap with the replaced entry and names any other conflict", async () => {
+	const conflicting = (evidence: string): ReviewReply => (call) => {
+		const { mutation } = JSON.parse(call.context.messages[0]!.content);
+		if (mutation.action === "replace") return JSON.stringify({ verdict: "overlap", source: "memory", evidence, explanation: "Same fact." });
+		return JSON.stringify({ verdict: "overlap", source: "memory", evidence: "existing", explanation: "Same fact.", proposedMerge: "merged" });
+	};
+	for (const action of ["Merge", "Replace"]) {
+		await withReviewFixture({
+			memory: "existing\n§\nother fact", responses: [conflicting("existing"), conflicting("existing"), conflicting("existing")],
+			select: (choices) => choices.find((choice) => choice.includes(action)),
+		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
+			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+			await commands.get("memory-review")!.handler("", ctx);
+			const request = JSON.parse(calls.at(-1)!.context.messages[0]!.content);
+			assert.deepEqual(request.mutation, { target: "memory", action: "replace", old_text: "existing", content: action === "Merge" ? "merged" : "candidate" });
+			assert.ok(request.sources.memory.includes("existing"));
+			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), `${action === "Merge" ? "merged" : "candidate"}\n§\nother fact`);
+			assert.equal(pendingItems(agentDir).length, 0);
+		});
+	}
+
+	await withReviewFixture({
+		memory: "existing\n§\nother fact", responses: [conflicting("other fact"), conflicting("other fact"), conflicting("other fact")],
+		select: (choices) => choices.find((choice) => choice.includes("Merge with existing entries")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(pendingItems(agentDir).length, 1);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\nother fact");
+		assert.ok(notifications.some((text) => /still conflicts with another MEMORY entry: "other fact"/.test(text)), notifications.join("\n"));
+	});
+});
+
 test("review preserves and applies a complete atomic batch", async () => {
 	const operations = [{ action: "remove", old_text: "existing" }, { action: "add", content: "replacement" }, { action: "add", content: "other" }];
 	await withReviewFixture({ memory: "existing", responses: [overlap(), overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, questions }) => {

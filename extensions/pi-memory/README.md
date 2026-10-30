@@ -54,7 +54,7 @@ Automatic conflicts enter a private, durable review inbox. They never open a dia
 
 Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and runs candidate review again before it shows each complete mutation. Approval applies the complete mutation, not selected parts of a batch.
 
-For a single add with one same-store conflict, the command offers replacement, discard, and merge when the reviewer supplies an exact merge. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
+For a single add with one same-store conflict, the command offers replacement, discard, and merge when the reviewer supplies an exact merge. A merge or replacement gets another review, and overlap with the entry it replaces is expected because the same write removes that text. A conflict with any other source blocks that write, names the evidence, and retains the candidate. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
 
 **Review later** is selected by default. Press Esc to stop and retain the candidate. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
 
