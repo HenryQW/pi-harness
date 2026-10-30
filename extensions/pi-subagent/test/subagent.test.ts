@@ -14,6 +14,7 @@ import { PI_SUBAGENT_PROCESS_LEASE, ROLE_TOOL_POLICY_FLAG } from "@henryqw/pi-su
 import { registerCheckoutAdmission } from "../extensions/admission.ts";
 import roleTools from "../extensions/role-tools.ts";
 import subagentExtension from "../extensions/subagent.ts";
+import { createDirectHerdr } from "../src/direct-herdr.ts";
 
 type Tool = {
 	name: string;
@@ -1222,7 +1223,7 @@ test("direct prompt acknowledges before turn settlement and accepts an already s
 	});
 });
 
-test("direct idle wait timeout accepts the persisted answer before another wait", async () => {
+test("direct idle wait accepts the exact answer after a killed command returns a complete timeout", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
 		await herdrEnvironment(async (cwd) => {
@@ -1235,16 +1236,60 @@ test("direct idle wait timeout accepts the persisted answer before another wait"
 					return { ...response, stdout: JSON.stringify(body) };
 				}
 				if (args[0] === "agent" && args[1] === "wait") {
-					return { code: 1, stdout: JSON.stringify({ error: { code: "timeout" } }), stderr: "" };
+					return { code: 1, killed: true, stdout: "", stderr: '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:wait"}' };
 				}
 				return response;
 			} });
 			app.handlers.get("session_start")?.({}, app.ctx);
 			await app.tool.execute("idle-timeout", { role: "worker", name: "Inspect", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
 			await waitFor(() => app.sentMessages.length === 1);
+			assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "succeeded");
 			assert.equal(app.sentMessages[0]!.message.details.entries[0].summary, "answer after timeout");
 			assert.equal(fake.calls.filter((args) => args[0] === "agent" && args[1] === "wait").length, 1);
 		});
+	});
+});
+
+test("direct answer retries only complete wait timeouts without caller cancellation", async (t) => {
+	await herdrEnvironment(async (cwd) => {
+		const timeout = '{"error":{"code":"timeout","message":"timed out waiting for agent status"},"id":"cli:agent:wait"}';
+		for (const scenario of ["timeout", "killed-timeout", "cancelled-timeout", "cancelled-killed-timeout", "other-error", "killed-other-error", "incomplete-timeout", "killed-success", "changed-identity"] as const) {
+			const controller = new AbortController();
+			const fake = fakeHerdr(cwd, () => "exact answer after another wait");
+			let waits = 0;
+			const exec: ExtensionAPI["exec"] = async (_command, args) => {
+				if (args[0] === "agent" && args[1] === "wait") {
+					waits++;
+					if (waits === 1) {
+						if (scenario.startsWith("cancelled")) controller.abort();
+						if (scenario === "killed-success") return { ...await fake.exec(args), killed: true };
+						return { code: 1, killed: scenario !== "timeout" && scenario !== "cancelled-timeout" && scenario !== "other-error", stdout: "",
+							stderr: scenario.endsWith("other-error") ? timeout.replace('"timeout"', '"agent_not_found"')
+								: scenario === "incomplete-timeout" ? timeout.slice(0, -1) : timeout };
+					}
+				}
+				const response = await fake.exec(args);
+				if (args[1] === "wait" && scenario === "changed-identity") {
+					const body = JSON.parse(response.stdout);
+					body.result.agent.pane_id = "foreign-pane";
+					return { ...response, killed: false, stdout: JSON.stringify(body) };
+				}
+				return { ...response, killed: false };
+			};
+			const handle = await createDirectHerdr({ exec }, cwd, 1000).start({
+				args: ["--no-session"], env: {}, tools: ["read"], thinkingLevel: "low", missingSkills: [],
+				model: { ...model, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+			}, "worker", "Wait", "inspect", controller.signal, (tab) => {
+				t.after(() => rm(dirname(tab.sessionFile), { recursive: true, force: true }));
+			});
+			if (scenario === "timeout" || scenario === "killed-timeout") {
+				assert.deepEqual(await handle.answer(1000), { text: "exact answer after another wait", inline: "exact answer after another wait" }, scenario);
+				assert.equal(waits, 2, scenario);
+			} else {
+				await assert.rejects(handle.answer(1000), scenario === "changed-identity" ? /identity or readiness/ : /herdr agent wait failed/, scenario);
+				assert.equal(waits, scenario === "changed-identity" ? 2 : 1, scenario);
+			}
+		}
 	});
 });
 
@@ -1500,7 +1545,7 @@ test("repeated Herdr wait timeouts stop after idle policy without imposing a tas
 			const fake = fakeHerdr(cwd, undefined, undefined, "working", true);
 			const app = harness({ cwd, herdr: async (args) => {
 				const result = await fake.exec(args);
-				if (args[0] === "agent" && args[1] === "wait") t.mock.timers.tick(2);
+				if (args[0] === "agent" && args[1] === "wait") { t.mock.timers.tick(2); return { ...result, killed: true }; }
 				return result;
 			} });
 			app.handlers.get("session_start")?.({}, app.ctx);

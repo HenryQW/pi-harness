@@ -516,7 +516,8 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 							"--timeout", String(Math.max(1, Math.min(current === "idle" ? 1000 : OPERATION_MS - 1000, remaining)))];
 						const waited = await herdr.exec(args, options(signal));
 						if (waited.code !== 0 || waited.killed) {
-							if (!waited.killed && hasHerdrErrorCode(waited, "timeout")) {
+							// A complete timeout permits another read-only wait, even if exec killed the command.
+							if (!signal.aborted && hasHerdrErrorCode(waited, "timeout")) {
 								continue;
 							}
 							throw new Error(herdrCommandFailure(args, waited));
