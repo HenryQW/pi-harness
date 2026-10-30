@@ -1522,19 +1522,58 @@ test("restart, cancellation, and session switching retain candidates and isolate
 	});
 });
 
-test("review applies exact merge or replacement only after a second review", async () => {
+test("review applies an exact merge or replacement the stored verdict offers", async () => {
 	for (const action of ["Merge", "Replace"]) {
 		await withReviewFixture({
-			memory: "existing", responses: [overlap(), overlap("existing", "merged")],
+			memory: "existing", responses: [overlap("existing", "merged")],
 			select: (choices) => choices.find((choice) => choice.includes(action)),
 		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
 			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
 			await commands.get("memory-review")!.handler("", ctx);
-			assert.equal(calls.length, 3);
+			// One candidate review plus the follow-up review of the chosen write: the dialog reused the stored verdict.
+			assert.equal(calls.length, 2);
 			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), action === "Merge" ? "merged" : "candidate");
 			assert.equal(pendingItems(agentDir).length, 0);
 		});
 	}
+});
+
+test("review reuses the stored verdict and reviews again only after sources change", async () => {
+	await withReviewFixture({
+		memory: "existing", responses: [overlap("existing", "merged"), overlap("other")],
+		select: (choices) => choices.find((choice) => choice.includes("Review later")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		assert.ok(pendingItems(agentDir)[0]!.sources);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 1);
+		assert.equal(pendingItems(agentDir).length, 1);
+		await writeFile(join(memoryDir, "MEMORY.md"), "existing\n§\nother");
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 2);
+		assert.equal(pendingItems(agentDir).length, 1);
+		// The refreshed verdict and fingerprint are stored, so the next open reuses them.
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 2);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\nother");
+	});
+});
+
+test("candidates from an inbox without a stored verdict are still reviewed once", async () => {
+	await withReviewFixture({
+		memory: "existing", responses: [overlap(), overlap("existing", "merged")],
+		select: (choices) => choices.find((choice) => choice.includes("Discard")),
+	}, async ({ agentDir, memoryDir, tool, ctx, commands, calls, questions }) => {
+		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await reviewInboxStore(validateMutation, agentDir).update(({ items }) => ({
+			items: items.map((item) => ({ id: item.id, group: item.group, directory: item.directory, mutation: item.mutation })),
+		}));
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.equal(calls.length, 2);
+		assert.match(questions[0]!, /existing/);
+		assert.equal(pendingItems(agentDir).length, 0);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing");
+	});
 });
 
 test("review preserves and applies a complete atomic batch", async () => {
@@ -1724,7 +1763,7 @@ test("other sessions' inbox writes refresh the count-only widget", async () => {
 
 test("a saved mutation with failed inbox cleanup is reported and retained", async (t) => {
 	await withReviewFixture({ memory: "existing", responses: [overlap()], select: (choices) => choices.find((choice) => choice.includes("Save complete mutation")) }, async ({ agentDir, memoryDir, tool, ctx, commands, notifications }) => {
-		await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
+		await tool.execute("queue", { operations: [{ action: "add", content: "candidate" }, { action: "add", content: "second" }] }, undefined, undefined, ctx);
 		const rename = fs.rename;
 		const failure = t.mock.method(fs, "rename", async (...args: Parameters<typeof rename>) => {
 			if (args[1] === join(agentDir, "config", "pi-memory", "review-inbox.json")) throw new Error("PRIVATE_CLEANUP_SENTINEL");
@@ -1734,12 +1773,12 @@ test("a saved mutation with failed inbox cleanup is reported and retained", asyn
 		try { await commands.get("memory-review")!.handler("", ctx); }
 		finally { failure.mock.restore(); syncBuiltinESMExports(); }
 		assert.doesNotMatch(notifications.join("\n"), /PRIVATE_CLEANUP_SENTINEL/);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate\n§\nsecond");
 		assert.equal(pendingItems(agentDir).length, 1);
 		assert.ok(notifications.some((message) => message.includes("Memory was saved, but inbox removal failed")));
 		await commands.get("memory-review")!.handler("", ctx);
 		assert.equal(pendingItems(agentDir).length, 0);
-		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate");
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), "existing\n§\ncandidate\n§\nsecond");
 	});
 });
 

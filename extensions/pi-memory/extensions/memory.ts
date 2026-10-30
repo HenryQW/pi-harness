@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { unwatchFile, watchFile } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, opendir, realpath, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
@@ -26,7 +26,7 @@ import { Container, matchesKey, ScrollView, SelectList, Spacer, Text } from "@ea
 import { lock } from "proper-lockfile";
 import { Type } from "typebox";
 import { memoryConfigStore, type MemoryConfig } from "../src/config.ts";
-import { reviewGroup, reviewInboxStore, type InboxItem, type MemoryMutation } from "../src/inbox.ts";
+import { reviewGroup, reviewInboxStore, REVIEW_MAX_EVIDENCE_CHARS, REVIEW_MAX_EXPLANATION_CHARS, REVIEW_MAX_MERGE_CHARS, type InboxItem, type MemoryMutation, type StoredReview } from "../src/inbox.ts";
 import {
 	ENTRY_DELIMITER,
 	isEnoent,
@@ -91,9 +91,6 @@ EXCLUDE: project/repository facts (build commands, conventions, architecture) do
 SKIP: trivial/obvious or rediscoverable information, raw dumps, task progress, completed-work logs, and temporary TODOs. Reusable procedures belong in skills, not memory.`;
 
 const REVIEW_MAX_RESPONSE_CHARS = 6_000;
-const REVIEW_MAX_EVIDENCE_CHARS = 2_000;
-const REVIEW_MAX_MERGE_CHARS = 2_000;
-const REVIEW_MAX_EXPLANATION_CHARS = 800;
 const REVIEW_MAX_TOKENS = 1_200;
 // One token per UTF-8 byte safely covers arbitrary model tokenizers,
 // including input that yields one-byte tokens. JSON contains the exact Context.
@@ -110,9 +107,7 @@ type ValidatedMutation =
 	| { kind: "single"; operation: MemoryOperation }
 	| { kind: "batch"; operations: [MemoryOperation, ...MemoryOperation[]] };
 type ReviewSource = "system" | Target;
-type CandidateReview =
-	| { verdict: "distinct"; explanation: string }
-	| { verdict: "overlap" | "contradiction"; explanation: string; source: ReviewSource; evidence: string; proposedMerge?: string };
+type CandidateReview = StoredReview;
 class MemoryReviewError extends Error {}
 
 async function readSystemSource(path: string): Promise<SystemSource> {
@@ -168,6 +163,15 @@ async function loadReviewSnapshot(
 		return { state: loaded.state, raw: loaded.raw, entries: loaded.entries };
 	};
 	return { system, stores: { memory: source("memory", memory), user: source("user", user) } };
+}
+
+/** Identifies the exact sources a review saw; mirrors the fields `sameReviewSnapshot` compares. */
+function reviewFingerprint(snapshot: ReviewSnapshot): string {
+	return createHash("sha256").update(JSON.stringify([
+		snapshot.system.state, snapshot.system.raw,
+		snapshot.stores.memory.state, snapshot.stores.memory.raw,
+		snapshot.stores.user.state, snapshot.stores.user.raw,
+	])).digest("hex");
 }
 
 function sameReviewSnapshot(left: ReviewSnapshot, right: ReviewSnapshot): boolean {
@@ -1209,7 +1213,7 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 				})),
 			};
 			const validated = validateMutation(mutation);
-			const pending = typeof origin === "object" ? origin : undefined;
+			let pending = typeof origin === "object" ? origin : undefined;
 			if (pending && (pending.group !== state.group || pending.directory !== await realpath(state.config.directory))) {
 				throw new MemoryReviewError("Review group or memory directory changed; candidate retained.");
 			}
@@ -1283,14 +1287,29 @@ export default function memoryExtension(pi: ExtensionAPI): void {
 			});
 			if (duplicate && !pending) return duplicate;
 
-			const review: CandidateReview = duplicate ? { verdict: "distinct", explanation: "The complete addition already exists; approval adds no duplicate." } : await reviewMutation(mutation, snapshot, ctx, signal);
+			// Replay the review stored with the candidate while its sources are unchanged: reopening a candidate must not depend on another model run.
+			const fingerprint = reviewFingerprint(snapshot);
+			const stored = pending?.review && pending.sources === fingerprint && (pending.review.verdict === "distinct" || exactEvidence(snapshot, pending.review.source, pending.review.evidence)) ? pending.review : undefined;
+			const review: CandidateReview = duplicate ? { verdict: "distinct", explanation: "The complete addition already exists; approval adds no duplicate." } : stored ?? await reviewMutation(mutation, snapshot, ctx, signal);
 			signal?.throwIfAborted();
 			if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed during memory review; nothing was written.");
+			if (pending && !stored) {
+				const refreshed: InboxItem = { ...pending, review, sources: fingerprint };
+				try {
+					await inbox.update((current) => {
+						if (!current.items.some((entry) => entry.id === pending!.id)) throw new MemoryReviewError("Inbox candidate changed or was already resolved.");
+						return { items: current.items.map((entry) => entry.id === pending!.id ? refreshed : entry) };
+					});
+				} catch (error) {
+					throw new MemoryReviewError(`Cannot store the refreshed review in the review inbox; nothing was written. ${error instanceof Error ? error.message : String(error)}`);
+				}
+				pending = refreshed;
+			}
 			let resolved: Extract<MemoryOperation, { action: "replace" }> | undefined;
 			if (review.verdict !== "distinct" && !origin) {
 				if (!state.group) throw new MemoryReviewError(`${state.groupError ?? "Memory review group is unavailable"} Candidate was not saved to the inbox or memory.`);
 				try {
-					const item: InboxItem = { id: randomUUID(), group: state.group, directory: await realpath(state.config.directory), mutation };
+					const item: InboxItem = { id: randomUUID(), group: state.group, directory: await realpath(state.config.directory), mutation, review, sources: fingerprint };
 					await inbox.update((current) => {
 						if (expectedGeneration !== state.sessionGeneration) throw new MemoryReviewError("Session changed; candidate was not saved.");
 						return { items: [...current.items, item] };
