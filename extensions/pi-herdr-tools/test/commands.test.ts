@@ -138,6 +138,55 @@ test(`shared-job scanning ${compromised ? "rejects a compromised foreign-session
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test("shared recovery refuses a pipe in completed history without holding its lock or granting writes", async (t) => {
+	const f = await fixture(t, "true", { sessionId: "historical-session" });
+	const claim = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: f.spec.workspaceId, tabId: "tab", paneId: "pane" };
+	await writePrivate(join(f.dir, "claim.json"), claim);
+	await atomicState(f.dir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+	const root = join(f.root, "config", "pi-herdr-tools", "commands");
+	await mkdir(root, { recursive: true, mode: 0o700 });
+	const dir = join(root, f.spec.id);
+	await cp(f.dir, dir, { recursive: true });
+	const file = join(dir, "dispatch.json");
+	assert.equal(spawnSync("mkfifo", ["-m", "600", file]).status, 0);
+	const script = `import assert from "node:assert/strict";
+		import { lstat, readFile, readdir } from "node:fs/promises";
+		import { EventEmitter } from "node:events";
+		import { registerCommands } from ${JSON.stringify(new URL("../internal/commands.ts", import.meta.url).href)};
+		process.env.PI_CODING_AGENT_DIR = process.argv[1];
+		const handlers = new Map(), bus = new EventEmitter();
+		const pi = { events: bus, on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); }, registerTool() {}, registerCommand() {} };
+		const manager = registerCommands(pi);
+		const file = process.argv[2] + "/dispatch.json";
+		const before = await readFile(process.argv[2] + "/state.json");
+		const expected = { message: "Unsafe command state file: " + file };
+		await assert.rejects(async () => { for (const fn of handlers.get("session_start")) await fn({}, {}); }, expected);
+		await assert.rejects(manager.refresh(), expected);
+		const gate = await handlers.get("tool_call")[0]({ toolCallId: "edit", toolName: "edit", input: {} }, {});
+		assert.equal(gate.block, true);
+		await assert.rejects(manager.guardRemoval(process.argv[1]), expected);
+		assert.ok((await lstat(file)).isFIFO());
+		assert.deepEqual(await readFile(process.argv[2] + "/state.json"), before);
+		assert.ok((await readdir(manager.root)).every(name => !name.endsWith(".lock")));`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, f.root, dir], { encoding: "utf8", timeout: 5000 });
+	assert.equal(result.error, undefined, result.stderr);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("command output refuses a pipe without waiting for a writer", async (t) => {
+	const f = await fixture(t, "true");
+	const file = join(f.dir, "output.log");
+	assert.equal(spawnSync("mkfifo", ["-m", "600", file]).status, 0);
+	const script = `import assert from "node:assert/strict";
+		import { lstat } from "node:fs/promises";
+		import { outputTail, readJob } from ${JSON.stringify(new URL("../internal/command-state.ts", import.meta.url).href)};
+		await assert.rejects(outputTail(await readJob(process.argv[1])), { message: "Unsafe command output file." });
+		assert.ok((await lstat(process.argv[1] + "/output.log")).isFIFO());`;
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, f.dir], { encoding: "utf8", timeout: 5000 });
+	assert.equal(result.error, undefined, result.stderr);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test("malformed private files are refused and never replaced", async (t) => {
 	const f = await fixture(t, "true");
 	const file = join(f.dir, "claim.json");
