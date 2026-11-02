@@ -7,6 +7,7 @@ import { createConfigStore, extensionConfigDir, field, parsers, registerConfigRe
 import { lock } from "proper-lockfile";
 import {
 	createAssistantMessageEventStream,
+	InMemoryCredentialStore,
 	type AssistantMessageEventStream,
 	type ApiStreamOptions,
 	type AssistantMessage,
@@ -21,6 +22,7 @@ import {
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
 	getAgentDir,
+	ModelRuntime,
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -733,16 +735,19 @@ function aliasStream(
 	return output;
 }
 
-export function createCodexAliasProvider(native: CodexProvider, slot: number): CodexProvider {
+export function createCodexAliasProvider(
+	native: CodexProvider,
+	slot: number,
+	getModels: () => readonly Model<any>[] = () => native.getModels(),
+): CodexProvider {
 	const providerId = `${NATIVE_PROVIDER_ID}-${slot}`;
-	const models = native.getModels().map((model) => aliasModel(model, providerId));
 	const provider: CodexProvider = {
 		id: providerId,
 		name: `OpenAI Codex #${slot}`,
 		baseUrl: native.baseUrl,
 		headers: native.headers,
 		auth: native.auth,
-		getModels: () => models,
+		getModels: () => getModels().filter((model): model is CodexModel => model.api === "openai-codex-responses").map((model) => aliasModel(model, providerId)),
 		stream: (model, context, options?: ApiStreamOptions<"openai-codex-responses">) =>
 			aliasStream(native.stream(aliasModel(model, NATIVE_PROVIDER_ID), nativeContext(context, providerId), options), model, providerId),
 		streamSimple: (model, context, options?: SimpleStreamOptions) =>
@@ -785,9 +790,12 @@ function sessionHasAgentWork(ctx: ExtensionContext): boolean {
 	);
 }
 
-export default function multiCodex(pi: ExtensionAPI): void {
+export default async function multiCodex(pi: ExtensionAPI): Promise<void> {
 	const native = builtinProviders().find((provider) => provider.id === NATIVE_PROVIDER_ID) as CodexProvider | undefined;
 	if (!native) return;
+	// Factories have no session registry. Restore Pi's composed catalog before startup model selection.
+	const catalog = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), refreshOnCreate: false });
+	await catalog.refresh({ providers: [NATIVE_PROVIDER_ID], allowNetwork: false });
 	const quota = new CodexQuotaStatus(() => {
 		if (!sessionContext) return;
 		syncSlots();
@@ -809,7 +817,9 @@ export default function multiCodex(pi: ExtensionAPI): void {
 
 	const registerSlot = (slot: number): void => {
 		if (slot === 1 || registered.has(slot)) return;
-		pi.registerProvider(createCodexAliasProvider(native, slot));
+		pi.registerProvider(createCodexAliasProvider(native, slot, () => sessionContext
+			? sessionContext.modelRegistry.getModelsOfType("chat", NATIVE_PROVIDER_ID)
+			: catalog.getModels(NATIVE_PROVIDER_ID)));
 		registered.add(slot);
 	};
 

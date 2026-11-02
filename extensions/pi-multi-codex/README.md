@@ -35,6 +35,8 @@ Status stays `unavailable` until a successful usage snapshot.
 
 ## Flow
 
+Numbered slots use the native `openai-codex` model catalog, including cached updates at startup. During a session, slots follow native catalog refreshes. Provider-specific `models.json` entries and overrides still apply.
+
 Eligible slots must be authenticated, registered, and scope-allowed, without known active five-hour quota blocks.
 
 Before first agent work, the extension selects the eligible slot with the most fresh remaining quota. It repeats this selection before later starts only for a known active five-hour quota block. Explicit model selection wins for the next agent start.
