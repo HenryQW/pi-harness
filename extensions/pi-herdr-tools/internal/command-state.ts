@@ -74,7 +74,8 @@ export async function readPrivate(file: string, max = 65_536): Promise<unknown |
 }
 async function readPrivateUnlocked(file: string, max = 65_536): Promise<unknown | undefined> {
 	let handle;
-	try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
+	// A pipe must not block open before the file-type check while we hold the job lock.
+	try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 	try {
 		const info = await handle.stat();
@@ -168,7 +169,7 @@ export async function cancelJob(job: Job): Promise<void> {
 }
 export async function outputTail(job: Job): Promise<string> {
 	let handle;
-	try { handle = await open(job.outputPath, constants.O_RDONLY | constants.O_NOFOLLOW); }
+	try { handle = await open(job.outputPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw error; }
 	try {
 		const info = await handle.stat();
