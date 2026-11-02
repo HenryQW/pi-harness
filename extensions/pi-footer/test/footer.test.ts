@@ -107,7 +107,7 @@ test("renders family status on the first line and external statuses beside runti
 	const ctx = {
 		mode: "tui",
 		cwd: "/Users/me/.herdr/worktrees/repo/worktree-clear-field-f8d2",
-		model: { id: "gpt-5.6-luna" },
+		model: { id: "gpt-5.6-luna", provider: "openai-codex" },
 		get thinkingLevel() { return thinkingLevel; },
 		sessionManager: { getEntries: () => entries },
 		getContextUsage: () => ({ tokens: 84_680, contextWindow: 200_000, percent: 42.34 }),
@@ -136,7 +136,7 @@ test("renders family status on the first line and external statuses beside runti
 	assert.match(rendered[0]!, /\x1b\]8;;vscode:\/\/file\/Users\/me\/\.herdr\/worktrees\/repo\/worktree-clear-field-f8d2\x1b\\/);
 	assert.ok(colors.some(([color, text]) => color === "accent" && text === "clear-field-f8d2"));
 	const usageText = "↑ 3.2k · ↓ 500 · ↺ 50.0% · ⚡ — · $ 0.390 · ◔ 42.3%";
-	const modelText = "gpt-5.6-luna • high";
+	const modelText = "openai-codex/gpt-5.6-luna • high";
 	assert.match(stripTerminalSequences(rendered[0]!), /^repo · clear-field-f8d2 · PR #123 · approved +Codex #1 · 50% · 7d 1d 1h 22m$/);
 	assert.match(stripTerminalSequences(rendered[1]!), new RegExp(`^${usageText.replace("$", "\\$")} +${modelText}$`));
 	assert.match(stripTerminalSequences(rendered[2]!), /^↩ rewind · ●  🐴\tponytail: ⚡ FULL ready +◷ 0s$/);
@@ -208,7 +208,7 @@ test("shows the routed physical model under a virtual selection", async () => {
 	const entries = [haiku, response("claude-sonnet-4-5", "stop"), response("claude-opus-4-5", "error")];
 	let branch = entries;
 	let leaf = "failed";
-	let model = { id: "auto", api: "pi-virtual" };
+	let model = { id: "auto", api: "pi-virtual", provider: "pi" };
 	let contextReads = 0;
 	const factory = await start({
 		mode: "tui",
@@ -225,20 +225,67 @@ test("shows the routed physical model under a virtual selection", async () => {
 	);
 	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
 	// The failed response is skipped; the routed level is omitted when the response has none.
-	assert.equal(modelText(), "auto • high → claude-sonnet-4-5");
+	assert.equal(modelText(), "pi/auto • high → anthropic/claude-sonnet-4-5");
 	// Context usage is a full session scan, so unchanged frames reuse it.
 	assert.match(footer.render(100)[1]!, /◔ 1\.0%/);
 	assert.equal(contextReads, 1);
 	// Tree navigation changes the branch and leaf and refreshes the routed model.
 	branch = [haiku];
 	leaf = "haiku";
-	assert.match(footer.render(100)[1]!, /◔ 2\.0%.*→ claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
-	model = { id: "claude-sonnet-4-5", api: "anthropic-messages" };
-	assert.equal(modelText(), "claude-sonnet-4-5 • high");
+	assert.match(footer.render(100)[1]!, /◔ 2\.0%.*→ anthropic\/claude-haiku-4-5 • \x1b\[38;5;118mmedium\x1b\[39m$/);
+	model = { id: "claude-sonnet-4-5", api: "anthropic-messages", provider: "anthropic" };
+	assert.equal(modelText(), "anthropic/claude-sonnet-4-5 • high");
 	assert.match(footer.render(100)[1]!, /◔ 3\.0%/);
 	entries.push(haiku);
 	assert.match(footer.render(100)[1]!, /◔ 4\.0%/);
 	assert.equal(contextReads, 4);
+	footer.dispose();
+});
+
+test("shows the selected model with its provider", async () => {
+	const { start } = setupFooter();
+	let model: { id: string; provider: string } | undefined = { id: "deepseek-v4.1-flash", provider: "opencode-go" };
+	const factory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		get model() { return model; },
+		thinkingLevel: "high",
+		sessionManager: { getEntries: () => [] },
+		getContextUsage: () => undefined,
+	});
+	const footer = factory(
+		{ requestRender() {} },
+		{ fg: (_color, text) => text },
+		{ getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
+	assert.equal(modelText(), "opencode-go/deepseek-v4.1-flash • high");
+	// One model ID can arrive through several providers, so the provider stays visible.
+	model = { id: "deepseek-v4.1-flash", provider: "deepseek" };
+	assert.equal(modelText(), "deepseek/deepseek-v4.1-flash • high");
+	model = undefined;
+	assert.equal(modelText(), "no-model • high");
+	footer.dispose();
+});
+
+test("shows a provider-less routed model for legacy responses", async () => {
+	const { start } = setupFooter();
+	const entries = [{ type: "message", message: { role: "assistant", model: "claude-sonnet-4-5", stopReason: "stop", usage: usage(0, 0, 0, 0) } }];
+	const factory = await start({
+		mode: "tui",
+		cwd: "/repo",
+		model: { id: "auto", api: "pi-virtual", provider: "pi" },
+		thinkingLevel: "high",
+		sessionManager: { getEntries: () => entries, getBranch: () => entries, getLeafId: () => null },
+		getContextUsage: () => undefined,
+	});
+	const footer = factory(
+		{ requestRender() {} },
+		{ fg: (_color, text) => text },
+		{ getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+	);
+	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
+	assert.equal(modelText(), "pi/auto • high → claude-sonnet-4-5");
 	footer.dispose();
 });
 

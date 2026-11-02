@@ -41,7 +41,9 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 
 Token and cost totals include reported tool usage and completed `pi-subagent` background workflows. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
 
-Virtual models show the latest successful physical model and thinking level after an arrow: `auto • high → gpt-5.6-luna • medium`.
+The model name includes its provider, so one model ID that several providers serve stays distinguishable: `opencode-go/deepseek-v4.1-flash • high`. A missing model shows `no-model`.
+
+Virtual models show the latest successful physical model and thinking level after an arrow: `router/auto • high → openai-codex/gpt-5.6-luna • medium`.
 
 Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after completion. Middle dots separate statuses.
 
