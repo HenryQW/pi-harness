@@ -169,14 +169,15 @@ function rainbow(text: string): string {
 	return [...text].map((character, index) => color(character, colors[index % colors.length]!)).join("");
 }
 
-/** Physical model and thinking level of the latest successful response on the branch; failed and aborted requests are skipped. */
+/** Physical model as `provider/model`, and thinking level, of the latest successful response on the branch; failed and aborted requests are skipped. */
 function latestResponse(ctx: ExtensionContext): { model: string; thinkingLevel?: string } | undefined {
 	const branch = ctx.sessionManager.getBranch();
 	for (let index = branch.length - 1; index >= 0; index--) {
 		const entry = branch[index]!;
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const { stopReason, model, thinkingLevel } = entry.message;
-		if (stopReason !== "error" && stopReason !== "aborted") return { model, thinkingLevel };
+		const { stopReason, provider, model, thinkingLevel } = entry.message;
+		// Legacy responses can lack a provider, so fall back to the bare model rather than show "undefined/".
+		if (stopReason !== "error" && stopReason !== "aborted") return { model: provider ? `${provider}/${model}` : model, thinkingLevel };
 	}
 }
 
@@ -394,7 +395,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						const thinkingColor = THINKING_COLORS[level as keyof typeof THINKING_COLORS];
 						return level === "ultra" ? rainbow(level) : thinkingColor === undefined ? theme.fg("dim", level) : color(level, thinkingColor);
 					};
-					const selected = paintFooter(theme, footerColors.model, "dim", `${ctx.model?.id ?? "no-model"}`) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
+					const selected = paintFooter(theme, footerColors.model, "dim", `${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model"}`) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
 					// Under a virtual selection, show where the latest request went, as Pi's own footer does.
 					const model = ctx.model?.api === VIRTUAL_MODEL_API && routed
 						? selected + sep(" → ") + paintFooter(theme, footerColors.model, "dim", routed.model) + (routed.thinkingLevel ? sep(" • ") + thinkingText(routed.thinkingLevel) : "")
