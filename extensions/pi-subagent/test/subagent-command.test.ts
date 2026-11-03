@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type KeybindingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, getKeybindings, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, getKeybindings, KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../src/discard.ts";
 import { registerSubagentCommand, reportMarkdown, type IsolatedInventory, type PrunePlan, type Report, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
@@ -20,7 +20,7 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
+function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
@@ -87,6 +87,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 			return "Queued follow-up";
 		},
 	};
+	const keys = options.keys ?? getKeybindings() as KeybindingsManager;
 	const ctx = {
 		hasUI: options.ui ?? true, mode: options.mode ?? "tui", cwd: "/cwd",
 		sessionManager: {
@@ -101,7 +102,7 @@ function harness(options: { ui?: boolean; mode?: "tui" | "rpc" | "print"; invent
 				let result: unknown;
 				let finished = false;
 				const component = await factory({ terminal, requestRender() {} } as unknown as TUI,
-					{ fg: (_color: string, text: string) => text } as ExtensionContext["ui"]["theme"], getKeybindings() as KeybindingsManager,
+					{ fg: (_color: string, text: string) => text } as ExtensionContext["ui"]["theme"], keys as KeybindingsManager,
 					(value) => { result = value; finished = true; });
 				const render = (width = 200) => component.render(width).map(stripTerminalSequences);
 				// Read all labels for the existing command-policy tests, then drive the real component with keys.
@@ -262,11 +263,21 @@ test("menus open in the editor area and leave the transcript visible above them"
 	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", workers: [], tabs: [] })) });
 	h.pickers.push((picker) => {
 		assert.ok(!picker.options?.overlay, "an overlay hides the transcript and the working report");
+		assert.deepEqual(picker.options?.blocked, { kind: "question", message: picker.render()[0] });
 		assert.ok(screen(picker, 24).split("\n").length <= 12, "the menu leaves half the terminal for the transcript");
 		picker.component.handleInput!("\x1b");
 	});
 	await h.run();
 	assert.equal(h.working.length, 1);
+});
+
+test("menu hints use the injected keybinding manager", async () => {
+	const h = harness({ keys: new TuiKeybindingsManager(TUI_KEYBINDINGS, { "tui.select.up": ["k"], "tui.select.down": ["j"], "tui.select.confirm": ["y"] }) });
+	h.pickers.push((picker) => {
+		assert.match(picker.render().at(-1)!, /k\/j scroll · y select/);
+		picker.component.handleInput!("\x1b");
+	});
+	await h.run();
 });
 
 test("long multiple-choice menus reach bottom actions and keep focus after each toggle", async () => {

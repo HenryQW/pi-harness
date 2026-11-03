@@ -262,11 +262,11 @@ test("stop accepts native unnamed unrelated agents without authorizing mutations
 	const tab = { name: "owned", tabId: "owned-tab", paneId: "owned-pane", leasePath, sessionFile: join(cwd, "session.jsonl") };
 	for (const paneId of ["unrelated-pane", "owned-pane"]) {
 		const exec: ExtensionAPI["exec"] = async (command, args) => {
-			if (command === "lsof") return { code: 1, stdout: "", stderr: "", killed: false };
+			if (command === "lsof") return { code: 1, stdout: "", stderr: "", killed: false, truncated: false };
 			assert.equal(args[1], "list", "the native-shape probe forbids all mutation calls");
 			const result = args[0] === "agent" ? { type: "agent_list", agents: [{ agent: "pi", pane_id: paneId, tab_id: "unrelated-tab" }] }
 				: { type: "pane_list", panes: [] };
-			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false, truncated: false };
 		};
 		const stopping = createDirectHerdr({ exec }, cwd, 1000).stop(tab);
 		if (paneId === "owned-pane") await assert.rejects(stopping, /one exact owned agent/);
@@ -293,10 +293,10 @@ test("only explicit terminate signals exact holders that a per-PID lease scan st
 				const exact = args.includes("-p");
 				if ((!exact && scenario === "stale") || (exact && scenario === "stale-during-scan")) current = false;
 				const holds = held && !(exact && scenario === "changed");
-				return { code: holds ? 0 : 1, stdout: holds ? "p4242\nf3\n" : "", stderr: "", killed: false };
+				return { code: holds ? 0 : 1, stdout: holds ? "p4242\nf3\n" : "", stderr: "", killed: false, truncated: false };
 			}
 			const result = args[0] === "agent" ? { type: "agent_list", agents: [] } : { type: "pane_list", panes: [] };
-			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false, truncated: false };
 		};
 		const kill = (pid: number, signal: NodeJS.Signals) => {
 			signals.push([pid, signal]);
@@ -317,7 +317,7 @@ test("collection triggers above ten tabs, not at ten, and rejects foreign or dup
 		const tabs = Array.from({ length: count }, (_, id) => ({ tab_id: `tab-${id}`, workspace_id: "owned" }));
 		const exec: ExtensionAPI["exec"] = async (_command, args) => {
 			assert.deepEqual(args, ["tab", "list", "--workspace", "owned"]);
-			return { code: 0, stdout: JSON.stringify({ result: { type: "tab_list", tabs } }), stderr: "", killed: false };
+			return { code: 0, stdout: JSON.stringify({ result: { type: "tab_list", tabs } }), stderr: "", killed: false, truncated: false };
 		};
 		assert.equal(await workspaceNeedsCollection({ exec }, "/tmp", "owned"), count > 10);
 		tabs[0]!.workspace_id = "other";
@@ -343,10 +343,10 @@ test("direct collection closes only completed exact workers and keeps session an
 		const session = lines(scenario === "unfinished" ? [] : [{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [] } }]);
 		await writeFile(tab.sessionFile, session);
 		const exec: ExtensionAPI["exec"] = async (command, args) => {
-			if (command === "lsof") { scans++; return { code: scenario === "lease-holder" ? 0 : 1, stdout: scenario === "lease-holder" ? "p123\n" : "", stderr: "", killed: false }; }
+			if (command === "lsof") { scans++; return { code: scenario === "lease-holder" ? 0 : 1, stdout: scenario === "lease-holder" ? "p123\n" : "", stderr: "", killed: false, truncated: false }; }
 			let result: unknown;
 			if (args[0] === "tab" && args[1] === "get") {
-				if (tabClosed) return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "tab_not_found" } }), killed: false };
+				if (tabClosed) return { code: 1, stdout: "", stderr: JSON.stringify({ error: { code: "tab_not_found" } }), killed: false, truncated: false };
 				result = { type: "tab_info", tab: { tab_id: "tab", workspace_id: "owned", pane_count: scenario === "extra-pane" ? 2 : paneClosed ? 0 : 1 } };
 			} else if (args[0] === "agent") {
 				if (scenario === "stale") current = false;
@@ -356,7 +356,7 @@ test("direct collection closes only completed exact workers and keeps session an
 				if (args[0] === "pane") paneClosed = true; else tabClosed = true;
 				result = { type: "ok" };
 			} else throw new Error(`Unexpected call ${args}`);
-			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false };
+			return { code: 0, stdout: JSON.stringify({ result }), stderr: "", killed: false, truncated: false };
 		};
 		const collecting = createDirectHerdr({ exec }, cwd, 1000).collect(tab, () => current);
 		if (scenario === "completed") { assert.equal(await collecting, true); assert.equal(scans, 2); }

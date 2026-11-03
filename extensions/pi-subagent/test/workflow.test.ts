@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import test from "node:test";
+import { Check } from "typebox/value";
 import {
 	checkoutNote,
+	DelegateTaskParameters,
 	snapshotCheckout,
 	MAX_WORKFLOW_ENTRIES,
 	identifyWorkflowEntries,
@@ -68,6 +70,25 @@ test("parses and normalizes each explicit workflow mode", () => {
 	}
 	assert.equal(parseWorkflow({ tasks: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
 	assert.equal(parseWorkflow({ chain: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
+});
+
+test("provider schemas keep string enums and strict runtime validation", () => {
+	const schema = JSON.parse(JSON.stringify(DelegateTaskParameters));
+	assert.equal(schema.type, "object");
+	assert.equal(schema.anyOf, undefined);
+	for (const [name, values] of Object.entries({ access: ["read", "write"], kind: ["text"], modelClass: ["fast", "balanced", "frontier", "fav"] })) {
+		assert.equal(schema.properties[name].type, "string");
+		assert.deepEqual([...schema.properties[name].enum].sort(), values.sort());
+		for (const value of [null, 42, "unknown"]) {
+			const input = { mode: "direct", ...delegation(), [name]: value };
+			assert.equal(Check(DelegateTaskParameters, input), false);
+			assert.throws(() => parseDirectWorkflow(input));
+		}
+	}
+	assert.ok(Check(DelegateTaskParameters, { mode: "direct", ...delegation() }));
+	assert.ok(Check(DelegateTaskParameters, { mode: "isolated", id: "check", goal: "Inspect", tasks: [
+		{ id: "inspect", kind: "text", role: "worker", modelClass: "fast", requirements: "Inspect", deliverable: "Report", dependsOn: [], contextFrom: [] },
+	] }));
 });
 
 test("rejects caller thinking in representative workflow modes", () => {

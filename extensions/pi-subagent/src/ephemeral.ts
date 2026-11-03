@@ -386,6 +386,7 @@ function usageFrom(value: unknown): Usage | undefined {
 	if (!record.cost || typeof record.cost !== "object" || Array.isArray(record.cost)) return;
 	const cost = record.cost as Record<string, unknown>;
 	if (![cost.input, cost.output, cost.cacheRead, cost.cacheWrite, cost.total].every(nonNegativeNumber)) return;
+	if (cost.totalFromProvider !== undefined && typeof cost.totalFromProvider !== "boolean") return;
 	if (record.cacheWrite1h !== undefined && !nonNegativeNumber(record.cacheWrite1h)) return;
 	if (record.reasoning !== undefined && !nonNegativeNumber(record.reasoning)) return;
 	return {
@@ -402,6 +403,7 @@ function usageFrom(value: unknown): Usage | undefined {
 			cacheRead: cost.cacheRead as number,
 			cacheWrite: cost.cacheWrite as number,
 			total: cost.total as number,
+			...(cost.totalFromProvider === undefined ? {} : { totalFromProvider: cost.totalFromProvider as boolean }),
 		},
 	};
 }
@@ -429,6 +431,9 @@ export function addUsage(left: Usage | undefined, right: Usage | undefined): Usa
 			cacheRead: left.cost.cacheRead + right.cost.cacheRead,
 			cacheWrite: left.cost.cacheWrite + right.cost.cacheWrite,
 			total: left.cost.total + right.cost.total,
+			// A mixed total is not wholly provider-reported; absence also means an estimate.
+			...(left.cost.totalFromProvider === undefined && right.cost.totalFromProvider === undefined ? {}
+				: { totalFromProvider: left.cost.totalFromProvider === true && right.cost.totalFromProvider === true }),
 		},
 	};
 }

@@ -184,7 +184,9 @@ The isolated widget shows the recorded task state and any retained workspace. It
 
 A committed worker without a checked candidate can show attention, not readiness. Status glyphs use the active TUI theme. The text also names the status without color.
 
-The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting. The cost is the sum of `usage.cost.total` from the same records, read in the same session read. Isolated task state records no usage, so isolated rows show no tokens or cost.
+The direct widget and result summaries show measured tokens for the current task turn. This count adds input and output tokens from completed assistant usage records. It excludes cache-read and cache-write tokens. A continued worker counts only its new task turn. Missing usage stays unknown. This display count does not change token-limit accounting.
+
+The cost is the sum of `usage.cost.total` from the same records, read in the same session read. Pi uses the provider's billed total when available; otherwise, it uses the catalog estimate. The extension does not replace a billed total with the sum of catalog cost fields. Isolated task state records no usage, so isolated rows show no tokens or cost.
 
 A ready isolated candidate is **not promoted** to Main. To reload the menu and the isolated widget from saved state, choose **Refresh** in `/subagent`. Refresh does not recover or change a request. Use `/subagent` or `subagent_status` for exact identities, failures, and recovery.
 
@@ -283,7 +285,9 @@ After readiness, use `subagent_stage revise` with the exact candidate, generatio
 
 ### Inspect and revise active work
 
-To select work by label, open `/subagent` without arguments. First, a **Current subagent work** report shows the work that local and saved evidence proves is running: locally owned direct workflows with a running worker, and active isolated requests while a live run holds the repository lease. The report lists active requests without a live lease as interrupted, and recorded-only direct work as unverified. A live lease does not identify its request, so several active requests in one checkout all show as working. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
+Requires Pi 1.5.0 or later in the 1.x series. To select work by label, open `/subagent` without arguments. The inline selector reports Pi's native blocked status while it waits for user input. Pi clears this status when the selector closes. Key hints use the keybinding manager that Pi supplies.
+
+First, a **Current subagent work** report shows the work that local and saved evidence proves is running: locally owned direct workflows with a running worker, and active isolated requests while a live run holds the repository lease. The report lists active requests without a live lease as interrupted, and recorded-only direct work as unverified. A live lease does not identify its request, so several active requests in one checkout all show as working. The menu shows direct records on this session branch and isolated requests in the current canonical Git checkout. This includes requests launched in other sessions. Select an isolated request. Then select **Inspect status and recovery**.
 
 The menu also shows requests whose saved parent checkout no longer exists, in their own **Orphaned · parent checkout removed** group. Saved `running` and `pending` states have a `saved` prefix and an `unverified` suffix. The report lists them under **Unverified**, never **Working**, even if the current checkout has a live lease. These labels do not change saved state or prove completion. Orphaned requests with retained resources or `needs_attention` show under **Needs attention**. You can open this view from any checkout of the same repository. The saved worker or integration path identifies the primary repository. Orphaned requests have the same **Close and delete worktrees (discard work)** action, but no inspection or follow-up actions. The extension reads their original state directories; it does not recreate the removed parent checkout. Unreadable files stay preserved and are reported.
 
@@ -506,7 +510,9 @@ Pi's `codemode.mode` and `codemode.inlineBudget` settings apply in the child wit
 
 Every child loads the Role MCP adapter. It also connects the servers that Role extensions register with `pi.registerMcpServer()`, for example the CodeGraph watcher of `pi-codegraph`. These servers keep the exposure that the extension sets, and `mcps` does not gate them, because the Role already trusts the extension.
 
-The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. Every Role keeps each selected server's validated `exposure` and `toolExposure`, with or without `codemode`. An absent `exposure` keeps Pi's native `codemode` default. The adapter never changes these tools to `direct`, removes per-tool restrictions, or activates `codemode` automatically, even if the global file sets `autoEnableCodemode: true`.
+The servers named in `mcps` come only from the global `~/.pi/agent/mcp.json`. The file can start with one byte-order mark, as supported by Pi since 1.4. The adapter removes only that leading mark before parsing. Server selection and validation stay unchanged.
+
+Every Role keeps each selected server's validated `exposure` and `toolExposure`, with or without `codemode`. An absent `exposure` keeps Pi's native `codemode` default. The adapter never changes these tools to `direct`, removes per-tool restrictions, or activates `codemode` automatically, even if the global file sets `autoEnableCodemode: true`.
 
 | Exposure | Child access |
 | --- | --- |
@@ -527,7 +533,9 @@ Before launch, the extension checks each selected entry against Pi's documented 
 - `auth.provider` uses plain HTTP outside `localhost`, `127.0.0.1`, or `[::1]`.
 - `oauth.authServerMetadataUrl` does not use HTTPS outside those hosts.
 
-The extension never modifies the file. Fix the entry or choose another server. The extension passes valid `auth`, `oauth`, and `description` fields through, so Pi's native provider auth and OAuth apply. `oauth.clientRegistration` must be `dcr` or `cimd`. A `cimd` entry cannot use `clientId` or `clientName`. Any `callbackUrl` must use localhost or 127.0.0.1 with path `/callback`.
+The extension never modifies the file. Fix the entry or choose another server. The extension passes valid `auth`, `oauth`, and `description` fields through, so Pi's native provider auth and OAuth apply.
+
+`oauth.clientRegistration` accepts `auto` for automatic selection, `dcr` for dynamic client registration, or `cimd` for a client ID metadata document. A `cimd` entry cannot use `clientId` or `clientName`. Its `callbackUrl`, when set, must use localhost or 127.0.0.1 with path `/callback`. For all registration modes, a supplied callback must use HTTP on a loopback host without a query or fragment. An explicit callback port must match `callbackPort`, when set. Automatic selection does not bypass these checks or the secure-transport checks above.
 
 The extension still ignores project MCP overrides. A project cannot change the global server allowlist or exposure of the Role. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work starts. The extension excludes Main-only delegation and recovery tools and `ask_question` from children.
 
@@ -618,7 +626,7 @@ const result = await executor.run({
 
 The FIFO permit is acquired before `prepare`, so queued work can resolve fresh Role and route state without consuming timeout. Each child gets independent turn/token and idle/hard-runtime limits. Output, stderr, protocol events, callback draining, and descendant stream draining are bounded.
 
-A result contains `outcome`, `exitCode`, bounded `output` and `stderr`, truncation state, optional stop reason/error, and aggregate usage. Abort, timeout, turn/token limit, spawn, protocol, preparation, and callback failures reject with typed `EphemeralSubagentError` codes.
+A result contains `outcome`, `exitCode`, bounded `output` and `stderr`, truncation state, optional stop reason/error, and aggregate usage. The executor preserves `Usage.cost.totalFromProvider`: `true` means that the provider reported the billed total; `false` or absence means a catalog estimate. An aggregate is marked `true` only when every included usage record is marked `true`. Mixed totals are marked `false`; the field stays absent when all records omit it. Cost totals are added without recalculation from the component cost estimates. Abort, timeout, turn/token limit, spawn, protocol, preparation, and callback failures reject with typed `EphemeralSubagentError` codes.
 
 Token accounting adds each completed assistant response once. A terminal response that crosses the configured token value succeeds. A continuing crossing turn completes tools and receives one response-only handoff; further continuation fails. Role tools provide a convergence warning near configured turn/token/runtime limits.
 
