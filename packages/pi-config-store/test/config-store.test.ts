@@ -17,6 +17,7 @@ import {
 	required,
 	writePrivateTextFileAtomically,
 	type ConfigLoad,
+	type ConfigReporter,
 } from "../src/index.ts";
 
 function createStore(agentDir: string) {
@@ -320,43 +321,43 @@ test("launch reporting shows one deduplicated notification per file", async () =
 		await writeConfig(warned.path, '{"count":-1}');
 		await writeConfig(disabled.path, '{"directory":"relative"}');
 
-		let sessionStart: ((event: unknown, ctx: never) => void) | undefined;
+		let sessionStart: ((event: unknown, ctx: Parameters<ConfigReporter["report"]>[0]) => void) | undefined;
 		const pi = { on: (event: string, handler: typeof sessionStart) => { if (event === "session_start") sessionStart = handler; } };
-		const reporter = registerConfigReporting(pi as never, [warned, disabled]);
+		const reporter = registerConfigReporting(pi, [warned, disabled]);
 		const notices: [string, string][] = [];
-		const ui = { hasUI: true, ui: { notify: (message: string, type: string) => notices.push([message, type]) } };
+		const ui = { hasUI: true, ui: { notify: (message: string, type = "info") => notices.push([message, type]) } };
 
-		sessionStart!({}, ui as never);
+		sessionStart!({}, ui);
 		assert.deepEqual(notices, [
 			[`pi-test-store config issues (${warned.path}): count: must be an integer >= 0; defaults replace invalid settings.`, "warning"],
 			[`pi-test-store disabled (${disabled.path}): directory: must be an absolute path without control characters`, "error"],
 		]);
 
 		await writeFile(warned.path, '{"count":-1,"typo":1}');
-		reporter.report(ui as never, warned, warned.loadSync());
-		reporter.report(ui as never, warned, warned.loadSync());
+		reporter.report(ui, warned, warned.loadSync());
+		reporter.report(ui, warned, warned.loadSync());
 		assert.deepEqual(notices.slice(2), [[`pi-test-store config issues (${warned.path}): typo: unknown key; defaults replace invalid settings.`, "warning"]]);
 
 		const written: string[] = [];
 		const write = process.stderr.write;
 		process.stderr.write = ((text: string) => written.push(text) > 0) as typeof process.stderr.write;
 		try {
-			sessionStart!({}, { hasUI: false, ui: { notify: () => assert.fail("notify without UI") } } as never);
+			sessionStart!({}, { hasUI: false, ui: { notify: () => assert.fail("notify without UI") } });
 		} finally {
 			process.stderr.write = write;
 		}
 		assert.equal(written.length, 2);
 		assert.match(written[1]!, /^pi-test-store disabled .*\n$/);
 		const ok: ConfigLoad<unknown> = { status: "ok", source: "missing", value: {}, issues: [] };
-		reporter.report(ui as never, warned, ok);
+		reporter.report(ui, warned, ok);
 		assert.equal(notices.length, 3);
 
 		// Reporters of other extensions share the session's deduplication; Pi passes one event to every handler.
-		let otherStart: ((event: unknown, ctx: never) => void) | undefined;
-		registerConfigReporting({ on: (_event: string, handler: typeof otherStart) => { otherStart = handler; } } as never, [warned]);
+		let otherStart: typeof sessionStart;
+		registerConfigReporting({ on: (_event: string, handler: typeof otherStart) => { otherStart = handler; } }, [warned]);
 		const event = {};
-		sessionStart!(event, ui as never);
-		otherStart!(event, ui as never);
+		sessionStart!(event, ui);
+		otherStart!(event, ui);
 		assert.equal(notices.length, 5);
 		assert.match(notices[4]![0], /^pi-test-store disabled/);
 	});

@@ -1,14 +1,15 @@
 # Lifecycle and State
 
-Read matching installed `docs/extensions.md` sections: `Respect the runtime
-lifecycle`, `Events and concurrency`, `State`, or `Errors and cleanup`.
+Read matching installed `docs/extensions.md` sections: `Long-lived resources
+and shutdown`, `Lifecycle Overview`, `Handler Composition`, `State Management`,
+or `Error Handling`.
 Verify payloads and result contracts in installed event declarations.
 Example paths below are relative to `examples/extensions/`.
 
 | Need | Event/API | Example |
 |---|---|---|
 | Start cwd/session-bound resources | `session_start` | `file-trigger.ts`, `ssh.ts` |
-| Release timers, watchers, processes, sockets | `session_shutdown` | `mac-system-theme.ts`, `sandbox/index.ts` |
+| Release timers, watchers, processes, sockets | `session_shutdown` | `mac-system-theme.ts` |
 | Guard session transitions/compaction | Matching `session_before_*` | `confirm-destructive.ts`, `dirty-repo-guard.ts` |
 | Restore branch-dependent state | `session_start`, `session_tree`, `getBranch()` | `todo.ts`, `tools.ts` |
 | Modify structured prompt/conversation | `before_agent_start`, `context` | `pirate.ts`, `plan-mode/index.ts` |
@@ -45,6 +46,16 @@ Example paths below are relative to `examples/extensions/`.
   provider success.
 - Honor compaction cancellation and expose failures through its error callback
   or `session_compact_failed`. Avoid duplicate compaction requests.
+  Since Pi 1.4, `compaction.reserveTokens` controls when compaction starts, not
+  summary output length. Summaries use the model's output limit, reduced when
+  needed to fit input and output in the context window; `generateSummary()` and
+  `generateSummaryWithUsage()` ignore their `reserveTokens` argument.
+  See installed `docs/compaction.md`.
+- When the model registry owns streaming, let it resolve authentication and
+  provider overrides for summaries and other model calls. Do not extract a
+  stored authorization token and pass it back as an explicit key: Pi 1.5 fixes
+  this distinction in native summaries. Raw streaming outside the registry can
+  still need explicit authentication; do not remove it without tracing the call.
 - Sibling tool calls can run concurrently; do not assume another result exists.
   `ctx.signal` may be absent outside a turn. Slow provider-stream handlers delay
   consumption; treat raw event data as read-only and never log credentials.
