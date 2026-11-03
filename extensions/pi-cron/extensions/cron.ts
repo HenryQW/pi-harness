@@ -26,6 +26,7 @@ import {
 	type Job,
 	type Limits,
 } from "../internal/config.ts";
+import { showLastRun } from "../internal/last-run.ts";
 import { sessionFilePath, sessionLaunchArgs, summarize } from "../internal/launch.ts";
 import { formatInstant, nextRunAt } from "../internal/schedule.ts";
 import { StateStore, type Claim, type Outcome } from "../internal/state.ts";
@@ -286,9 +287,9 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 				ctx.ui.notify(`${job.id} ${enabled ? "enabled" : "disabled"}.`, "info");
 			} else if (action === "Show last run") {
 				const record = jobs[job.id];
-				ctx.ui.notify(record?.lastOutcome
+				await showLastRun(ctx, record?.lastOutcome
 					? `${job.id} ${record.lastOutcome} at ${formatInstant(record.lastFinishedAt!)}\nSession: ${record.lastSession ?? "none created"}\n${record.lastSummary}`
-					: `${job.id} has not run yet.`, "info");
+					: `${job.id} has not run yet.`);
 			}
 		},
 	});

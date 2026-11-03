@@ -27,12 +27,20 @@ Keep Pi open for the job's next slot, or use `/cron run <job-id>` for an immedia
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `/cron` | command | For users: list jobs, next runs, and last outcomes. In the TUI, run, enable, disable, or show the last result. Otherwise, only list jobs. |
+| `/cron` | command | For users: list jobs, next runs, and last outcomes. With a user interface, run, enable, disable, or show the last result. Without one, only list jobs. |
 | `/cron run <job-id>` | command | For users: start a job immediately, with the same delivery as scheduled runs. |
 
 Each job runs its prompt as one task in a new Pi process at `cwd`. As with `delegate_task`, its Role selects tools, extensions, Skills, and MCP servers. Any configured Role can run, including one with write access. Limit the prompt and Role tools to the task's needs.
 
 The run inherits the current session environment plus `env`. Open its saved run session with `pi --session <file>`.
+
+### Show the last run
+
+In the terminal user interface (TUI), select `/cron` → a job → Show last run to open a read-only viewer. It shows the outcome, finish time, session path, and saved output summary. Use Up and Down to scroll. Use Page Up and Page Down to move one page, and Home and End to go to the start or end. Press Escape, Ctrl+C, or Enter to close. The viewer uses your configured selection keys.
+
+The viewer wraps text to the terminal width and adjusts when you resize it. The summary stays as literal text, not Markdown. Dangerous terminal and bidirectional controls show as `\uXXXX` escapes. The viewer does not change saved state or load the full run session. The saved summary is limited to 2 kibibytes (KiB) before its truncation mark; open the run session for the full result.
+
+In remote procedure call (RPC) mode, Show last run keeps the plain-text notice. A job that has not run shows a notice in RPC mode or a message in the TUI viewer. A run with no session shows `Session: none created`.
 
 ## Flow
 

@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" role="img" aria-labelledby="extension-dependencies-title extension-dependencies-desc" id="extension-dependencies-root">
   <title id="extension-dependencies-title">Direct dependencies of 20 active Pi extensions</title>
-  <desc id="extension-dependencies-desc">Matrix of 20 active Pi extensions and seven internal dependency packages, with 27 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 13 extensions. Pi Subagent uses Pi Herdr for selected-checkout admission. Pi Cron uses Pi Subagent for explicit Role resources and server exposure rules. See the package manifests for version requirements.</desc>
+  <desc id="extension-dependencies-desc">Matrix of 20 active Pi extensions and seven internal dependency packages, with 27 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 13 extensions. Pi Subagent uses Pi Herdr for selected-checkout admission. Pi Cron uses Pi Subagent for explicit Role resources and server exposure rules, and the external Pi terminal package for its last-run view. See the package manifests for version requirements.</desc>
   <defs>
-      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
-      #extension-dependencies-root { color: #101828; font-family: 'Geist', sans-serif; }
+      <style>#extension-dependencies-root { color: #101828; font-family: 'Geist', sans-serif; }
       #extension-dependencies-root .diagram-container { overflow-x: auto; }
       #extension-dependencies-root .diagram-container:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 4px; }
       #extension-dependencies-root .diagram-container { overflow: visible; }
@@ -119,7 +118,7 @@
   <text class="name" data-row="pi-undo" x="48" y="558">Pi Undo</text>
   <text class="empty" x="244" y="557">none</text>
   <text class="note" x="48" y="588">20 extensions · 27 direct edges · 7 dependency packages · 6 rows with no internal dependencies</text>
-  <text class="note" x="48" y="608">Development, transitive, and optional event links are excluded; Pi Goal can query Pi Subagent without a dependency.</text>
+  <text class="note" x="48" y="608">Pi Cron also uses the Pi terminal package. External peers, development, transitive, and optional event links are excluded.</text>
   <line x1="48" y1="628" x2="1192" y2="628" stroke="#101828" stroke-opacity=".12"/>
   <rect x="48" y="652" width="12" height="12" rx="2" fill="#101828"/>
   <text class="note" x="72" y="663">Direct runtime or peer dependency</text>
