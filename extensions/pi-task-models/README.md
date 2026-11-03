@@ -10,6 +10,8 @@ Configure shared Task Profiles for `fast`, `balanced`, `frontier`, and `fav`. Ea
 pi install npm:@henryqw/pi-task-models
 ```
 
+Requires Pi 1.5.0 or later in the 1.x series.
+
 ## Works with
 
 | Package | Relationship | Purpose |
