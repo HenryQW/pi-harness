@@ -62,6 +62,6 @@ Use sans-serif text for names. Use monospace only for commands, fields, paths, p
 
 Every SVG must include `role="img"`, a prefixed `aria-labelledby`, and matching `<title>` and `<desc>` elements.
 
-Place `<title>` first inside the SVG. Keep font imports inside `<defs>` so the exported SVG renders in browsers.
+Place `<title>` first inside the SVG. Export with `python3 .agents/skills/diagram-design/scripts/export_svg.py <file> --system-fonts` so the SVG uses installed fonts or system fallbacks without network requests.
 
 Run the vendored [diagram-design](../.agents/skills/diagram-design/SKILL.md) self-check (`python3 .agents/skills/diagram-design/scripts/self_check.py <file>`) and, from a diagram-design repository checkout, `scripts/verify-geometry.py` before publishing. Also run `git diff --check`.

@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-cron",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Run scheduled job prompts in new Pi sessions with per-job interval, Role, model, and thinking level.",
   "keywords": [
     "pi-package",
@@ -28,7 +28,8 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^1.5.0"
+    "@earendil-works/pi-coding-agent": "^1.5.0",
+    "@earendil-works/pi-tui": "^1.5.0"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^4.1.3",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
     "@types/proper-lockfile": "^4.1.4"
   },
   "repository": {

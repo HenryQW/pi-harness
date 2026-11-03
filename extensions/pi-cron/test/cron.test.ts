@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { EphemeralSubagentExecutor, EphemeralSubagentRunInput } from "@henryqw/pi-subagent";
 import { lock } from "proper-lockfile";
@@ -70,7 +72,7 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 		},
 	} as unknown as ExtensionAPI;
 	const ctx = {
-		model, scopedModels: [], hasUI: true,
+		model, scopedModels: [], hasUI: true, mode: "rpc",
 		modelRegistry: { getAvailable: () => [model] },
 		isProjectTrusted: () => true,
 		ui: {
@@ -348,6 +350,62 @@ test("a job start reports roleDefaults and task-model config issues added during
 		await writeFile(taskModelsPath, taskModels);
 		await h.emit("session_shutdown");
 	}
+});
+
+test("Show last run uses a TUI viewer without changing bounded state and keeps the RPC notice", async () => {
+	await writeJobs([{ id: "viewer", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false }]);
+	const h = harness(async () => ({ outcome: "success", output: `**literal summary**\n${"界".repeat(2_000)}` }));
+	await h.command("run viewer");
+	await h.settle(() => h.notices.some((notice) => notice.includes("Scheduled job viewer finished")));
+	const path = join(agentDir, "config", "pi-cron", "state.json");
+	const before = await readFile(path, "utf8");
+	const record = JSON.parse(before).jobs.viewer;
+	assert.ok(record.lastSummary.endsWith("…"));
+	assert.ok(Buffer.byteLength(record.lastSummary) <= 2_048 + Buffer.byteLength("…"));
+	const views: string[] = [];
+	h.ctx.mode = "tui";
+	h.ctx.ui.custom = (factory) => new Promise((resolve, reject) => {
+		Promise.resolve(factory(
+			{ terminal: { rows: 24 }, requestRender() {} } as Parameters<typeof factory>[0],
+			{ fg: (_color: string, text: string) => text } as Parameters<typeof factory>[1],
+			new KeybindingsManager(TUI_KEYBINDINGS) as Parameters<typeof factory>[2],
+			resolve,
+		)).then((component) => {
+			views.push(component.render(10_000).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n"));
+			component.handleInput!("\x1b");
+		}).catch(reject);
+	});
+	h.select("viewer · disabled", "Show last run");
+	await h.command("");
+	assert.ok(views[0]!.includes("viewer success at"));
+	assert.ok(views[0]!.includes(`Session: ${record.lastSession}\n${record.lastSummary}`));
+	assert.equal(await readFile(path, "utf8"), before);
+	h.ctx.mode = "rpc";
+	h.select("viewer · disabled", "Show last run");
+	await h.command("");
+	assert.ok(h.notices.at(-1)!.includes(`Session: ${record.lastSession}\n${record.lastSummary}`));
+	assert.equal(views.length, 1);
+	h.ctx.hasUI = false;
+	h.ctx.mode = "print";
+	await h.command("");
+	assert.match(h.notices.at(-1)!, /^viewer · disabled · last success$/);
+	assert.equal(views.length, 1);
+	await h.emit("session_shutdown");
+});
+
+test("Show last run explains a job with no previous run and permits menu cancellation", async () => {
+	await writeJobs([{ id: "never", every: "1d", role: "scout", cwd: agentDir, prompt: "Go.", enabled: false }]);
+	const h = harness(async () => ({ outcome: "success", output: "unexpected" }));
+	h.select("never · disabled", "Show last run");
+	await h.command("");
+	assert.equal(h.notices.at(-1), "never has not run yet.");
+	const count = h.notices.length;
+	h.select("never · disabled");
+	await h.command("");
+	h.select();
+	await h.command("");
+	assert.equal(h.notices.length, count);
+	assert.equal(h.prepared.length, 0);
 });
 
 test("an invalid state file shows one error across jobs and ticks", async () => {
