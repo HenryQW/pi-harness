@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import memoryExtensionImpl, { MEMORY_PREPARE_TASK, MEMORY_REVIEW_TASK, validateMutation } from "../extensions/memory.ts";
 import { reviewGroup, reviewInboxStore } from "../src/inbox.ts";
 import { ENTRY_DELIMITER, MAX_BATCH_OPERATIONS, MAX_FILE_BYTES, MemoryStore } from "../src/store.ts";
@@ -1525,11 +1526,21 @@ test("restart, cancellation, and session switching retain candidates and isolate
 test("review applies an exact merge or replacement the stored verdict offers", async () => {
 	for (const action of ["Merge", "Replace"]) {
 		await withReviewFixture({
-			memory: "existing", responses: [overlap("existing", "merged")],
-			select: (choices) => choices.find((choice) => choice.includes(action)),
-		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls }) => {
+			memory: "prefix existing suffix", responses: [overlap("existing", "merged")],
+			custom: (component, tui) => {
+				tui.terminal.rows = 24;
+				const first = component.render(80).map(stripVTControlCharacters).join("\n");
+				assert.match(first, /New entry \(content\)\s+candidate/);
+				assert.match(first, /→ Review later/);
+				assert.match(first, /Discard the new entry, keep current/);
+				for (let step = 0; step < (action === "Merge" ? 1 : 3); step++) component.handleInput("\x1b[B");
+				component.handleInput("\r");
+			},
+		}, async ({ agentDir, memoryDir, tool, ctx, commands, calls, questions }) => {
 			await tool.execute("queue", { action: "add", content: "candidate" }, undefined, undefined, ctx);
 			await commands.get("memory-review")!.handler("", ctx);
+			assert.match(questions[0]!, /Complete current entry · MEMORY\.md\n prefix existing suffix/);
+			assert.match(questions[0]!, /Exact merged entry\n merged/);
 			// One candidate review plus the follow-up review of the chosen write: the dialog reused the stored verdict.
 			assert.equal(calls.length, 2);
 			assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), action === "Merge" ? "merged" : "candidate");
@@ -1733,13 +1744,56 @@ test("review preserves and applies a complete atomic batch", async () => {
 	});
 });
 
+test("pending review shows readable ordered changes and exact safe evidence and mutation", async () => {
+	const evidence = "existing\u001b]52;c;PRIVATE\u0007\nwith\ttab and \u202econtrol";
+	const content = "new entry\n```not Markdown```\n界 and \u200dcontrol";
+	const operations = [
+		{ action: "remove", old_text: "remove match" },
+		{ action: "replace", old_text: "replace match", content: "replacement" },
+		{ action: "add", content },
+	];
+	await withReviewFixture({
+		memory: evidence, responses: [overlap(evidence)],
+		custom: (component, tui) => {
+			tui.terminal.rows = 200;
+			const lines = component.render(160).map(stripVTControlCharacters).map((line) => line.trimEnd());
+			const text = lines.join("\n");
+			assert.match(text, /Review: overlap with MEMORY\.md/);
+			assert.match(text, /Existing evidence · MEMORY\.md\n existing\\u001b\]52;c;PRIVATE\\u0007\n with\\u0009tab and \\u202econtrol/);
+			assert.match(text, /1\/3 · remove · MEMORY\.md\n Match text \(old_text\)\n remove match/);
+			assert.match(text, /2\/3 · replace · MEMORY\.md\n Match text \(old_text\)\n replace match\n New entry \(content\)\n replacement/);
+			assert.match(text, /3\/3 · add · MEMORY\.md\n New entry \(content\)\n new entry\n ```not Markdown```\n 界 and \\u200dcontrol/);
+			assert.ok(text.includes(JSON.stringify(operations, null, 2).replaceAll("\u200d", "\\u200d").split("\n").map((line) => ` ${line}`).join("\n")));
+			assert.doesNotMatch(text, /[\u0007\u001b\u202e\u200d]/u);
+			assert.match(text, /→ Review later/);
+			component.handleInput("\r");
+		},
+	}, async ({ agentDir, memoryDir, tool, ctx, commands }) => {
+		await tool.execute("batch", { operations }, undefined, undefined, ctx);
+		await commands.get("memory-review")!.handler("", ctx);
+		assert.deepEqual(pendingItems(agentDir)[0]!.mutation.operations, operations);
+		assert.equal(await readFile(join(memoryDir, "MEMORY.md"), "utf8"), evidence);
+	});
+});
+
 test("long inbox batches scroll fully and cannot approve in a terminal without room for review", async () => {
 	const operations = Array.from({ length: 100 }, (_, index) => ({ action: "add", content: index === 99 ? "FINAL_REVIEW_MARKER" : `durable fact ${index}` }));
 	await withReviewFixture({
 		memory: "existing", responses: [overlap()],
 		custom: (component, tui) => {
 			tui.terminal.rows = 16;
-			assert.ok(component.render(100).length <= 16);
+			const first = component.render(100).map(stripVTControlCharacters);
+			assert.ok(first.length <= 16);
+			assert.match(first.join("\n"), /→ Review later/);
+			component.handleInput("\x1b[6~");
+			assert.notDeepEqual(component.render(100).map(stripVTControlCharacters), first);
+			component.handleInput("\x1b[H");
+			assert.deepEqual(component.render(100).map(stripVTControlCharacters), first);
+			for (const width of [24, 45, 80]) {
+				const lines = component.render(width);
+				assert.ok(lines.length <= 16);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			}
 			component.handleInput("\x1b[B");
 			tui.terminal.rows = 2;
 			assert.match(component.render(100).join(), /Enlarge terminal/);
