@@ -60,12 +60,6 @@ function configuredTaskRoutes(ctx: ExtensionContext, report: (ctx: ExtensionCont
 	}
 }
 
-function withoutDeletedHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
-	return headers
-		? Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null))
-		: undefined;
-}
-
 // Emergency context guard keeps recent messages while default compaction runs.
 const KEEP_RECENT_PERCENT = 15;
 const COMPACTION_INSTRUCTIONS = "Preserve the current task and any unfinished work.";
@@ -202,12 +196,9 @@ async function summarize(
 	thinking: ExtensionContext["thinkingLevel"],
 	signal: AbortSignal | undefined,
 ) {
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok) throw new Error("Compaction model authentication failed.");
-	return compact(preparation, auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model,
-		auth.apiKey, withoutDeletedHeaders(auth.headers), COMPACTION_INSTRUCTIONS,
-		// Task routes and the session model may be virtual; the registry routes them to a physical model.
-		signal, thinking, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options), auth.env);
+	// The registry owns request-time authentication, provider overrides, and virtual model routing.
+	return compact(preparation, model, undefined, undefined, COMPACTION_INSTRUCTIONS,
+		signal, thinking, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options));
 }
 
 /** Index unchanged, successful read results with their first matching earlier assistant call. */

@@ -4,6 +4,8 @@ Keep free context space with read trim before summary compaction. Normal compact
 
 ## Install
 
+Requires Pi 1.5.0 or later in the 1.x series. Registry streaming applies authentication, provider settings, and virtual model routes at request time.
+
 ```bash
 pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-auto-compact

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { afterEach, beforeEach } from "node:test";
-import { SessionManager, estimateTokens } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, SessionManager, estimateTokens } from "@earendil-works/pi-coding-agent";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -318,7 +318,7 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 	}));
 
 	const handlers = loadExtension();
-	const authModels: string[] = [];
+	const streamedModels: string[] = [];
 	const notices: string[] = [];
 	let compactions = 0;
 	let autoInstructions: string | undefined;
@@ -336,9 +336,9 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 				{ provider: "primary", id: "model", input: ["text"] },
 				{ provider: "fallback", id: "model", input: ["text"] },
 			],
-			getApiKeyAndHeaders: async (model: { provider: string }) => {
-				authModels.push(model.provider);
-				return { ok: false, error: "missing" };
+			streamSimple: (model: { provider: string }) => {
+				streamedModels.push(model.provider);
+				throw new Error(`Provider is not configured: ${model.provider}`);
 			},
 		},
 		ui: { notify: (message: string) => notices.push(message) },
@@ -361,7 +361,7 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 		type: "session_before_compact",
 		reason: "manual",
 		signal: new AbortController().signal,
-		preparation: { fileOps },
+		preparation: { fileOps, messagesToSummarize: [{ role: "user", content: "hello", timestamp: 1 }] },
 		branchEntries: [
 			{ type: "compaction", details: { readFiles: ["stale-read.ts"], modifiedFiles: ["stale-edit.ts"] } },
 			{ type: "message" },
@@ -370,7 +370,7 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 	};
 	// Manual /compact remains native even while auto compaction is pending.
 	assert.equal(await handlers.get("session_before_compact")?.(compactionEvent as never, ctx), undefined);
-	assert.deepEqual(authModels, []);
+	assert.deepEqual(streamedModels, []);
 	assert.deepEqual([...fileOps.read], ["current-read.ts"]);
 	assert.deepEqual([...fileOps.edited], ["current-edit.ts"]);
 
@@ -378,13 +378,13 @@ test("routes only auto compaction, carries file operations, and tries profile fa
 		...compactionEvent,
 		customInstructions: autoInstructions,
 	} as never, ctx), undefined);
-	assert.deepEqual(authModels, ["primary", "fallback"]);
+	assert.deepEqual(streamedModels, ["primary", "fallback"]);
 	assert.deepEqual([...fileOps.read], ["current-read.ts", "prior-read.ts"]);
 	assert.deepEqual([...fileOps.edited], ["current-edit.ts", "prior-edit.ts"]);
 	assert.deepEqual(notices, ["Configured task model routes failed; using current session model."]);
 });
 
-test("uses profile fallback and passes its thinking level to compaction", async () => {
+test("uses profile fallback and passes thinking without extracting registry credentials", async () => {
 	const streamed: Array<{ provider: string; reasoning: unknown }> = [];
 	await mkdir(join(tempRoot, "config", "pi-auto-compact"), { recursive: true });
 	await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
@@ -414,7 +414,6 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 		thinkingLevelMap: { max: "high" },
 		compat: { supportsFinishReason: true, thinkingFormat: "openai" },
 	};
-	const authModels: string[] = [];
 	const ctx = {
 		cwd: tempRoot,
 		isProjectTrusted: () => true,
@@ -428,15 +427,15 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 				{ provider: "primary", id: "model", input: ["text"] },
 				model,
 			],
-			getApiKeyAndHeaders: async (candidate: { provider: string }) => {
-				authModels.push(candidate.provider);
-				return candidate.provider === "primary"
-					? { ok: false, error: "missing" }
-					: { ok: true, apiKey: "test-key" };
-			},
+			getApiKeyAndHeaders: () => { throw new Error("Registry streaming owns authentication"); },
 			// Configured routes go through the registry, which routes virtual models to a physical one.
-			streamSimple: (requested: { provider: string }, _context: unknown, options: { reasoning?: unknown }) => {
+			streamSimple: (requested: { provider: string }, _context: unknown,
+				options: { reasoning?: unknown; apiKey?: string; headers?: unknown; env?: unknown }) => {
+				assert.equal(options.apiKey, undefined);
+				assert.equal(options.headers, undefined);
+				assert.equal(options.env, undefined);
 				streamed.push({ provider: requested.provider, reasoning: options.reasoning });
+				if (requested.provider === "primary") throw new Error("Provider is not configured: primary");
 				return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "summary" }],
 					api: "openai-completions", provider: requested.provider, model: "model", stopReason: "stop", timestamp: 1,
 					usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12,
@@ -468,8 +467,115 @@ test("uses profile fallback and passes its thinking level to compaction", async 
 	} as never, ctx) as { compaction?: { summary?: string } } | undefined;
 
 	assert.equal(result?.compaction?.summary, "summary");
-	assert.deepEqual(authModels, ["primary", "provider"]);
-	assert.deepEqual(streamed, [{ provider: "provider", reasoning: "max" }]);
+	assert.deepEqual(streamed, [{ provider: "primary", reasoning: undefined }, { provider: "provider", reasoning: "max" }]);
+});
+
+test("registry-owned compaction routes virtual models, applies provider auth overrides, and honors cancellation", async (t) => {
+	await writeFile(join(tempRoot, "settings.json"), JSON.stringify({ compaction: { enabled: false } }));
+	await mkdir(join(tempRoot, "config", "pi-task-models"), { recursive: true });
+	await writeFile(taskModelsConfigFile(tempRoot), JSON.stringify({ profiles: {
+		fast: { primary: { model: "router/auto", thinkingLevel: "high" } },
+	} }));
+	await writeFile(join(tempRoot, "models.json"), JSON.stringify({ providers: {
+		physical: { apiKey: "test-only", headers: { "x-configured": "yes" } },
+	} }));
+	const runtime = await ModelRuntime.create({
+		authPath: join(tempRoot, "auth.json"), modelsPath: join(tempRoot, "models.json"), refreshOnCreate: false,
+	});
+	const refresh = t.mock.method(runtime, "refresh");
+	const registry = new ModelRegistry(runtime);
+	const model: NonNullable<ExtensionContext["model"]> = {
+		type: "chat", id: "model", name: "Physical", api: "openai-completions", provider: "physical",
+		baseUrl: "https://unused.invalid", reasoning: true, input: ["text"], contextWindow: 10_000, maxTokens: 1_000,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	};
+	const controller = new AbortController();
+	let mode = "ok";
+	let providerCalls = 0;
+	registry.registerProvider({
+		id: "physical", name: "Physical", getModels: () => [model],
+		auth: { apiKey: { name: "Test auth", check: async () => ({ type: "api_key", source: "test" }),
+			resolve: async ({ signal }) => {
+				if (mode === "error") throw new Error("Test credentials expired; sign in again.");
+				if (mode === "cancel") { controller.abort(); signal.throwIfAborted(); }
+				return { auth: { apiKey: "test-only", baseUrl: "https://override.invalid",
+					headers: { removed: null, kept: "yes" } }, env: { REGION: "test" }, source: "test" };
+			} } },
+		stream: () => { throw new Error("Expected provider-neutral streaming"); },
+		streamSimple: (requested, _context, options) => {
+			providerCalls++;
+			assert.equal(requested.provider, "physical");
+			assert.equal(requested.baseUrl, "https://override.invalid");
+			assert.equal(options?.apiKey, "test-only");
+			assert.deepEqual(options?.headers, { removed: null, kept: "yes", "x-configured": "yes" });
+			assert.deepEqual(options?.env, { REGION: "test" });
+			assert.equal(options?.reasoning, "high");
+			assert.equal(options?.signal, controller.signal);
+			return { async *[Symbol.asyncIterator]() {
+				yield { type: "done", reason: "stop", message: {
+					role: "assistant", content: [{ type: "text", text: "Routed summary" }],
+					api: "openai-completions", provider: "physical", model: "model", stopReason: "stop", timestamp: 1,
+					usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				} };
+			} } as unknown as ReturnType<ModelRegistry["streamSimple"]>;
+		},
+	});
+	// Await the registration's own refresh before another registration can cancel its storage work.
+	await refresh.mock.calls.at(-1)!.result;
+	registry.registerVirtualModel({ provider: "router", id: "auto", name: "Auto", thinkingLevels: ["high"],
+		contextWindow: 10_000, maxTokens: 1_000, route: (request) => {
+			assert.equal(request.reason, "direct");
+			assert.equal(request.thinkingLevel, "high");
+			assert.equal(request.signal, controller.signal);
+			return { model, thinkingLevel: "high" };
+		} });
+	await refresh.mock.calls.at(-1)!.result;
+	registry.getApiKeyAndHeaders = () => { throw new Error("Registry streaming owns authentication"); };
+	const failures: string[] = [];
+	const stream = registry.streamSimple.bind(registry);
+	registry.streamSimple = (requested, context, options) => {
+		assert.equal(options?.apiKey, undefined);
+		assert.equal(options?.headers, undefined);
+		assert.equal(options?.env, undefined);
+		const events = stream(requested, context, options);
+		const result = events.result.bind(events);
+		events.result = async () => {
+			const response = await result();
+			if (response.errorMessage) failures.push(response.errorMessage);
+			return response;
+		};
+		return events;
+	};
+	const notices: string[] = [];
+	let autoInstructions: string | undefined;
+	const ctx = { cwd: tempRoot, isProjectTrusted: () => true, scopedModels: [], modelRegistry: registry,
+		getContextUsage: () => ({ tokens: 75, contextWindow: 100, percent: 75 }),
+		compact: (options: { customInstructions?: string }) => { autoInstructions = options.customInstructions; },
+		ui: { notify: (message: string) => notices.push(message) },
+	} as unknown as ExtensionContext;
+	const handlers = loadExtension();
+	handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, ctx);
+	handlers.get("session_start")?.({ type: "session_start", reason: "resume" } as never, ctx);
+	const event = { type: "session_before_compact", customInstructions: autoInstructions, signal: controller.signal,
+		preparation: { firstKeptEntryId: "kept", messagesToSummarize: [{ role: "user", content: "hello", timestamp: 1 }],
+			turnPrefixMessages: [], isSplitTurn: false, tokensBefore: 10,
+			fileOps: { read: new Set(), written: new Set(), edited: new Set() } }, branchEntries: [],
+	};
+	const result = await handlers.get("session_before_compact")?.(event as never, ctx) as { compaction: { summary: string } };
+	assert.deepEqual(failures, []);
+	assert.equal(result?.compaction.summary, "Routed summary", JSON.stringify(notices));
+	assert.equal(providerCalls, 1);
+	mode = "error";
+	assert.equal(await handlers.get("session_before_compact")?.(event as never, ctx), undefined);
+	assert.deepEqual(notices, ["Configured task model routes failed; using current session model."]);
+	assert.match(failures.at(-1)!, /Test credentials expired; sign in again/);
+	notices.length = 0;
+	mode = "cancel";
+	assert.equal(await handlers.get("session_before_compact")?.(event as never, ctx), undefined);
+	assert.equal(controller.signal.aborted, true);
+	assert.equal(providerCalls, 1);
+	assert.deepEqual(notices, []);
 });
 
 test("exceptional resume compaction sends a continuation after success", async () => {
@@ -642,7 +748,7 @@ test("ineligible reads stay intact and branch changes discard pending boundary d
 		const notices: string[] = [];
 		const ctx = { cwd: tempRoot, model, sessionManager: sm, isProjectTrusted: () => true,
 			getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
-			modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: () => {
+			modelRegistry: { getAvailable: () => [], streamSimple: () => {
 				if (scenario === "switched branch") sm.branch(oldId);
 				throw new Error("no model");
 			} },
@@ -702,8 +808,12 @@ test("completed final boundary persists routed summary, usage, and read tracking
 	const ctx = { cwd: tempRoot, isProjectTrusted: () => true, model, sessionManager: sm,
 		getContextUsage: () => ({ tokens: null, contextWindow: model.contextWindow, percent: null }),
 		// The session model goes through the registry, which routes virtual models.
-		modelRegistry: { getAvailable: () => [], getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test" }),
-			streamSimple: (requested: unknown, context: unknown) => {
+		modelRegistry: { getAvailable: () => [],
+			getApiKeyAndHeaders: () => { throw new Error("Registry streaming owns authentication"); },
+			streamSimple: (requested: unknown, context: unknown, options: { apiKey?: string; headers?: unknown; env?: unknown }) => {
+				assert.equal(options.apiKey, undefined);
+				assert.equal(options.headers, undefined);
+				assert.equal(options.env, undefined);
 				streamed.push(requested);
 				requestBody = JSON.stringify(context);
 				return { result: async () => ({ role: "assistant", content: [{ type: "text", text: "A valid summary" }],
