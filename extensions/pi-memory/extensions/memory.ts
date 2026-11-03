@@ -3,7 +3,7 @@ import { unwatchFile, watchFile } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, opendir, realpath, rm } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { BorderedLoader, DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, DynamicBorder, generateDiffString, getAgentDir, getSelectListTheme, highlightCode, renderDiff, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { askQuestion } from "@henryqw/pi-ask-question";
 import {
 	extensionConfigDir,
@@ -457,16 +457,18 @@ async function chooseApproval(ctx: ExtensionContext, build: (theme: ExtensionCon
 			signal?.addEventListener("abort", onAbort, { once: true });
 			if (signal?.aborted) onAbort();
 			const { container, choices } = build(theme);
-			const list = new SelectList(choices, choices.length, getSelectListTheme());
+			const list = new SelectList(choices, choices.length, getSelectListTheme(), { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 42 });
 			list.onSelect = (item) => done(item.value);
 			list.onCancel = () => done(undefined);
 			const scroll = new ScrollView(container);
 			const footer = new Container();
+			footer.addChild(new DynamicBorder((text: string) => theme.fg("borderMuted", text)));
 			footer.addChild(list);
 			footer.addChild(new Text(theme.fg("dim", "PgUp/PgDn scroll • Home/End • ↑↓ navigate • enter select • esc cancel"), 1, 0));
 			footer.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 			let canReview = true;
 			return {
+				capturesViewportInput: list.capturesViewportInput,
 				render: (width: number) => {
 					const controls = footer.render(width);
 					const height = tui.terminal.rows - controls.length;
@@ -618,10 +620,44 @@ async function resolveReviewConflict(
 	const answer = pending ? {
 		answer: await chooseApproval(ctx, (theme) => {
 			const container = new Container();
-			container.addChild(new Text(theme.bold("Pending memory review"), 1, 1));
-			container.addChild(new Text(question, 1, 0));
-			if (options.includes(merge) && merge.description) container.addChild(new Text(merge.description, 1, 1));
-			return { container, choices: [later, ...options.filter((option) => option !== later)].map(({ label }) => ({ value: label, label })) };
+			const file = `${target.toUpperCase()}.md`;
+			const operations = candidate.kind === "single" ? [candidate.operation] : candidate.operations;
+			const section = (label: string, text: string, spacing = 1) => {
+				container.addChild(new Spacer(spacing));
+				container.addChild(new Text(theme.bold(label), 1, 0));
+				container.addChild(new Text(escapeDisplayControls(text), 1, 0));
+			};
+			container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+			container.addChild(new Text(theme.fg("accent", theme.bold("Pending memory review")), 1, 0));
+			container.addChild(new Text(theme.fg("muted", `${file} · ${operations.length} ${operations.length === 1 ? "operation" : "operations"} · Nothing saved yet`), 1, 0));
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.fg(review.verdict === "distinct" ? "success" : "warning", theme.bold(review.verdict === "distinct" ? "Review: distinct" : `Review: ${review.verdict} with ${review.source.toUpperCase()}.md`)), 1, 0));
+			container.addChild(new Text(escapeDisplayControls(review.explanation), 1, 0));
+			if (review.verdict !== "distinct") {
+				section(`Existing evidence · ${review.source.toUpperCase()}.md`, review.evidence);
+				if (review.source === "system") section("SYSTEM.md is protected", "Candidate review cannot edit SYSTEM.md. Discard or review later.");
+			}
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.fg("accent", theme.bold(candidate.kind === "single" ? `Proposed change · ${candidate.operation.action} · ${file}` : "Proposed changes")), 1, 0));
+			if (candidate.kind === "batch") container.addChild(new Text(theme.fg("muted", "Save applies every operation below, in order, as one batch."), 1, 0));
+			for (const [index, operation] of operations.entries()) {
+				if (candidate.kind === "batch") {
+					container.addChild(new Spacer(1));
+					container.addChild(new Text(theme.bold(`${index + 1}/${operations.length} · ${operation.action} · ${file}`), 1, 0));
+				}
+				if (operation.action !== "add") section("Match text (old_text)", operation.old_text, 0);
+				if (operation.action !== "remove") section("New entry (content)", operation.content, 0);
+			}
+			if (canReplace && review.verdict !== "distinct" && matches[0] !== review.evidence) section(`Complete current entry · ${file}`, matches[0]!);
+			if (options.includes(merge) && review.verdict !== "distinct" && review.proposedMerge) section("Exact merged entry", review.proposedMerge);
+			container.addChild(new Spacer(1));
+			container.addChild(new Text(theme.bold("Exact mutation · JSON (JavaScript Object Notation)"), 1, 0));
+			container.addChild(new Text(highlightCode(escapeDisplayControls(proposal), "json").join("\n"), 1, 0));
+			return { container, choices: [later, ...options.filter((option) => option !== later)].map((option) => ({
+				value: option.label, label: option.label,
+				description: option === later ? "Keep in inbox; change no files" : option === discard ? "Remove candidate; keep current memory"
+					: option === save ? `Apply every operation to ${file}` : option === merge ? "Save the exact merged entry shown above" : "Use the new entry instead of the complete current entry",
+			})) };
 		}, signal),
 		error: undefined,
 		wasCustom: false,

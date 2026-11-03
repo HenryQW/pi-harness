@@ -54,11 +54,13 @@ Automatic conflicts enter a private, durable review inbox. They never open a dia
 
 ### Review inbox
 
-Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and uses the verdict stored with each candidate, so the approval question opens without another review request. It shows each complete mutation. Approval applies the complete mutation, not selected parts of a batch.
+Run `/memory-review` in an idle interactive terminal. The command reviews this group's candidates in arrival order. It reads live sources and uses the verdict stored with each candidate, so the approval question opens without another review request.
+
+The screen separates the verdict, exact evidence, and proposed changes. It shows each operation in order, with its complete match text and new entry where applicable. The exact JSON mutation follows the readable changes. Approval applies the complete mutation, not selected parts of a batch.
 
 If the stored verdict is missing or its sources changed, the command runs candidate review again before the approval question. If you defer or cancel, it stores the new verdict only if the candidate is unchanged.
 
-For a single add with one same-store conflict, the command offers replacement, discard, and merge when the reviewer supplies an exact merge. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
+For a single add with one same-store conflict, the command shows the complete current entry and offers replacement or discard. It also offers merge when the reviewer supplies an exact merge. It shows the complete proposed merge before you select an action. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
 
 **Review later** is selected by default. Press Esc to stop and retain the candidate. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
 
