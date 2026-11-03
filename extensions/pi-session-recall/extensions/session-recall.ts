@@ -1,7 +1,7 @@
 /**
  * pi-session-recall entry point: tool registration and mode dispatch.
  */
-import { getAgentDir, keyHint, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, truncateToVisualLines } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
@@ -391,7 +391,7 @@ export default function (pi: ExtensionAPI): void {
 		}, { additionalProperties: false }),
 		outputSchema: OUTPUT_SCHEMA,
 		annotations: { readOnlyHint: true, openWorldHint: false },
-		renderResult(result, { expanded }, theme) {
+		renderResult(result, { expanded }, theme, context) {
 			const output = result.content.find((part) => part.type === "text")?.text ?? "";
 			const styledOutput = theme.fg("toolOutput", output);
 			if (expanded) return new Text(`\n${styledOutput}`, 0, 0);
@@ -406,7 +406,7 @@ export default function (pi: ExtensionAPI): void {
 						cachedLines = ["", ...preview.visualLines];
 					} else {
 						const hint = theme.fg("muted", `... (${preview.skippedCount} earlier lines,`) +
-							` ${keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
+							` ${context.keyHint("app.tools.expand", "to expand")}${theme.fg("muted", ")")}`;
 						cachedLines = ["", truncateToWidth(hint, width, "..."), ...preview.visualLines];
 					}
 					cachedWidth = width;

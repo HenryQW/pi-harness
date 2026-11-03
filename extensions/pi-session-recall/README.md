@@ -8,6 +8,8 @@ Search past Pi sessions locally for decisions and context. Saved transcripts ent
 pi install npm:@henryqw/pi-session-recall
 ```
 
+Requires Pi 1.5.0 or later in the 1.x series.
+
 ## Use
 
 Ask the agent to search distinctive keywords:
