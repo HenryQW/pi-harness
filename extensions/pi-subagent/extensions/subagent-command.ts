@@ -1,4 +1,4 @@
-import { getMarkdownTheme, getSelectListTheme, keyHint, keyText, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, getSelectListTheme, rawKeyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import type { PruneItem, PruneProgress } from "../dist/prune.js";
@@ -342,7 +342,9 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 		const index = labels.indexOf(selected ?? "");
 		return index < 0 ? undefined : items[index]!.value;
 	}
-	return ctx.ui.custom<T | undefined>((tui, theme, _keys, done) => {
+	return ctx.ui.custom<T | undefined>((tui, theme, keys, done) => {
+		const keyText = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action).join("/");
+		const keyHint = (action: Parameters<typeof keys.getKeys>[0], description: string) => rawKeyHint(keyText(action), description);
 		const rows = labels.map((label, index) => ({ label, value: String(index) }));
 		// The menu replaces the editor, not the screen; cap its height to leave room for other content.
 		const menuHeight = () => Math.max(1, Math.floor(tui.terminal.rows / 2));
@@ -372,7 +374,7 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 				listHeight = Math.min(lines.length, height);
 				if (height < 4) return lines.slice(0, height);
 				return [truncateToWidth(theme.fg("accent", title), width), ...lines,
-					truncateToWidth([`${keyText("tui.select.up")}/${keyText("tui.select.down")} scroll`,
+					truncateToWidth([rawKeyHint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "scroll"),
 						keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel")].join(" · "), width)];
 			},
 			handleInput(data) { list.handleInput(data); tui.requestRender(); },
@@ -388,7 +390,7 @@ async function choose<T>(ctx: ExtensionContext, title: string, items: readonly C
 			},
 			invalidate() { list.invalidate(); },
 		};
-	});
+	}, { blocked: { kind: "question", message: title } });
 }
 
 /** Multi-select on single-choice menus: each pick toggles one row until Continue. Returns chosen values in

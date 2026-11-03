@@ -27,11 +27,20 @@ async function repository(t: import("node:test").TestContext): Promise<string> {
 }
 
 function gitReadTool() {
-	let tool!: { execute: (...args: any[]) => Promise<{ content: { text: string }[]; structuredContent: { output: string; stderr: string; truncated: boolean } }> };
+	let tool!: { parameters: object; execute: (...args: any[]) => Promise<{ content: { text: string }[]; structuredContent: { output: string; stderr: string; truncated: boolean } }> };
 	const argv = process.argv;
 	try {
 		process.argv = ["node", "pi", `--${ROLE_TOOL_POLICY_FLAG}`, '["git_read"]'];
-		gitRead({ registerTool(value: typeof tool) { tool = value; } } as unknown as ExtensionAPI);
+		gitRead({ registerTool(value: typeof tool) {
+			tool = value;
+			const schema = JSON.parse(JSON.stringify(tool.parameters));
+			assert.equal(schema.type, "object");
+			for (const name of ["operation", "mode"]) {
+				assert.equal(schema.properties[name].type, "string");
+				assert.ok(Array.isArray(schema.properties[name].enum));
+				assert.equal(schema.properties[name].anyOf, undefined);
+			}
+		} } as unknown as ExtensionAPI);
 	} finally { process.argv = argv; }
 	return (cwd: string, params: unknown, signal?: AbortSignal) => tool.execute("git-evidence", params, signal, undefined, { cwd });
 }
@@ -79,6 +88,7 @@ test("git_read rejects malicious revisions, paths, and mixed operation arguments
 	}
 	for (const params of [
 		{ operation: "checkout", revision: "HEAD" }, { operation: "status", args: ["--help"] },
+		{ operation: "diff", mode: "unknown" }, { operation: null }, { operation: "diff", mode: null },
 		{ operation: "status", revision: "HEAD" }, { operation: "diff", mode: "committed", base: "HEAD" },
 		{ operation: "diff", mode: "working", base: "HEAD", tip: "HEAD" },
 		{ operation: "blame" }, { operation: "blame", path: "a", startLine: 2, endLine: 1 },

@@ -9,7 +9,7 @@ pi install npm:@henryqw/pi-task-models
 pi install npm:@henryqw/pi-herdr-tools
 ```
 
-Use Herdr 0.9.3 or later in a Herdr-managed Pi pane. Outside Herdr, rename still sets the Pi session title.
+This package requires Pi 1.5.0 or later in the 1.x series. In a Herdr-managed Pi pane, use Herdr 0.9.3 or later. Outside Herdr, rename still sets the Pi session title.
 
 Configure `fast` in `/task-models`.
 

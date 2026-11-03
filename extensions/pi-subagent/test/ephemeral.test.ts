@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	addUsage,
 	capEphemeralSubagentOutput,
 	createEphemeralSubagentExecutor,
 	EphemeralSubagentError,
@@ -53,7 +54,7 @@ function prepared(cwd: string, task = "work", childLaunch = launch) {
 	return { launch: childLaunch, task, cwd };
 }
 
-function usage(multiplier: number) {
+function usage(multiplier: number, totalFromProvider?: boolean) {
 	return {
 		input: 1 * multiplier,
 		output: 2 * multiplier,
@@ -67,7 +68,8 @@ function usage(multiplier: number) {
 			output: 0.2 * multiplier,
 			cacheRead: 0.3 * multiplier,
 			cacheWrite: 0.4 * multiplier,
-			total: 1 * multiplier,
+			total: (totalFromProvider ? 7 : 1) * multiplier,
+			...(totalFromProvider === undefined ? {} : { totalFromProvider }),
 		},
 	};
 }
@@ -873,6 +875,25 @@ event({ type: "message_end", message: { role: "assistant", content: [{ type: "te
 	});
 	assert.deepEqual(result.usage, usage(3));
 	assert.deepEqual(tokens, [10, 10, 30]);
+});
+
+test("provider cost provenance survives parsing and marks only wholly billed aggregates", async (t) => {
+	for (const flag of [undefined, false, true, "true"]) {
+		await t.test(String(flag), async (t) => {
+			const measured = { ...usage(1), cost: { ...usage(1).cost, total: 7, totalFromProvider: flag } };
+			const cwd = await useRunner(t, `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", content: [], usage: ${JSON.stringify(measured)}, stopReason: "stop" } }));`);
+			const result = await executor().run({ prepare: async () => prepared(cwd) });
+			assert.deepEqual(result.usage, typeof flag === "string" ? undefined : {
+				...usage(1), cost: { ...usage(1).cost, total: 7, ...(flag === undefined ? {} : { totalFromProvider: flag }) },
+			});
+		});
+	}
+	for (const left of [undefined, false, true]) for (const right of [undefined, false, true]) {
+		const result = addUsage(usage(1, left), usage(2, right))!;
+		assert.equal(result.cost.total, usage(1, left).cost.total + usage(2, right).cost.total);
+		assert.equal(result.cost.totalFromProvider, left === undefined && right === undefined ? undefined : left === true && right === true);
+	}
+	assert.deepEqual(addUsage(undefined, usage(1, true)), usage(1, true));
 });
 
 test("launched abort rejects with accumulated Usage", async (t) => {

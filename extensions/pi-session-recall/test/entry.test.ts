@@ -50,7 +50,7 @@ interface CapturedTool {
 		result: { content: { type: string; text: string }[]; details: unknown },
 		options: { expanded: boolean },
 		theme: { fg(color: string, text: string): string },
-		context: unknown,
+		context: { keyHint(keybinding: string, description: string): string },
 	) => { render(width: number): string[]; invalidate(): void };
 }
 
@@ -189,14 +189,21 @@ describe("session_search entry point", () => {
 		register(pi as never);
 
 		const tool = (pi as any).tool as CapturedTool;
-		const result = { content: [{ type: "text", text: JSON.stringify({ messages: Array.from({ length: 10 }, (_, index) => `${index}:${"x".repeat(30)}`) }) }], details: {} };
-		const width = 40;
+		const result = { content: [{ type: "text", text: JSON.stringify({ messages: Array.from({ length: 10 }, (_, index) => `${index}:${"x".repeat(80)}`) }) }], details: {} };
+		const width = 100;
 		const allLines = new Text(result.content[0]!.text, 0, 0).render(width);
 		assert.ok(allLines.length > 5);
 		const theme = { fg: (_color: string, text: string) => text };
 		initTheme("dark");
+		const context = {
+			keyHint(keybinding: string, description: string) {
+				assert.equal(keybinding, "app.tools.expand");
+				assert.equal(description, "to expand");
+				return "Alt+Shift+F12 to expand";
+			},
+		};
 
-		const preview = tool.renderResult(result, { expanded: false }, theme, {});
+		const preview = tool.renderResult(result, { expanded: false }, theme, context);
 		const collapsed = preview.render(width);
 		assert.equal(preview.render(width), collapsed);
 		assert.notEqual(preview.render(width + 10), collapsed);
@@ -206,8 +213,8 @@ describe("session_search entry point", () => {
 		assert.deepEqual(rerendered, collapsed);
 		assert.deepEqual(collapsed.slice(-5), allLines.slice(-5));
 		assert.match(collapsed[1]!, /earlier lines/);
-		assert.match(collapsed[1]!, /to expand/);
-		assert.deepEqual(tool.renderResult(result, { expanded: true }, theme, {}).render(width), new Text(`\n${result.content[0]!.text}`, 0, 0).render(width));
+		assert.match(collapsed[1]!, /Alt\+Shift\+F12 to expand/);
+		assert.deepEqual(tool.renderResult(result, { expanded: true }, theme, context).render(width), new Text(`\n${result.content[0]!.text}`, 0, 0).render(width));
 	});
 
 	it("registers search and dispatches browse, discovery, read, and scroll", async () => {

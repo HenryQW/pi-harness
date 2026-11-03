@@ -1262,8 +1262,8 @@ test("direct answer retries only complete wait timeouts without caller cancellat
 					waits++;
 					if (waits === 1) {
 						if (scenario.startsWith("cancelled")) controller.abort();
-						if (scenario === "killed-success") return { ...await fake.exec(args), killed: true };
-						return { code: 1, killed: scenario !== "timeout" && scenario !== "cancelled-timeout" && scenario !== "other-error", stdout: "",
+						if (scenario === "killed-success") return { ...await fake.exec(args), killed: true, truncated: false };
+						return { code: 1, truncated: false, killed: scenario !== "timeout" && scenario !== "cancelled-timeout" && scenario !== "other-error", stdout: "",
 							stderr: scenario.endsWith("other-error") ? timeout.replace('"timeout"', '"agent_not_found"')
 								: scenario === "incomplete-timeout" ? timeout.slice(0, -1) : timeout };
 					}
@@ -1272,9 +1272,9 @@ test("direct answer retries only complete wait timeouts without caller cancellat
 				if (args[1] === "wait" && scenario === "changed-identity") {
 					const body = JSON.parse(response.stdout);
 					body.result.agent.pane_id = "foreign-pane";
-					return { ...response, killed: false, stdout: JSON.stringify(body) };
+					return { ...response, killed: false, truncated: false, stdout: JSON.stringify(body) };
 				}
-				return { ...response, killed: false };
+				return { ...response, killed: false, truncated: false };
 			};
 			const handle = await createDirectHerdr({ exec }, cwd, 1000).start({
 				args: ["--no-session"], env: {}, tools: ["read"], thinkingLevel: "low", missingSkills: [],

@@ -6,6 +6,8 @@ Pause Pi to collect answers to one question or a list of questions. The user sel
 
 ## Install
 
+This package requires Pi 1.5.0 or later in the 1.x series.
+
 ```bash
 pi install npm:@henryqw/pi-ask-question
 ```

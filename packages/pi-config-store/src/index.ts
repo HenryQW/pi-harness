@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { lock } from "proper-lockfile";
 
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -634,9 +634,14 @@ export type { ConfigStore };
 /** The part of a store that launch reporting needs. */
 export type ReportableConfig = Pick<ConfigStore<unknown>, "extensionId" | "path" | "loadSync">;
 
+type ConfigReportingContext = {
+	hasUI: boolean;
+	ui: Pick<ExtensionContext["ui"], "notify">;
+};
+
 export interface ConfigReporter {
 	/** Show issues in `result` that this session has not shown yet. Use it after lazy per-command or per-render reads. */
-	report(ctx: Pick<ExtensionContext, "hasUI" | "ui">, store: Pick<ReportableConfig, "extensionId" | "path">, result: ConfigLoad<unknown>): void;
+	report(ctx: ConfigReportingContext, store: Pick<ReportableConfig, "extensionId" | "path">, result: ConfigLoad<unknown>): void;
 }
 
 const REPORTED = Symbol.for("@henryqw/pi-config-store/reported");
@@ -658,7 +663,9 @@ function reported(event?: { value: unknown }): Set<string> {
  * `error` when the config is disabled, otherwise `warning`. Without UI, write the text to stderr.
  * Each issue shows once per session, across every reporter of every extension.
  */
-export function registerConfigReporting(pi: Pick<ExtensionAPI, "on">, stores: readonly ReportableConfig[]): ConfigReporter {
+export function registerConfigReporting(pi: {
+	on(event: "session_start", handler: (event: unknown, ctx: ConfigReportingContext) => void): void;
+}, stores: readonly ReportableConfig[]): ConfigReporter {
 	const reporter: ConfigReporter = {
 		report(ctx, store, result) {
 			const shown = reported();

@@ -67,7 +67,7 @@ const HTTP_CHECKS: Record<string, FieldCheck> = {
 	}, "an http URL on localhost, 127.0.0.1, or [::1] without query or fragment, on the \"oauth.callbackPort\" port"],
 	"oauth.scope": [isString, "a string"],
 	"oauth.clientName": [(value) => typeof value === "string" && value.trim() !== "", "a non-empty string"],
-	"oauth.clientRegistration": [(value) => value === "dcr" || value === "cimd", '"dcr" or "cimd"'],
+	"oauth.clientRegistration": [(value) => value === "auto" || value === "dcr" || value === "cimd", '"auto", "dcr", or "cimd"'],
 	"oauth.authServerMetadataUrl": [(value) => isHttpsOrLoopback(parseUrl(value)), "an https URL, or http on localhost, 127.0.0.1, or [::1]"],
 	auth: [(value) => isRecord(value) && typeof value.provider === "string" && value.provider !== "", "an object with a non-empty \"provider\" string"],
 };
@@ -122,7 +122,7 @@ export function loadRoleMcpConfig(agentDir: string, allowlist: readonly string[]
 	const path = join(agentDir, "mcp.json");
 	let parsed: unknown = {};
 	try {
-		parsed = JSON.parse(readFileSync(path, "utf8"));
+		parsed = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
 			throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });

@@ -95,7 +95,7 @@ type HarnessOptions = {
 	restResults?: Record<string, unknown>;
 };
 
-const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed });
+const result = (stdout = "", code = 0, stderr = "", killed = false) => ({ stdout, stderr, code, killed, truncated: false });
 
 function runGit(cwd: string, args: string[]) {
 	const command = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -104,6 +104,7 @@ function runGit(cwd: string, args: string[]) {
 		stderr: command.stderr ?? "",
 		code: command.status ?? 1,
 		killed: command.signal !== null,
+		truncated: false,
 	};
 }
 

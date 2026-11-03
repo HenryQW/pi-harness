@@ -6,7 +6,7 @@ Delegate bounded work to configured Pi Roles through [Herdr](https://herdr.dev/)
 
 ## Install
 
-Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later.
+Requires Pi 1.5.0 or later in the 1.x series for native user-input status and schema support. Isolated work requires Herdr 0.9.3 or later for both the client and server. The server must run on API protocol 22 or later.
 
 ```bash
 pi install npm:@henryqw/pi-task-models
@@ -150,7 +150,9 @@ Staging, validation, and promotion require clean, unchanged Main. After a defini
 
 ### Inspect work
 
-Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history. In the terminal, the menu replaces the editor and uses at most half the terminal height. It does not overlay the report or the transcript.
+Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
+
+In the terminal, the menu replaces the editor and uses at most half the terminal height. It does not overlay the report or the transcript. While the menu waits for your selection, Pi reports that it needs user input. Key hints use Pi's configured bindings.
 
 Move through rows with the mouse wheel. Click a row to select it. You can also use the keyboard.
 
@@ -207,6 +209,8 @@ The same profile and fallback route warn once in the active parent session. A se
 Route selection does not change. An available primary produces no fallback warning. A direct `model` override produces no fallback warning because it replaces the configured model. It still keeps the resolved thinking level.
 
 Children load only declared resources and required adapters. Roles must list their model provider extension. `codemode` requires both `builtin:codemode` in `extensions` and `codemode` in `tools`. For discovery without scripts, add `builtin:tool-search` to `extensions` and `tool_search` to `tools`. Missing Skills, tools, MCP servers, Roles, or routes fail before productive work. Main-only delegation/recovery tools and `ask_question` stay unavailable to children.
+
+The global `mcp.json` can start with a byte-order mark, as supported by Pi since 1.4. The `oauth.clientRegistration` field accepts `auto` for automatic selection, `dcr` for dynamic client registration, or `cimd` for a client ID metadata document. OAuth, the authorization protocol, keeps Pi's callback and secure-transport checks.
 
 Every selected MCP server keeps its validated `exposure` and `toolExposure`, with or without `codemode`. An absent exposure keeps Pi's native `codemode` default. Hidden tools stay unreachable. MCP configuration never activates `codemode` automatically.
 

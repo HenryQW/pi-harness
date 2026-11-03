@@ -1,6 +1,6 @@
 # `@henryqw/pi-codegraph`
 
-Use separate [CodeGraph](https://github.com/colbymchenry/codegraph) indexes for explicitly selected Git worktrees in one Pi session. Agents use `codegraph_explore` to get relevant source and call paths. Each selected worktree has its own file watcher.
+Use separate [CodeGraph](https://github.com/colbymchenry/codegraph) indexes for explicitly selected Git worktrees in one Pi session. Agents use `codegraph_explore` to get relevant source and call paths. Each selected worktree has its own file watcher, and the package requires Pi 1.5.0 or later in the 1.x series.
 
 ## Install
 

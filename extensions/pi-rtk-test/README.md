@@ -4,6 +4,8 @@ Keep long `pnpm test` output out of Pi's model context. Supported direct Bash ca
 
 ## Install
 
+Requires Pi 1.5.0 or later in the 1.x series.
+
 ```bash
 pi install npm:@henryqw/pi-rtk-test
 ```

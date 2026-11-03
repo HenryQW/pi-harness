@@ -8,6 +8,8 @@ Let a second model examine the tool calls and results of each agent run after Pi
 pi install npm:@henryqw/pi-advisor
 ```
 
+Requires Pi 1.5.0 or later in the 1.x series.
+
 The advisor uses the `pi-advisor/review` Model Task. Its default Task Profile is `balanced`. Run `/task-models` to configure a route for that profile before you turn the advisor on.
 
 ## Works with

@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnBounded } from "@henryqw/pi-process";
 import { ROLE_TOOL_POLICY_FLAG, roleToolPolicyFromArgv } from "@henryqw/pi-subagent";
@@ -8,8 +7,8 @@ import { Check } from "typebox/value";
 const OUTPUT_BYTES = 32 * 1024;
 const TIMEOUT_MS = 30_000;
 const Parameters = Type.Object({
-	operation: StringEnum(["status", "diff", "show", "log", "blame", "rev-parse"]),
-	mode: Type.Optional(StringEnum(["working", "staged", "committed"], { description: "Diff only; defaults to working (unstaged). Committed requires base and tip." })),
+	operation: Type.Enum(["status", "diff", "show", "log", "blame", "rev-parse"], { type: "string" }),
+	mode: Type.Optional(Type.Enum(["working", "staged", "committed"], { type: "string", description: "Diff only; defaults to working (unstaged). Committed requires base and tip." })),
 	base: Type.Optional(Type.String()),
 	tip: Type.Optional(Type.String()),
 	revision: Type.Optional(Type.String({ description: "Commit ID or named ref with optional ~N/^N ancestry; defaults to HEAD. No ranges or reflog expressions." })),

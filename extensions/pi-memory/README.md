@@ -2,6 +2,8 @@
 
 Keep durable preferences and cross-project facts across Pi sessions in size-limited Markdown stores.
 
+Requires Pi 1.5.0 or later in the 1.x series.
+
 Inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent) and its bounded `MEMORY.md`/`USER.md` cross-session memory pattern.
 
 ## Install

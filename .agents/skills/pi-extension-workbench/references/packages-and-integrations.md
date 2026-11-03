@@ -17,27 +17,53 @@ check its lockfile, scripts, and documented support policy.
   `@earendil-works/pi-ai`, `pi-agent-core`, `pi-coding-agent`, `pi-tui` (all under
   `@earendil-works/`), and `typebox` belong in wildcard `peerDependencies`, not
   bundled copies. Duplicate host packages can bypass module mapping.
+  In new code, import `Type`, `Static`, and `TSchema` from `typebox`. Pi maps
+  extension imports of `@earendil-works/pi-ai` to a compatibility view that still
+  supplies TypeBox exports and a TypeBox-typed `StringEnum`; the standalone
+  package root does not provide the same view. Do not rewrite existing extension
+  imports without need; verify direct imports and typechecks outside the host.
 - Other Pi package dependencies need published files and explicit resource paths
   under `node_modules/`. Check packaging rather than assuming bundling; use
   `npm pack --dry-run --ignore-scripts` to inspect contents without lifecycle
   hooks. Do not create release tarballs or publish unless requested.
 - Use `resources_discover` only for computed paths. Resolve siblings with
   `import.meta.url`, not cwd. See `examples/extensions/dynamic-resources/index.ts`.
+- For update notices, ship a package-root **CHANGELOG.md**, or set `pi.changelogPath` to a file
+  inside the package; `""` disables notices. Pi records the version without a
+  notice on first sight. Later version increases show newer entries on a fresh
+  launch, not just reload, and only for packages that load an extension.
+  `collapseChangelog` condenses notices; `/changelog` does not show package
+  changelogs. Keep the chosen file in the published artifact.
 
 ## Prefer native integrations
 
 | Need | Native API | Installed reference |
 |---|---|---|
-| Call existing tools | `ctx.executeTool()` | `docs/extensions.md`: Tools |
-| Register session MCP servers | `registerMcpServer` / `unregisterMcpServer` | `docs/extensions.md`: MCP servers; `docs/mcp.md` |
+| Call existing tools | `ctx.executeTool()` | `docs/extensions.md`: Calling Other Tools |
+| Register session Model Context Protocol (MCP) servers | `registerMcpServer` / `unregisterMcpServer` | `docs/extensions.md`: MCP Servers; `docs/mcp.md` |
 | Route requests across models | `registerVirtualModel` | `docs/virtual-models.md` |
+| Inspect effective model configuration / classifier image input | Model registry / `models.classify()` | `docs/models-configuration.md`; `docs/models.md`; `docs/codemode.md` |
 | Proxy/auth/catalog or custom streaming | `registerProvider` | `docs/custom-provider.md` |
 | Observe/adjust provider HTTP traffic | Provider request/headers/response events | `examples/extensions/provider-payload.ts` |
 
 Do not build a custom MCP client or provider for ordinary server registration,
 model selection, or model routing. MCP registrations are session/runtime-local;
 register again on load and honor configured server overrides. Pass cancellation
-to network I/O. Never log credentials, auth headers, or provider secrets.
+to network input/output operations. Never log credentials, authorization headers,
+or provider secrets.
+
+Native `oauth.clientRegistration` defaults to `auto`: use a Client ID Metadata
+Document when supported for public clients, else dynamic registration. A custom
+`clientName` or non-default `callbackUrl` also selects registration. Explicit `dcr`
+means dynamic client registration; `cimd` means Client ID Metadata Document.
+Custom policy validators must accept valid native modes while preserving server
+allowlists and the stricter `cimd` field constraints. See `docs/mcp.md`.
+
+Provider attribution headers for OpenRouter, NVIDIA NIM (NVIDIA Inference
+Microservices), and OpenCode no longer appear in `before_provider_headers`;
+returning `null` for one still suppresses it. Do not infer absence on the wire
+from absence in that event.
+
 Extensions execute with user permissions: preserve project trust checks and
 validate external configuration, paths, and payloads at their boundary.
 

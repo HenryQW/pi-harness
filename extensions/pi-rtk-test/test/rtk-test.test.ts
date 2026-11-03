@@ -12,7 +12,7 @@ type ProbeCall = {
 };
 
 function probeResult(code = 0, killed = false): ExecResult {
-	return { stdout: "", stderr: "", code, killed };
+	return { stdout: "", stderr: "", code, killed, truncated: false };
 }
 
 function bashCall(command: unknown): Extract<ToolCallEvent, { toolName: "bash" }> {

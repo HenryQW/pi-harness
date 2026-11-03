@@ -158,7 +158,7 @@ function flush(): Promise<void> {
 }
 
 function execResult(stdout = "", code = 0, stderr = "", killed = false): ExecResult {
-	return { stdout, stderr, code, killed };
+	return { stdout, stderr, code, killed, truncated: false };
 }
 
 async function withHerdrEnvironment(

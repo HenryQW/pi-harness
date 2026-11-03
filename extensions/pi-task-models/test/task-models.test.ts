@@ -600,7 +600,8 @@ test("task model TUI delegates selection and cancellation to Pi's native list", 
 		const { handler } = controlPlane(eventBus(), dir);
 		let key = "\x1b";
 		const ctx = { mode: "tui", ui: {
-			custom: async (factory: any) => {
+			custom: async (factory: any, options: any) => {
+				assert.deepEqual(options, { blocked: { kind: "question", message: "Select a task model" } });
 				let result: unknown;
 				factory({ requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, (value: unknown) => { result = value; }).handleInput(key);
 				return result;

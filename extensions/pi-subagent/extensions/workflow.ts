@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, readlink } from "node:fs/promises";
 import { posix } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { DISPLAY_TEXT_CONTRACT } from "@henryqw/pi-subagent";
 import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { Type, type Static } from "typebox";
@@ -25,13 +24,13 @@ const TaskNameSchema = Type.String({
 const RoleSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Configured Subagent role name" });
 const TaskSchema = Type.String({ minLength: 1, description: "Bounded task packet" });
 const ModelSchema = Type.String({ minLength: 1, pattern: DISPLAY_TEXT_CONTRACT.pattern, description: "Designated model as provider/modelId; replaces the selected route model" });
-const ModelClassSchema = StringEnum(PROFILE_NAMES, { description: "Task model profile" });
-const DirectKindSchema = StringEnum(["text"] as const);
+const ModelClassSchema = Type.Enum(PROFILE_NAMES, { type: "string", description: "Task model profile" });
+const DirectKindSchema = Type.Enum(["text"], { type: "string" });
 /** Main's honest per-task classification; only `write` reserves the checkout. Nothing enforces `read`. */
 export const DIRECT_ACCESS = ["read", "write"] as const;
 export type DirectAccess = (typeof DIRECT_ACCESS)[number];
 const ACCESS_GUIDANCE = `Declare "write" when the task may change files, Git state, or external resources, otherwise "read". "read" is not enforced (no sandbox): it skips checkout admission and runs concurrently. Use mode isolated for checked writes.`;
-const AccessSchema = StringEnum(DIRECT_ACCESS, { description: ACCESS_GUIDANCE });
+const AccessSchema = Type.Enum(DIRECT_ACCESS, { type: "string", description: ACCESS_GUIDANCE });
 const DryRunSchema = Type.Boolean({ description: "Optional. When true, run every launch validation and return the resolved plan without starting workers, saving state, or reserving the checkout." });
 const ContinueFromSchema = Type.String({ pattern: "^D[1-9][0-9]*\\.[1-9][0-9]*$", description: "Optional direct worker reference such as D7.1. Continues that finished worker's Pi session in a new tab with this task; role must equal the recorded Role." });
 

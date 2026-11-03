@@ -520,7 +520,7 @@ async function selectTaskModels(ctx: ExtensionContext, options: string[]): Promi
 				tui.requestRender();
 			},
 		});
-	});
+	}, { blocked: { kind: "question", message: "Select a task model" } });
 }
 
 export function createTaskModelsExtension(
