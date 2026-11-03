@@ -12,6 +12,7 @@ import test, { type TestContext } from "node:test";
 import { Compile } from "typebox/compile";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkoutAdmission } from "@henryqw/pi-herdr";
+import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, type Component } from "@earendil-works/pi-tui";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
 import { atomicState, cancelJob, listJobs, outputTail, readJob, readPrivate, terminal, writePrivate, type JobSpec } from "../internal/command-state.ts";
 
@@ -310,6 +311,57 @@ test("delegated launches fail before dispatch, state, or admission; list, status
 		await execute("cancel");
 		assert.deepEqual(await readPrivate(join(dir, "cancel.json")), { id: f.spec.id, token: f.spec.token });
 	});
+});
+
+test("Show output uses an awaited terminal view but keeps RPC notifications and non-UI lists", async (t) => {
+	const root = await environment(t);
+	const h = host(root);
+	let command: any;
+	const manager = registerCommands({ ...h.pi, registerTool() {}, registerCommand(_name: string, value: any) { command = value; } } as unknown as ExtensionAPI);
+	const f = await fixture(t, "true");
+	await mkdir(manager.root, { recursive: true, mode: 0o700 });
+	const dir = join(manager.root, f.spec.id);
+	await cp(f.dir, dir, { recursive: true });
+	const output = "x".repeat(8190) + "\r\n";
+	await writeFile(join(dir, "output.log"), "omitted prefix" + output, { mode: 0o600 });
+	let component!: Component, notified = "", customCalls = 0, selectCalls = 0;
+	const ctx = { mode: "tui", hasUI: true, ui: {
+		async select(_title: string, choices: string[]) { selectCalls++; return choices[0]; },
+		notify(message: string) { notified = message; },
+		custom(factory: Function) {
+			customCalls++;
+			return new Promise<void>((done) => {
+				component = factory({ terminal: { rows: 300 }, requestRender() {} },
+					{ fg: (_color: string, text: string) => `\x1b[39m${text}\x1b[39m` },
+					new KeybindingsManager(TUI_KEYBINDINGS), done);
+			});
+		},
+	} };
+	let returned = false;
+	const pending = command.handler("", ctx).then(() => { returned = true; });
+	await waitFor(async () => component);
+	const lines = component.render(100).map(stripTerminalSequences);
+	assert.ok(lines.some((line) => line.includes(f.spec.id)));
+	assert.ok(!lines.join("").includes("omitted prefix"));
+	const start = lines.findIndex((line) => line.startsWith("Last 8192 output bytes"));
+	assert.equal(lines.slice(start + 1, -2).map((line) => line.trimEnd()).join(""), "x".repeat(8190) + "\\u000d");
+	assert.equal(returned, false);
+	assert.equal(notified, "");
+	component.handleInput!("\x1b"); await pending;
+	assert.equal(await readPrivate(join(dir, "cancel.json")), undefined);
+	ctx.mode = "rpc";
+	await command.handler("", ctx);
+	assert.ok(notified.endsWith("\n" + output));
+	assert.equal(customCalls, 1);
+	const selected = selectCalls;
+	ctx.mode = "print"; ctx.hasUI = false;
+	const stdout: string[] = [];
+	const write = t.mock.method(process.stdout, "write", (chunk: any) => { stdout.push(String(chunk)); return true; });
+	try { await command.handler("", ctx); } finally { write.mock.restore(); }
+	assert.equal(JSON.parse(stdout.join(""))[0].id, f.spec.id);
+	assert.equal(selectCalls, selected);
+	assert.equal(customCalls, 1);
+	assert.equal(await outputTail(await manager.get(f.spec.id)), output);
 });
 
 test("retained history reads 100 completed records with a 64-descriptor limit", async (t) => {
