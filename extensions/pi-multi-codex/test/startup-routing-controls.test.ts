@@ -187,7 +187,7 @@ async function withApp(
 				async select(_title: string, choices: string[]) { return choices[1]; },
 			},
 		};
-		multiCodex({
+		await multiCodex({
 			on(event: string, handler: Handler) {
 				const previous = handlers.get(event);
 				handlers.set(event, previous ? (event, ctx) => { previous(event, ctx); return handler(event, ctx); } : handler);
