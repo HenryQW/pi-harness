@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir, registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrToolsConfigStore } from "./config.ts";
+import { showCommandOutput } from "./command-output.ts";
 import { checkoutAdmission, checkoutKey, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
 import { cancelJob, jobId, listJobs, outputTail, privateDirectory, readJob, readPrivate, terminal, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
@@ -172,7 +173,11 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 			const job = await manager.get(selected.split(" ")[0]!);
 			const action = await ctx.ui.select(`${job.spec.id}: ${job.state}`, ["Show output", ...(!terminal(job.state) ? ["Cancel"] : [])]);
 			if (action === "Cancel") { await cancelJob(job); ctx.ui.notify("Cancellation requested. Ownership stays held until the runner proves completion.", "info"); }
-			else if (action === "Show output") ctx.ui.notify(`${JSON.stringify(summary(job))}\n${await outputTail(job)}`, "info");
+			else if (action === "Show output") {
+				const output = await outputTail(job);
+				if (ctx.mode === "tui") await showCommandOutput(ctx, JSON.stringify(summary(job), null, 2), output);
+				else ctx.ui.notify(`${JSON.stringify(summary(job))}\n${output}`, "info");
+			}
 		},
 	});
 	let context: ExtensionContext | undefined;

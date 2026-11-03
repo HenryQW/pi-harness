@@ -62,6 +62,12 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
+In the interactive terminal, run `/commands`, select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
+
+RPC, the remote procedure call mode, keeps the text notification; non-interactive mode keeps the status list.
+
+The view shows output as literal text, not Markdown. It keeps spaces and line breaks and wraps long lines to fit the terminal. Terminal and directional control characters, including tabs and carriage returns, appear as Unicode escapes. In a one-column terminal, wide characters also appear as escapes. These display changes do not change the log file. Empty output shows `(No output.)`.
+
 Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged JavaScript runner uses Node to execute `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment.
 
 Launch needs a free checkout. A writer keeps checkout admission until its runner proves termination. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
