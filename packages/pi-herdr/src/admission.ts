@@ -35,7 +35,7 @@ export async function checkoutKey(pi: Pick<AdmissionHost, "exec">, ctx: { cwd: s
 function createAdmission() {
 	let directCanWrite = (_input: unknown) => true;
 	let directCheckouts: ((input: unknown, ctx: { cwd: string }) => Promise<readonly string[]>) | undefined;
-	const guards = new Map<string, () => Promise<void>>();
+	const guards = new Map<string, (checkouts: readonly string[]) => Promise<void>>();
 	const durable = new Map<string, string>();
 	const events = new WeakMap<object, Promise<Gate>>();
 	const heldCalls = new Set<string>();
@@ -57,12 +57,10 @@ function createAdmission() {
 		calls.delete(toolCallId);
 		for (const key of call?.keys ?? []) if (ownerByCheckout.get(key) === toolCallId) ownerByCheckout.delete(key);
 	};
-	const refresh = async () => { for (const guard of guards.values()) await guard(); };
+	const refresh = async (keys: readonly string[]) => { for (const guard of guards.values()) await guard(keys); };
 	const admit = async (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { cwd: string }, host: AdmissionHost): Promise<Gate> => {
 		const direct = event.toolName === "delegate_task";
 		if (event.toolName === "background_command" || (direct ? !directCanWrite(event.input) : MAIN_NON_WRITING_TOOLS.has(event.toolName))) return;
-		try { await refresh(); }
-		catch { return { block: true, reason: "Command ownership recovery failed; writes are blocked. Inspect /commands." }; }
 		const call: { direct: boolean; keys?: readonly string[] } = { direct };
 		calls.set(event.toolCallId, call);
 		let keys: readonly string[];
@@ -71,6 +69,11 @@ function createAdmission() {
 		} catch (error) {
 			release(event.toolCallId);
 			throw error;
+		}
+		try { await refresh(keys); }
+		catch {
+			release(event.toolCallId);
+			return { block: true, reason: "Command ownership recovery failed; writes are blocked. Inspect /commands." };
 		}
 		if (calls.get(event.toolCallId) !== call) {
 			return { block: true, reason: `Call ${event.toolCallId} already settled; use mode: isolated to keep Main free.` };
@@ -112,11 +115,11 @@ function createAdmission() {
 	return {
 		install, hold, supportsCheckoutSets: true as const,
 		classifyDirect: (classify: (input: unknown) => boolean, select?: typeof directCheckouts) => { directCanWrite = classify; directCheckouts = select; },
-		guard: (name: string, refresh: () => Promise<void>) => { guards.set(name, refresh); },
+		guard: (name: string, refresh: (checkouts: readonly string[]) => Promise<void>) => { guards.set(name, refresh); },
 		restore: (owner: string, checkout: string) => { durable.set(owner, checkout); },
 		release: (owner: string) => { durable.delete(owner); },
 		async reserve(owner: string, checkout: string): Promise<() => void> {
-			await refresh();
+			await refresh([checkout]);
 			const conflict = [...durable].find(([, key]) => key === checkout)?.[0]
 				?? ownerByCheckout.get(checkout)
 				?? [...calls].find(([, call]) => call.keys?.includes(checkout))?.[0];

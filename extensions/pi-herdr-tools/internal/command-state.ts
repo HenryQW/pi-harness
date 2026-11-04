@@ -106,11 +106,15 @@ export async function atomicState(dir: string, state: RunnerState): Promise<void
 		await syncDirectory(dir);
 	});
 }
+async function readSpec(dir: string): Promise<JobSpec> {
+	const spec = parseSpec(await readPrivateUnlocked(join(dir, "spec.json")));
+	if (dir.split("/").at(-1) !== spec.id) throw new Error("Command directory identity does not match its specification.");
+	return spec;
+}
 export async function readJob(dir: string): Promise<Job> {
 	await privateDirectory(dir);
 	return await withPrivateLock(dir, async () => {
-		const spec = parseSpec(await readPrivateUnlocked(join(dir, "spec.json")));
-		if (dir.split("/").at(-1) !== spec.id) throw new Error("Command directory identity does not match its specification.");
+		const spec = await readSpec(dir);
 		const rawClaim = await readPrivateUnlocked(join(dir, "claim.json"));
 		const claim = rawClaim === undefined ? undefined : parseIdentity(rawClaim, spec);
 		const rawResult = await readPrivateUnlocked(join(dir, "state.json"));
@@ -140,14 +144,21 @@ export async function readJob(dir: string): Promise<Job> {
 		return { spec, dir, claim, result, state, outputPath: join(dir, "output.log") };
 	});
 }
-export async function listJobs(root: string): Promise<Job[]> {
+export async function listJobs(root: string, checkouts?: readonly string[]): Promise<Job[]> {
 	await privateDirectory(root, true);
 	const entries = await readdir(root);
 	const jobs: Job[] = [];
 	for (const id of entries) {
 		// The job-directory lock is a sibling, not a command record.
 		if (id.endsWith(".lock") && uuid.test(id.slice(0, -5))) continue;
-		jobs.push(await readJob(join(root, jobId(id))));
+		const dir = join(root, jobId(id));
+		if (checkouts) {
+			await privateDirectory(dir);
+			// Only the immutable specification can exclude a job without its mutable-state lock.
+			// Missing, incomplete, or unsafe specifications fail closed for every checkout.
+			if (!checkouts.includes((await readSpec(dir)).checkout)) continue;
+		}
+		jobs.push(await readJob(dir));
 	}
 	return jobs;
 }

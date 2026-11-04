@@ -154,7 +154,7 @@ importers:
         specifier: ^4.1.3
         version: link:../../packages/pi-config-store
       '@henryqw/pi-herdr':
-        specifier: ^0.6.2
+        specifier: ^0.6.3
         version: link:../../packages/pi-herdr
       '@henryqw/pi-task-models':
         specifier: ^9.3.0

@@ -11,7 +11,7 @@ import timers, { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { Compile } from "typebox/compile";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checkoutAdmission } from "@henryqw/pi-herdr";
+import { checkoutAdmission, withWorktreeLock } from "@henryqw/pi-herdr";
 import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, type Component } from "@earendil-works/pi-tui";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
 import { atomicState, cancelJob, listJobs, outputTail, readJob, readPrivate, terminal, writePrivate, type JobSpec } from "../internal/command-state.ts";
@@ -156,14 +156,16 @@ test("shared recovery refuses a pipe in completed history without holding its lo
 		import { registerCommands } from ${JSON.stringify(new URL("../internal/commands.ts", import.meta.url).href)};
 		process.env.PI_CODING_AGENT_DIR = process.argv[1];
 		const handlers = new Map(), bus = new EventEmitter();
-		const pi = { events: bus, on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); }, registerTool() {}, registerCommand() {} };
+		const pi = { events: bus, on(name, fn) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); },
+			exec: async () => ({ code: 0, stdout: process.argv[1] + "\\n" }), registerTool() {}, registerCommand() {} };
 		const manager = registerCommands(pi);
 		const file = process.argv[2] + "/dispatch.json";
 		const before = await readFile(process.argv[2] + "/state.json");
 		const expected = { message: "Unsafe command state file: " + file };
-		await assert.rejects(async () => { for (const fn of handlers.get("session_start")) await fn({}, {}); }, expected);
+		const ctx = { cwd: process.argv[1] };
+		await assert.rejects(async () => { for (const fn of handlers.get("session_start")) await fn({}, ctx); }, expected);
 		await assert.rejects(manager.refresh(), expected);
-		const gate = await handlers.get("tool_call")[0]({ toolCallId: "edit", toolName: "edit", input: {} }, {});
+		const gate = await handlers.get("tool_call")[0]({ toolCallId: "edit", toolName: "edit", input: {} }, ctx);
 		assert.equal(gate.block, true);
 		await assert.rejects(manager.guardRemoval(process.argv[1]), expected);
 		assert.ok((await lstat(file)).isFIFO());
@@ -379,12 +381,153 @@ test("retained history reads 100 completed records with a 64-descriptor limit", 
 	}
 	const script = `import assert from "node:assert/strict";
 		import { listJobs } from ${JSON.stringify(new URL("../internal/command-state.ts", import.meta.url).href)};
-		const jobs = await listJobs(process.argv[1]);
-		assert.equal(jobs.length, 100);
-		assert.ok(jobs.every(job => job.state === "succeeded"));`;
+		for (const checkouts of [undefined, [process.argv[1]]]) {
+			const jobs = await listJobs(process.argv[1], checkouts);
+			assert.equal(jobs.length, 100);
+			assert.ok(jobs.every(job => job.state === "succeeded"));
+		}`;
 	const result = spawnSync("/bin/sh", ["-c", 'ulimit -n 64 && exec "$@"', "history-test", process.execPath, "--input-type=module", "-e", script, f.root], { encoding: "utf8", timeout: 10_000 });
 	assert.equal(result.error, undefined);
 	assert.equal(result.status, 0, result.stderr);
+});
+
+test("a held historical job lock in checkout A does not block admission in checkout B", async (t) => {
+	const f = await fixture(t, "true");
+	const checkoutB = await environment(t);
+	const claim = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: f.spec.workspaceId, tabId: "tab", paneId: "pane" };
+	await writePrivate(join(f.dir, "claim.json"), claim);
+	await atomicState(f.dir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+	const h = host(checkoutB);
+	new CommandManager(f.root, h.admission);
+	const wait = t.mock.method(timers, "setTimeout", async () => {});
+	syncBuiltinESMExports();
+	try {
+		await withWorktreeLock(f.dir, async () => {
+			assert.equal(await h.event("tool_call", { toolCallId: "edit-b", toolName: "edit", input: {} }), undefined);
+		});
+	} finally { wait.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("matching held completion fails closed for checkout sets, reservations, and removal without leaking locks", async (t) => {
+	const f = await fixture(t, "true");
+	const checkoutB = await environment(t);
+	const claim = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: f.spec.workspaceId, tabId: "tab", paneId: "pane" };
+	await writePrivate(join(f.dir, "claim.json"), claim);
+	await atomicState(f.dir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+	const h = host(checkoutB);
+	const manager = new CommandManager(f.root, h.admission);
+	h.admission.restore(`command:${f.spec.id}`, f.spec.checkout);
+	h.admission.classifyDirect(() => true, async () => [f.spec.checkout, checkoutB]);
+	const wait = t.mock.method(timers, "setTimeout", async () => {});
+	syncBuiltinESMExports();
+	try {
+		await withWorktreeLock(f.dir, async () => {
+			assert.equal((await h.event("tool_call", { toolCallId: "set", toolName: "delegate_task", input: {} })).block, true);
+			assert.equal(await h.event("tool_call", { toolCallId: "edit-b", toolName: "edit", input: {} }), undefined, "failed set reserves no member");
+			await h.event("tool_execution_end", { toolCallId: "edit-b" });
+			(await h.admission.reserve("reserve-b", checkoutB))();
+			await assert.rejects(h.admission.reserve("reserve-a", f.spec.checkout), { code: "ELOCKED" });
+			(await manager.guardRemoval(checkoutB))();
+			await assert.rejects(manager.guardRemoval(f.spec.checkout), { code: "ELOCKED" });
+			await assert.rejects(fs.lstat(f.root + ".lock"), { code: "ENOENT" });
+			assert.ok((await fs.lstat(f.dir + ".lock")).isDirectory(), "a timeout must not remove the holder's lock");
+		});
+	} finally { wait.mock.restore(); syncBuiltinESMExports(); }
+	assert.equal(await h.event("tool_call", { toolCallId: "recovered-set", toolName: "delegate_task", input: {} }), undefined);
+	h.admission.hold("recovered-set")();
+	assert.ok((await readdir(f.root)).every((name) => !name.endsWith(".lock")));
+});
+
+test("untrustworthy foreign job scope blocks admission and removal without changing the record", async (t) => {
+	for (const fault of ["missing", "partial", "identity", "public", "symlink", "pipe"]) await t.test(fault, async (t) => {
+		const f = await fixture(t, "true");
+		const checkoutB = await environment(t);
+		const file = join(f.dir, "spec.json");
+		if (fault === "missing" || fault === "symlink" || fault === "pipe") await rm(file);
+		if (fault === "partial") await writeFile(file, "{");
+		if (fault === "identity") await writeFile(file, JSON.stringify({ ...f.spec, id: randomUUID() }));
+		if (fault === "public") await fs.chmod(file, 0o644);
+		if (fault === "symlink") {
+			const target = join(checkoutB, "spec.json");
+			await writeFile(target, JSON.stringify(f.spec), { mode: 0o600 });
+			await symlink(target, file);
+		}
+		if (fault === "pipe") assert.equal(spawnSync("mkfifo", ["-m", "600", file]).status, 0);
+		const before = fault === "missing" ? undefined : await fs.lstat(file);
+		const h = host(checkoutB);
+		const manager = new CommandManager(f.root, h.admission);
+		await withWorktreeLock(f.dir, async () => {
+			assert.equal((await h.event("tool_call", { toolCallId: "edit-b", toolName: "edit", input: {} })).block, true);
+			await assert.rejects(manager.guardRemoval(checkoutB));
+		});
+		if (before) {
+			const after = await fs.lstat(file);
+			assert.deepEqual([after.ino, after.mode, after.size, after.mtimeMs], [before.ino, before.mode, before.size, before.mtimeMs]);
+		} else await assert.rejects(fs.lstat(file), { code: "ENOENT" });
+		await assert.rejects(fs.lstat(f.root + ".lock"), { code: "ENOENT" });
+	});
+});
+
+test("startup and polling recover local writers while a foreign job stays locked", async (t) => {
+	const checkoutB = await environment(t);
+	const h = host(checkoutB);
+	const sessionManager = SessionManager.inMemory(checkoutB);
+	const callEntryId = sessionManager.appendMessage({ role: "user", content: "run", timestamp: Date.now() });
+	const sent: unknown[] = [];
+	const ctx = { cwd: checkoutB, sessionManager, isIdle: () => true } as unknown as ExtensionContext;
+	const manager = registerCommands({ ...h.pi, registerTool() {}, registerCommand() {}, sendMessage(message: unknown) { sent.push(message); } } as unknown as ExtensionAPI);
+	t.after(() => h.event("session_shutdown", {}, ctx));
+	const f = await fixture(t, "true");
+	await mkdir(manager.root, { recursive: true, mode: 0o700 });
+	const foreignDir = join(manager.root, f.spec.id);
+	await cp(f.dir, foreignDir, { recursive: true });
+	// Invalid mutable foreign state must not be read to decide scope or completion.
+	await writeFile(join(foreignDir, "state.json"), "{", { mode: 0o600 });
+	const local = { ...f.spec, id: randomUUID(), token: randomUUID(), createdAt: Date.now() - 30_000, checkout: checkoutB,
+		cwd: checkoutB, sessionId: sessionManager.getSessionId(), callEntryId };
+	const localDir = join(manager.root, local.id);
+	await mkdir(localDir, { mode: 0o700 });
+	await writePrivate(join(localDir, "spec.json"), local);
+	const claim = { id: local.id, token: local.token, runnerId: randomUUID(), workspaceId: local.workspaceId, tabId: "tab", paneId: "pane" };
+	await writePrivate(join(localDir, "claim.json"), claim);
+	await atomicState(localDir, { ...claim, state: "running", updatedAt: Date.now(), exitCode: null, signal: null });
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	await withWorktreeLock(foreignDir, async () => {
+		await h.event("session_start", {}, ctx);
+		await h.event("session_shutdown", {}, ctx);
+		const wait = t.mock.method(timers, "setTimeout", async () => {});
+		syncBuiltinESMExports();
+		try {
+			await withWorktreeLock(localDir, async () => {
+				await assert.rejects(h.event("session_start", {}, ctx), { code: "ELOCKED" });
+			});
+		} finally { wait.mock.restore(); syncBuiltinESMExports(); }
+		assert.equal((await h.event("tool_call", { toolCallId: "live", toolName: "edit", input: {} })).block, true);
+		await atomicState(localDir, { ...claim, state: "running", updatedAt: Date.now() - 20_000, exitCode: null, signal: null });
+		assert.equal((await h.event("tool_call", { toolCallId: "unknown", toolName: "edit", input: {} })).block, true);
+		await atomicState(localDir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+		t.mock.timers.tick(1000);
+		await waitFor(async () => sent.length === 1 ? true : undefined);
+		assert.equal(await h.event("tool_call", { toolCallId: "recovered", toolName: "edit", input: {} }), undefined);
+		assert.ok((await fs.lstat(foreignDir + ".lock")).isDirectory());
+		assert.equal(await readFile(join(foreignDir, "state.json"), "utf8"), "{");
+	});
+});
+
+test("removal still protects matching live and unknown read jobs but excludes foreign jobs", async (t) => {
+	const f = await fixture(t, "true", { access: "read", createdAt: Date.now() - 30_000 });
+	const checkoutB = await environment(t);
+	const h = host(checkoutB);
+	const manager = new CommandManager(f.root, h.admission);
+	const claim = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: f.spec.workspaceId, tabId: "tab", paneId: "pane" };
+	await writePrivate(join(f.dir, "claim.json"), claim);
+	for (const updatedAt of [Date.now(), Date.now() - 20_000]) {
+		await atomicState(f.dir, { ...claim, state: "running", updatedAt, exitCode: null, signal: null });
+		await assert.rejects(manager.guardRemoval(f.spec.checkout), /including forced completion/);
+		(await manager.guardRemoval(checkoutB))();
+	}
+	await atomicState(f.dir, { ...claim, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
+	(await manager.guardRemoval(f.spec.checkout))();
 });
 
 test("uncertain dispatch survives restart and rewind, retains admission, and never relaunches duplicate delivery", async (t) => {
