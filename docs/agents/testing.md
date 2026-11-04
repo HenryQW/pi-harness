@@ -1,6 +1,6 @@
 # Run repository tests
 
-`pnpm test` runs all root script tests, evaluation harness tests, and package test scripts. It remains the default. It does not call a model.
+For local work, prefer affected tests or the tests for the packages you change. Use `pnpm test` only when the full suite is necessary. It runs all root script tests, evaluation harness tests, and package test scripts. It can take a long time and use much CPU (central processing unit) capacity. It does not call a model.
 
 ## Test affected packages
 
@@ -24,7 +24,7 @@ flowchart LR
     Full --> Scheduler
 ```
 
-The selector prints the merge base, any full-suite reason, and the package test scripts to run. With no changes, it runs no package tests. Root tests still run.
+The selector prints the merge base, any full-suite reason, and the package test scripts to run. It can run all package tests when a safe selection is not possible. With no changes, it runs no package tests. Root tests still run.
 
 ## Version-only manifest changes
 
