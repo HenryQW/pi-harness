@@ -52,7 +52,9 @@ Errors expose `code` and `dispatched`. If `dispatched` is true, a mutation can h
 
 ### Checkout admission
 
-`checkoutAdmission(pi)` finds one coordinator through Pi's public event bus. Call `install(pi)` to register tool lifecycle guards. `guard(name, refresh)` installs an awaited recovery check before writes. `reserve(owner, checkout)` returns a release function only when no admitted writer or Main write is active. `restore(owner, checkout)` restores durable ownership; `release(owner)` requires caller-proved completion.
+`checkoutAdmission(pi)` finds one coordinator through Pi's public event bus. Call `install(pi)` to register tool lifecycle guards.
+
+`guard(name, refresh)` installs an awaited recovery check before writes. The callback receives the exact canonical checkout set after target resolution and before any member is admitted. `reserve` passes its one checkout to the same checks. If recovery fails, no member is admitted. `reserve(owner, checkout)` returns a release function only when no admitted writer or Main write is active. `restore(owner, checkout)` restores durable ownership; `release(owner)` requires caller-proved completion.
 
 `registerCheckoutAdmission(pi, directCanWrite)` keeps the direct-subagent policy: Main writes can overlap, but direct writers must wait for them and exclude other writes. A returned hold function keeps a direct request admitted beyond its tool result. Consumers must restore durable command ownership before allowing writes after restart. These mechanisms do not intercept external processes or provide a sandbox.
 

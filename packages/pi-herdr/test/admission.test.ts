@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { registerCheckoutAdmission } from "../src/admission.ts";
+import { checkoutAdmission, registerCheckoutAdmission } from "../src/admission.ts";
 
 test("selected checkout admission is all-or-none and stays held until every owned worker stops", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "admission-set-")));
@@ -30,4 +30,31 @@ test("selected checkout admission is all-or-none and stays held until every owne
 	assert.equal((await call("secondary-edit", "edit", secondary)).block, true);
 	release();
 	assert.equal(await call("next", "delegate_task", root), undefined);
+});
+
+test("recovery receives the exact set and cannot admit a call that settles while it waits", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "admission-recovery-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const secondary = join(root, "selected"); await mkdir(secondary);
+	const handlers = new Map<string, (...args: any[]) => any>();
+	const host = {
+		on: (event: string, handler: (...args: any[]) => any) => handlers.set(event, handler),
+		exec: async () => ({ code: 0, stdout: `${root}\n` }),
+	};
+	const admission = checkoutAdmission(host);
+	admission.install(host);
+	admission.classifyDirect(() => true, async () => [secondary, root, secondary]);
+	let entered!: () => void, resume!: () => void;
+	const pending = new Promise<void>((resolve) => { entered = resolve; });
+	const gate = new Promise<void>((resolve) => { resume = resolve; });
+	const sets: (readonly string[])[] = [];
+	admission.guard("recovery", async (keys) => { sets.push(keys); entered(); await gate; });
+	const call = handlers.get("tool_call")!({ toolCallId: "settled", toolName: "delegate_task", input: {} }, { cwd: root });
+	await pending;
+	handlers.get("tool_execution_end")!({ toolCallId: "settled" });
+	resume();
+	assert.match((await call).reason, /already settled/);
+	assert.throws(() => admission.hold("settled"), /was not admitted/);
+	(await admission.reserve("next", secondary))();
+	assert.deepEqual(sets, [[root, secondary], [secondary]]);
 });

@@ -231,7 +231,11 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically. Archive only verified terminal records when the record limit is reached; never delete active, unknown, or malformed state to permit another launch.
 
-Malformed state is preserved and blocks writes. A named pipe in command state or output is refused without waiting for a writer. The file is preserved. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership.
+Write admission checks only jobs in the exact target checkout set. Startup and periodic recovery check the current checkout. Removal checks its target checkout, including read jobs.
+
+A valid immutable specification can exclude a foreign job without its mutable-state lock. A busy foreign job does not block these checks. Completion still requires a locked, validated read. Full-store lists and launch-limit checks still inspect all jobs.
+
+Malformed state is preserved and blocks writes in the matching checkout. An unreadable or invalid specification blocks all checkout checks because its scope is unknown. A named pipe in command state or output is refused without waiting for a writer. The file is preserved. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership.
 
 The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
 

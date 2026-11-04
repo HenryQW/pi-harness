@@ -44,10 +44,10 @@ export class CommandManager {
 	readonly request: typeof requestHerdr;
 	constructor(root: string, admission: CheckoutAdmission, request = requestHerdr) {
 		this.root = root; this.admission = admission; this.request = request;
-		admission.guard("background-commands", async () => { await this.refresh(); });
+		admission.guard("background-commands", async (checkouts) => { await this.refresh(checkouts); });
 	}
-	async refresh(): Promise<Job[]> {
-		const jobs = await listJobs(this.root);
+	async refresh(checkouts?: readonly string[]): Promise<Job[]> {
+		const jobs = await listJobs(this.root, checkouts);
 		for (const job of jobs) {
 			const owner = `command:${job.spec.id}`;
 			if (job.spec.access === "write" && !terminal(job.state)) {
@@ -95,7 +95,7 @@ export class CommandManager {
 		} catch {
 			await writePrivate(join(job.dir, "uncertain.json"), { id: job.spec.id, token: job.spec.token });
 		}
-		await this.refresh();
+		await this.refresh([input.checkout]);
 		return await readJob(job.dir);
 	}
 	async get(id: string): Promise<Job> { return await readJob(join(this.root, jobId(id))); }
@@ -103,8 +103,8 @@ export class CommandManager {
 		const key = await realpath(checkout);
 		await privateDirectory(this.root, true);
 		return await withWorktreeLock(this.root, async () => {
-			const jobs = await this.refresh();
-			if (jobs.some((job) => job.spec.checkout === key && !terminal(job.state))) throw new Error("Active or unknown background commands block worktree removal, including forced completion. Inspect /commands.");
+			const jobs = await this.refresh([key]);
+			if (jobs.some((job) => !terminal(job.state))) throw new Error("Active or unknown background commands block worktree removal, including forced completion. Inspect /commands.");
 			return await this.admission.reserve(`done:${randomUUID()}`, key);
 		});
 	}
@@ -190,7 +190,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 		if (!ctx || scanning) return;
 		scanning = true;
 		try {
-			for (const job of await manager.refresh()) {
+			for (const job of await manager.refresh([await checkoutKey(pi, ctx)])) {
 				if (!terminal(job.state) || job.spec.sessionId !== ctx.sessionManager.getSessionId()) continue;
 				await withWorktreeLock(join(job.dir, "spec.json"), async () => {
 					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
@@ -226,9 +226,9 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	};
 	pi.on("session_start", async (_event, ctx) => {
 		context = ctx;
-		await manager.refresh();
 		if (timer) clearInterval(timer);
 		timer = setInterval(() => { void scan(); }, 1000); timer.unref();
+		await manager.refresh([await checkoutKey(pi, ctx)]);
 	});
 	pi.on("session_shutdown", () => { context = undefined; if (timer) clearInterval(timer); timer = undefined; });
 	return manager;
