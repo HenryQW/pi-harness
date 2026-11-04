@@ -32,6 +32,13 @@ jobs:
         run: pnpm run check:package-versions -- "$BASE_SHA" "$HEAD_SHA"
       - name: Validate website
         run: pnpm --filter @henryqw/pi-docs run validate
-      - run: pnpm test
+      - name: Test affected workspaces and root tests
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: pnpm run test:affected -- "$BASE_SHA"
+      - name: Test all workspaces and root tests
+        if: github.event_name != 'pull_request'
+        run: pnpm test
       - run: pnpm run typecheck
       - run: pnpm run pack:check

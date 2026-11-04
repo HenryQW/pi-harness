@@ -1,11 +1,20 @@
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { affectedWorkspaces } from "./affected-workspaces.mjs";
 
 const packageManagerExecPath = process.env.npm_execpath;
 if (!packageManagerExecPath) throw new Error("Package manager executable is required to run workspace tests.");
 
 const concurrency = 3;
 const testArgs = process.argv.slice(2);
+let selected = null;
+if (testArgs[0] === "--affected") {
+	testArgs.shift();
+	if (testArgs[0] === "--") testArgs.shift();
+	const base = testArgs.shift() ?? "origin/main";
+	if (testArgs.length) throw new Error("Usage: pnpm run test:affected [<base-revision>]");
+	selected = affectedWorkspaces(base, packageManagerExecPath);
+}
 const workspaces = ["extensions", "packages"]
 	.flatMap((root) => readdirSync(root, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory() && existsSync(`${root}/${entry.name}/package.json`))
@@ -19,7 +28,8 @@ const prioritizedWorkspaces = ["@henryqw/pi-subagent", "@henryqw/pi-pr"];
 const scheduledWorkspaces = [
 	...prioritizedWorkspaces.filter((workspace) => workspaces.includes(workspace)),
 	...workspaces.filter((workspace) => !prioritizedWorkspaces.includes(workspace)),
-];
+].filter((workspace) => selected === null || selected.includes(workspace));
+console.log(`Workspace test scripts (${scheduledWorkspaces.length}): ${scheduledWorkspaces.join(", ") || "none"}`);
 const failures = [];
 
 function run(workspace) {

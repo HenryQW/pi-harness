@@ -14,7 +14,7 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 
 ## Checks
 
-CI (`.github/workflows/ci.yml`) runs `pnpm run check:package-versions`, `pnpm run docs:validate`, `pnpm test`, `pnpm run typecheck`, and `pnpm run pack:check`. While iterating, scope checks to touched packages with `pnpm --filter <package> run <script>`; before finishing, run each root check that the change can affect.
+Continuous integration (`.github/workflows/ci.yml`) runs `pnpm run check:package-versions`, `pnpm run docs:validate`, tests, `pnpm run typecheck`, and `pnpm run pack:check`. Pull requests use `pnpm run test:affected` with their actual base commit; `main` uses the full `pnpm test` suite. Both test commands always run root script and evaluation harness tests. See [repository testing](docs/agents/testing.md) for local affected tests, uncommitted-change selection, and full-suite fallbacks. While iterating, scope checks to touched packages with `pnpm --filter <package> run <script>`; before finishing, run each root check that the change can affect.
 
 ## Package releases
 
