@@ -18,10 +18,25 @@ const MAIN_NON_WRITING_TOOLS = new Set([
 	"read", "grep", "find", "ffgrep", "fffind", "ls", "codegraph_explore", "subagent_status", "codemode",
 ]);
 
+export function checkoutToolCanWrite(toolName: string, input: unknown, directCanWrite: (input: unknown) => boolean): boolean {
+	return toolName === "delegate_task" ? directCanWrite(input) : !MAIN_NON_WRITING_TOOLS.has(toolName);
+}
+
 export async function checkoutKey(pi: Pick<AdmissionHost, "exec">, ctx: { cwd: string }): Promise<string> {
 	const cwd = await realpath(ctx.cwd);
 	const result = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd, timeout: 5_000 });
-	if (result.code !== 0 || result.killed) return cwd;
+	if (result.killed) throw new Error("Git checkout resolution was terminated during delegation admission; writes are blocked.");
+	if (result.code !== 0) {
+		// Exit 128 also covers unsafe ownership and invalid configuration. Git runs
+		// shell aliases at the root, with either .git or an explicit GIT_DIR.
+		// Relax discovery restrictions only for this absence check, never for admission.
+		if (result.code === 128) {
+			const absent = await pi.exec("git", ["-c", "safe.directory=*", "-c", "safe.bareRepository=all",
+				"-c", 'alias.pi-admission-non-repository=!test -z "${GIT_DIR+x}" && test ! -e .git && test ! -L .git', "pi-admission-non-repository"], { cwd, timeout: 5_000 });
+			if (absent.code === 0 && !absent.killed) return cwd;
+		}
+		throw new Error(`Git checkout resolution failed (exit ${result.code}) during delegation admission; writes are blocked.`);
+	}
 	const root = result.stdout.replace(/\r?\n$/, "");
 	if (!root || /[\r\n\0]/.test(root)) throw new Error("Git returned a malformed checkout root during delegation admission.");
 	return await realpath(root);
@@ -36,11 +51,13 @@ function createAdmission() {
 	let directCanWrite = (_input: unknown) => true;
 	let directCheckouts: ((input: unknown, ctx: { cwd: string }) => Promise<readonly string[]>) | undefined;
 	const guards = new Map<string, (checkouts: readonly string[]) => Promise<void>>();
-	const durable = new Map<string, string>();
+	const durable = new Map<string, readonly string[]>();
+	const completed = new Set<string>();
 	const events = new WeakMap<object, Promise<Gate>>();
 	const heldCalls = new Set<string>();
 	const ownerByCheckout = new Map<string, string>();
 	const calls = new Map<string, { direct: boolean; keys?: readonly string[] }>();
+	let replacing = false;
 	// One Git lookup per working directory per session; a failed lookup is retried.
 	const checkouts = new Map<string, Promise<string>>();
 	const lookup = (host: AdmissionHost, ctx: { cwd: string }) => {
@@ -60,7 +77,8 @@ function createAdmission() {
 	const refresh = async (keys: readonly string[]) => { for (const guard of guards.values()) await guard(keys); };
 	const admit = async (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { cwd: string }, host: AdmissionHost): Promise<Gate> => {
 		const direct = event.toolName === "delegate_task";
-		if (event.toolName === "background_command" || (direct ? !directCanWrite(event.input) : MAIN_NON_WRITING_TOOLS.has(event.toolName))) return;
+		if (event.toolName === "background_command" || !checkoutToolCanWrite(event.toolName, event.input, directCanWrite)) return;
+		if (direct && replacing) return { block: true, reason: "Session replacement is pending; direct writes are blocked. If another extension cancelled replacement, reload before delegation." };
 		const call: { direct: boolean; keys?: readonly string[] } = { direct };
 		calls.set(event.toolCallId, call);
 		let keys: readonly string[];
@@ -78,7 +96,7 @@ function createAdmission() {
 		if (calls.get(event.toolCallId) !== call) {
 			return { block: true, reason: `Call ${event.toolCallId} already settled; use mode: isolated to keep Main free.` };
 		}
-		const owner = keys.map((key) => ownerByCheckout.get(key) ?? [...durable].find(([, checkout]) => checkout === key)?.[0]).find(Boolean);
+		const owner = keys.map((key) => ownerByCheckout.get(key) ?? [...durable].find(([, checkouts]) => checkouts.includes(key))?.[0]).find(Boolean);
 		const main = direct ? [...calls].find(([, active]) => !active.direct && active.keys?.some((key) => keys.includes(key)))?.[0] : undefined;
 		if (owner || main) {
 			release(event.toolCallId);
@@ -98,7 +116,7 @@ function createAdmission() {
 		});
 		host.on("tool_result", (event) => release(event.toolCallId));
 		host.on("tool_execution_end", (event) => release(event.toolCallId));
-		host.on("session_start", () => checkouts.clear());
+		host.on("session_start", () => { checkouts.clear(); replacing = false; });
 		host.on("session_shutdown", () => {
 			checkouts.clear();
 			for (const toolCallId of calls.keys()) release(toolCallId);
@@ -113,18 +131,31 @@ function createAdmission() {
 		return () => { heldCalls.delete(toolCallId); release(toolCallId); };
 	};
 	return {
-		install, hold, supportsCheckoutSets: true as const,
+		install, hold, supportsCheckoutSets: true as const, supportsDirectJournal: true as const,
+		beginReplacement: () => {
+			if ([...calls.values()].some(({ direct }) => direct)) return false;
+			replacing = true;
+			return true;
+		},
+		admittedCheckouts: (toolCallId: string): readonly string[] => {
+			const call = calls.get(toolCallId);
+			if (!call?.direct || !call.keys?.length) throw new Error(`Direct call ${toolCallId} was not admitted as a checkout writer; delegate again.`);
+			return [...call.keys];
+		},
+		restoreSet: (owner: string, keys: readonly string[]) => { if (!completed.has(owner)) durable.set(owner, [...keys]); },
 		classifyDirect: (classify: (input: unknown) => boolean, select?: typeof directCheckouts) => { directCanWrite = classify; directCheckouts = select; },
 		guard: (name: string, refresh: (checkouts: readonly string[]) => Promise<void>) => { guards.set(name, refresh); },
-		restore: (owner: string, checkout: string) => { durable.set(owner, checkout); },
+		restore: (owner: string, checkout: string) => { if (!completed.has(owner)) durable.set(owner, [checkout]); },
 		release: (owner: string) => { durable.delete(owner); },
+		complete: (owner: string) => { completed.add(owner); durable.delete(owner); },
 		async reserve(owner: string, checkout: string): Promise<() => void> {
 			await refresh([checkout]);
-			const conflict = [...durable].find(([, key]) => key === checkout)?.[0]
+			if (completed.has(owner)) throw new Error("Completed checkout owners cannot reserve again.");
+			const conflict = [...durable].find(([, keys]) => keys.includes(checkout))?.[0]
 				?? ownerByCheckout.get(checkout)
 				?? [...calls].find(([, call]) => call.keys?.includes(checkout))?.[0];
 			if (conflict) throw new Error(`Checkout ${checkout} has an active writer (${conflict}); wait until it stops.`);
-			durable.set(owner, checkout);
+			durable.set(owner, [checkout]);
 			return () => { durable.delete(owner); };
 		},
 	};

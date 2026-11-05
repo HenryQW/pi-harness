@@ -15,7 +15,8 @@ export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<voi
 	await registerBtwExtension(pi);
 	herdrCloneExtension(pi);
 	const commands = registerCommands(pi);
-	herdrDoneExtension(pi, (checkout) => commands.guardRemoval(checkout));
+	herdrDoneExtension(pi, (checkout, operation) => commands.guardRemoval(checkout, operation),
+		(checkout, ctx, check) => commands.recoverRemoval(checkout, ctx, check));
 	herdrHandoffExtension(pi);
 	registerDialogStatus(pi);
 }

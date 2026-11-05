@@ -25,7 +25,10 @@ A display and continuation reference for one recorded direct worker, such as `D7
 A new direct worker that resumes a finished worker's saved Pi conversation in a new tab with a new Direct reference.
 
 **Checkout admission**:
-The exclusive permission held by a direct write request or managed background writer that prevents Main and other direct writers from writing to the shared checkout. Pi Herdr supplies the shared process-local coordinator. Each owner keeps admission until termination is proven; read classification is not a sandbox.
+The exclusive permission held by a direct write request or managed background writer that prevents Main and other direct writers from writing to the shared checkout. Pi Herdr supplies the shared process-local coordinator. Each owner keeps admission until termination is proven or a human explicitly waives a recovered reservation. A waiver does not prove termination; read classification is not a sandbox.
+
+**Human release**:
+An explicit user decision to waive one exact recovered checkout reservation despite unproved worker termination. It preserves evidence and does not stop workers.
 
 **Isolated request**:
 A durable goal and dependency graph of text and changeset tasks, with checked results and recovery state.

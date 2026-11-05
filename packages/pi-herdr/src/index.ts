@@ -1,6 +1,6 @@
-import { lockSync } from "proper-lockfile";
+import { withPathLock } from "./path-lock.js";
 export { requestHerdr, HerdrRequestError } from "./socket.js";
-export { checkoutAdmission, checkoutKey, registerCheckoutAdmission, type CheckoutAdmission } from "./admission.js";
+export { checkoutAdmission, checkoutKey, checkoutToolCanWrite, registerCheckoutAdmission, type CheckoutAdmission } from "./admission.js";
 
 export interface HerdrExecResult {
 	code: number;
@@ -174,22 +174,9 @@ export function hasHerdrErrorCode(result: Pick<HerdrExecResult, "stdout" | "stde
 	});
 }
 
-/** Lock a Herdr worktree checkout path while mutating it via the Herdr CLI. */
-export async function withWorktreeLock<T>(checkout: string, operation: () => Promise<T>): Promise<T> {
-	let compromised: Error | undefined;
-	// Synchronous heartbeats cannot remain in flight when release removes the lock.
-	const release = lockSync(checkout, { onCompromised: (error) => { compromised = error; } });
-	try {
-		const result = await operation();
-		if (compromised) throw compromised;
-		return result;
-	} catch (error) {
-		if (compromised && error !== compromised) throw new AggregateError([error, compromised], "Operation failed and lock ownership was lost.");
-		throw error;
-	} finally {
-		// A compromised lock is no longer ours to release.
-		if (!compromised) release();
-	}
+/** Hold a native path lock until the operation settles. */
+export async function withWorktreeLock<T>(checkout: string, operation: (descriptor: number) => Promise<T>): Promise<T> {
+	return await withPathLock(checkout, operation);
 }
 
 function herdrCommandName(args: readonly string[]): string {

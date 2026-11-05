@@ -7,7 +7,7 @@ description: Use when Main leads a batch of extension changes in this repository
 
 Main is the manager. Main owns scope, decisions, review, merge, and cleanup. Workers own implementation, their pull request, and its feedback. The user answers only in Main's pane.
 
-Requirements: Herdr, `gh` with access to the repository, `jq`, and `@henryqw/pi-pr` 10.5.0 or later for `pi_pr_status` and `pi_pr_merge`.
+Requirements: Herdr, `gh` with access to the repository, Node 22.19.0 or later, and `@henryqw/pi-pr` 10.5.0 or later for `pi_pr_status` and `pi_pr_merge`. Cleanup requires descriptor-only `/usr/bin/lockf` on macOS or util-linux `flock` on Linux. There is no fallback for an unavailable native lock command.
 
 ## 1. Plan
 
@@ -40,7 +40,11 @@ Copy this into each handoff prompt, with Main's pane ID:
 4. When the review passes, call `pi_pr_status`. Then call `pi_pr_merge` with the exact `headOid`. The user confirms in Main's pane.
    - Merge bar: Codex finished the current head, and no thread of any priority is unresolved. If `unresolvedThreads.other` is not zero, send the PR back to the worker.
    - If Codex shows `running` for a long time and the change since the last Codex-reviewed head is trivial, ask the user whether to merge without that review. `pi_pr_merge` refuses a `wait` verdict. If the user agrees, call `pi_pr_status` again immediately before the merge and continue only when Codex is the only wait reason and the base is `main`. Then run `gh pr merge <N> --match-head-commit <oid>` with the flag for the configured `mergeMethod` (`--squash` in this repository). Add `--admin` only when the ruleset's approval rule is the remaining requirement, because self-authored pull requests cannot get that approval; `--admin` also skips every other requirement, so the fresh status read is the only check.
-5. After the merge, tell the worker that its work is complete with `herdr agent prompt --wait --until idle --until done <worker pane> "..."`, so the worker turn ends first. Then finish its worktree yourself: `.agents/skills/automated-pi-extension-dev/scripts/finish-worktree.sh <workspace> <PR>`. The script refuses unless the PR is merged into the primary checkout's branch, the checkout is clean and at the merged head, no agent in the workspace is working, and no pane in another workspace uses the checkout.
+5. After the merge, tell the worker that its work is complete with `herdr agent prompt --wait --until idle --until done <worker pane> "..."`, so the worker turn ends first. Then finish its worktree yourself: `.agents/skills/automated-pi-extension-dev/scripts/finish-worktree.sh <workspace> <PR>`. The script refuses unless the PR is merged into the primary checkout's branch, the checkout is clean and at the merged head, no agent in the workspace is working, and no pane in another workspace uses the checkout. It checks local state under the same canonical path lock as `withWorktreeLock`. It then locks the shared command store and keeps both locks through checkout removal. The same durable check as `/done` refuses active or unknown commands, including read commands, unless a valid user-confirmed release exists. The script never releases command protection itself. It releases both locks before it locks the primary checkout, checks the primary branch again, and pulls. Local child commands inherit the descriptors, which are process handles for the open lock files. The kernel releases the lock only after all copies close; a dispatched Herdr operation can still continue separately. The `.lock` file persists: never delete or replace it during normal use. Legacy lock directories block cleanup; stop all old holders before manual removal. File age does not prove that an old holder stopped.
+
+Install this repository's workspace dependencies before cleanup. Use the same `PI_CODING_AGENT_DIR` as the Pi sessions that own managed commands; the script checks that selected command store only.
+
+For a deleted pane directory, the script resolves its nearest existing parent. Existing target aliases and missing descendants still block cleanup. An unrelated missing path does not block cleanup. A dangling symbolic link or another unresolved path blocks cleanup because its ownership is uncertain.
 
 ## 5. Conflicts and follow-ups
 

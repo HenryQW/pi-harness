@@ -357,6 +357,14 @@ test("menu mouse coordinates omit the title offset in a short terminal", async (
 	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct`/);
 });
 
+test("report-only mode shows held admission even when isolated inventory fails", async () => {
+	const h = harness({ ui: false, isolatedError: new Error("unavailable"), direct: [{ id: "held", name: "held", status: "recovered admission retained", workers: [], tabs: [],
+		admission: { identity: "session/held/token", checkouts: ["/root", "/second"], evidence: "[]", proof: false, canRecover: true } }] });
+	await h.run();
+	assert.ok(h.messages.some((message) => message.includes("session/held/token") && message.includes("/second")));
+	assert.equal(h.dialogs.length, 0);
+});
+
 test("menus open in the editor area and leave the transcript visible above them", async () => {
 	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: `Worker ${index}`, status: "working", workers: [], tabs: [] })) });
 	h.pickers.push((picker) => {
