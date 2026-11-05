@@ -1,7 +1,26 @@
 import { lstat } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { HerdrExecResult } from "@henryqw/pi-herdr";
 
 export const PI_SUBAGENT_PROCESS_LEASE = "PI_SUBAGENT_PROCESS_LEASE";
+
+const LEASE_IDENTITY_FIELDS = ["device", "inode", "birth", "parentDevice", "parentInode", "parentBirth"] as const;
+export type ProcessLeaseIdentity = Record<typeof LEASE_IDENTITY_FIELDS[number], string>;
+export const isProcessLeaseIdentity = (value: unknown): value is ProcessLeaseIdentity => Boolean(value && typeof value === "object" && !Array.isArray(value)
+	&& LEASE_IDENTITY_FIELDS.every((key) => typeof (value as ProcessLeaseIdentity)[key] === "string" && /^(0|[1-9]\d*)$/.test((value as ProcessLeaseIdentity)[key])));
+/** Save before dispatch and compare around each proof step; never recreate a missing lease. */
+export async function processLeaseIdentity(path: string, expected?: ProcessLeaseIdentity): Promise<ProcessLeaseIdentity> {
+	await assertPrivateLease(path, false);
+	const [file, parent] = await Promise.all([lstat(path, { bigint: true }), lstat(dirname(path), { bigint: true })]);
+	if (!file.isFile() || file.isSymbolicLink() || (file.mode & 0o777n) !== 0o600n || (process.getuid && file.uid !== BigInt(process.getuid()))
+		|| !parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o777n) !== 0o700n || (process.getuid && parent.uid !== BigInt(process.getuid()))) {
+		throw new Error("Process lease and its parent must remain private current-user files, without symbolic links.");
+	}
+	const identity = { device: String(file.dev), inode: String(file.ino), birth: String(file.birthtimeNs),
+		parentDevice: String(parent.dev), parentInode: String(parent.ino), parentBirth: String(parent.birthtimeNs) };
+	if (expected && Object.entries(identity).some(([key, value]) => expected[key as keyof ProcessLeaseIdentity] !== value)) throw new Error("Original process lease or private parent was replaced; termination is unproved.");
+	return identity;
+}
 
 export async function assertPrivateLease(path: string, allowMissing: boolean): Promise<boolean> {
 	let info;

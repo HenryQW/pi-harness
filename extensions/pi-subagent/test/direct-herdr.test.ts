@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { appendFile, mkdtemp, open, readFile, realpath, rename, rm, truncate, utimes, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, open, readFile, realpath, rename, rm, symlink, truncate, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDirectHerdr, createDirectSessionReader, exactDirectAnswer, exactDirectTerminalTurn } from "../src/direct-herdr.ts";
 import { workspaceNeedsCollection } from "../src/collection.ts";
+import { processLeaseIdentity } from "../src/process-lease.ts";
 
 const prompt = "inspect\n\nTurn identity: unique";
 const lines = (messages: unknown[]) => [
@@ -259,7 +260,7 @@ test("stop accepts native unnamed unrelated agents without authorizing mutations
 	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
 		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
 	} });
-	const tab = { name: "owned", tabId: "owned-tab", paneId: "owned-pane", leasePath, sessionFile: join(cwd, "session.jsonl") };
+	const tab = { name: "owned", tabId: "owned-tab", paneId: "owned-pane", leasePath, leaseIdentity: await processLeaseIdentity(leasePath), sessionFile: join(cwd, "session.jsonl") };
 	for (const paneId of ["unrelated-pane", "owned-pane"]) {
 		const exec: ExtensionAPI["exec"] = async (command, args) => {
 			if (command === "lsof") return { code: 1, stdout: "", stderr: "", killed: false, truncated: false };
@@ -284,7 +285,7 @@ test("only explicit terminate signals exact holders that a per-PID lease scan st
 	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
 		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
 	} });
-	const tab = { name: "worker", tabId: "tab", paneId: "pane", leasePath };
+	const tab = { name: "worker", tabId: "tab", paneId: "pane", leasePath, leaseIdentity: await processLeaseIdentity(leasePath) };
 	for (const scenario of ["terminated", "survivor", "changed", "stale", "stale-during-scan", "proof", "settled"] as const) {
 		let held = true, current = true;
 		const signals: Array<[number, NodeJS.Signals]> = [];
@@ -327,6 +328,48 @@ test("collection triggers above ten tabs, not at ten, and rejects foreign or dup
 	}
 });
 
+test("a legacy worker cannot stop or resume from a replacement lease without its original baseline", async (t) => {
+	const cwd = await realpath(await mkdtemp(join(tmpdir(), "direct-legacy-lease-")));
+	t.after(() => rm(cwd, { recursive: true, force: true }));
+	const leasePath = join(cwd, "process.lease");
+	await writeFile(leasePath, "", { mode: 0o600 });
+	await rename(leasePath, `${leasePath}.original`);
+	await writeFile(leasePath, "", { mode: 0o600 });
+	const previous = { ...process.env };
+	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace", HERDR_PANE_ID: "main" });
+	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; });
+	const worker = createDirectHerdr({ exec: async () => { assert.fail("legacy evidence must fail before any external operation"); } }, cwd, 1000);
+	const legacy = { name: "worker", tabId: "tab", paneId: "pane", sessionFile: join(cwd, "session.jsonl"), leasePath };
+	for (const mode of ["proof", "settled", "terminate"] as const) await assert.rejects(worker.stop(legacy, () => true, mode), /Original process lease identity is missing/);
+	await assert.rejects(worker.start({} as never, "next", "next", "task", new AbortController().signal, () => {}, true, legacy), /Original process lease identity is missing/);
+});
+
+test("direct proof refuses a missing, replaced, linked or non-private original lease", async (t) => {
+	const previous = { ...process.env };
+	Object.assign(process.env, { HERDR_ENV: "1", HERDR_WORKSPACE_ID: "workspace", HERDR_PANE_ID: "main" });
+	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; });
+	for (const kind of ["missing", "replaced", "linked", "parent", "during-scan"] as const) await t.test(kind, async (t) => {
+		const cwd = await realpath(await mkdtemp(join(tmpdir(), "direct-proof-")));
+		t.after(() => rm(cwd, { recursive: true, force: true }));
+		const leasePath = join(cwd, "lease");
+		await writeFile(leasePath, "", { mode: 0o600 });
+		const leaseIdentity = await processLeaseIdentity(leasePath);
+		const replace = async () => { await rename(leasePath, `${leasePath}.original`); await writeFile(leasePath, "", { mode: 0o600 }); };
+		if (kind === "missing") await rm(leasePath);
+		if (kind === "replaced") await replace();
+		if (kind === "linked") { await rename(leasePath, `${leasePath}.original`); await symlink(`${leasePath}.original`, leasePath); }
+		if (kind === "parent") await chmod(cwd, 0o755);
+		let scans = 0;
+		const exec = async (command: string, args: string[]) => {
+			if (command === "lsof") { scans++; if (kind === "during-scan") await replace(); return { code: 1, stdout: "", stderr: "", killed: false }; }
+			assert.equal(args[1], "list", "proof must not mutate absent resources");
+			return { code: 0, stderr: "", killed: false, stdout: JSON.stringify({ result: args[0] === "agent" ? { type: "agent_list", agents: [] } : { type: "pane_list", panes: [] } }) };
+		};
+		await assert.rejects(createDirectHerdr({ exec } as never, cwd, 1000).stop({ name: "worker", tabId: "tab", paneId: "pane", leasePath, leaseIdentity }), /lease|parent/);
+		assert.equal(scans, kind === "during-scan" ? 1 : 0);
+	});
+});
+
 test("direct collection closes only completed exact workers and keeps session and lease evidence", async (t) => {
 	const cwd = await realpath(await mkdtemp(join(tmpdir(), "pi-direct-collection-")));
 	t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -335,9 +378,10 @@ test("direct collection closes only completed exact workers and keeps session an
 	t.after(() => { for (const key of ["HERDR_ENV", "HERDR_WORKSPACE_ID", "HERDR_PANE_ID"]) {
 		if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
 	} });
+	const leasePath = join(cwd, "process.lease");
+	await writeFile(leasePath, "", { mode: 0o600 });
 	const tab = { name: "worker", tabId: "tab", paneId: "pane", workspaceId: "owned", cwd,
-		turn: "unique", sessionFile: join(cwd, "session.jsonl"), leasePath: join(cwd, "process.lease") };
-	await writeFile(tab.leasePath, "", { mode: 0o600 });
+		turn: "unique", sessionFile: join(cwd, "session.jsonl"), leasePath, leaseIdentity: await processLeaseIdentity(leasePath) };
 	for (const scenario of ["completed", "working", "identity", "unfinished", "extra-pane", "lease-holder", "stale"] as const) {
 		let paneClosed = false, tabClosed = false, scans = 0, current = true;
 		const session = lines(scenario === "unfinished" ? [] : [{ type: "message", id: "final", parentId: "user", message: { role: "assistant", stopReason: "stop", content: [] } }]);

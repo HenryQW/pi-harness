@@ -15,6 +15,8 @@ pi install npm:@henryqw/pi-subagent
 
 Configure the profiles that your Roles use in `/task-models`. Direct writer termination proof requires native `lsof`.
 
+**Upgrade to 29.0.0:** Older saved workers without their original lease identity cannot continue. Unverified recovery cannot automatically release checkout protection. Keep their records. If the full reservation scope is known, use `/subagent` to review the evidence and explicitly approve release with the exact typed reservation identity. **This does not stop workers or prove termination; a worker can still change any listed checkout.** If scope is unknown, release stays blocked; restore authoritative evidence first.
+
 ## Works with
 
 | Package | Relationship | Purpose |
@@ -76,6 +78,10 @@ Read requests run parallel tasks up to `maxSubagents`. Chains run in order, repl
 
 Checkout admission is shared with managed background commands from `pi-herdr-tools`. An active or unknown background writer blocks direct writes. Main writes and direct writers block new command launches. Status and read tools remain available. This is process-local coordination, not an operating-system sandbox.
 
+Direct writer admission survives `/reload` through a native Pi session journal. `/subagent` lists held reservations from all branches, including reservations without a tab. Use local Close for locally owned work. Recovered records cannot stop workers.
+
+They permit release only from complete saved proof, or through a separate warned human release with an exact typed reservation identity. Reload requires explicit release authority and the matching saved proof or typed waiver evidence. **A human release does not prove termination: a worker can still change any listed checkout.** All evidence stays saved. Missing reservation scope or an incompatible coordinator blocks recovery; see [Reload and session changes](./docs/orchestration.md#reload-and-session-changes).
+
 Direct writes change Main's checkout immediately, including dirty checkouts, and have no automatic checks or rollback. Preserve unrelated edits. See [Direct contract](./docs/orchestration.md#direct-contract) for write scope and checkout-admission rules.
 
 Each write task must end with a JSON completion object; [Direct contract](./docs/orchestration.md#direct-contract) gives its format. Plain text, a malformed object, blocked work, or failure stops later dispatch. Success is the worker's report, not independent validation.
@@ -88,7 +94,7 @@ The launch returns a task ID and first Herdr tab, not the answer. One follow-up 
 
 Answers above the shared 40 KiB budget and packets above 64 KiB go to private files. A packet line above 50 KiB needs a Role with `bash`. See [Direct results and records](./docs/orchestration.md#direct-results-and-records).
 
-To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`; see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker).
+To continue a finished worker, add `"continueFrom": "D7.1"` with the same `role`; see [Continue or stop one direct worker](./docs/orchestration.md#continue-or-stop-one-direct-worker). Its saved original lease identity is required. A current or replacement lease cannot supply missing historical proof.
 
 ### Review a change
 
@@ -262,7 +268,9 @@ The extension never pushes, opens pull requests, publishes, deploys, or silently
 
 Role extensions and MCP servers are trusted executable code, not a sandbox. Select the smallest resource set and authorize write scope explicitly. Admission coordinates this Main's Pi calls, not other sessions, trusted extension lifecycle code, or external processes. Concurrent edits can make direct reads stale.
 
-For uncertain direct termination, open `/subagent`, select the exact workflow, and choose **Close/cancel-and-release ALL owned workers in this workflow**. This stops all owned workers, not only the selected one. Resolve reported blockers and repeat the action. Recorded-only tasks cannot release admission. Restarting Pi does not prove termination. Inspect partial changes before new writes; never blindly repeat commits or delete work.
+For uncertain direct termination, open `/subagent`, select the exact workflow, and choose **Close/cancel-and-release ALL owned workers in this workflow**. This stops all owned workers, not only the selected one. Resolve reported blockers and repeat the action.
+
+Recorded-only tasks cannot use local Close. Their separate recovery action requires complete saved proof or the warned human release. Restarting Pi does not prove termination. Inspect partial changes before new writes; never blindly repeat commits or delete work.
 
 After Close/cancel-and-release proves pane absence, it terminates the processes that hold the exact private process lease of an owned worker (`SIGTERM`, then `SIGKILL`). Automatic completion, continuation, and Subagent Collection never send signals.
 

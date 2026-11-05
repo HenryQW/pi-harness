@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="700" viewBox="0 0 1280 700" role="img" aria-labelledby="extension-dependencies-title extension-dependencies-desc" id="extension-dependencies-root">
   <title id="extension-dependencies-title">Direct dependencies of 20 active Pi extensions</title>
-  <desc id="extension-dependencies-desc">Matrix of 20 active Pi extensions and seven internal dependency packages, with 27 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 13 extensions. Pi Subagent uses Pi Herdr for selected-checkout admission. Pi Herdr Tools uses Pi Herdr for checkout-scoped command recovery. Pi Cron uses Pi Subagent for explicit Role resources and server exposure rules, and the external Pi terminal package for its last-run view. See the package manifests for version requirements.</desc>
+  <desc id="extension-dependencies-desc">Matrix of 20 active Pi extensions and seven internal dependency packages, with 27 direct runtime or peer dependency edges, six rows with no internal dependencies, and Pi Config Store used by 13 extensions. Pi Subagent uses Pi Herdr for selected-checkout admission that survives reload. Pi Herdr Tools uses Pi Herdr for guarded checkout-scoped command recovery. Pi Cron uses Pi Subagent for explicit Role resources and server exposure rules, and the external Pi terminal package for its last-run view. See the package manifests for version requirements.</desc>
   <defs>
       <style>#extension-dependencies-root { color: #101828; font-family: 'Geist', sans-serif; }
       #extension-dependencies-root .diagram-container { overflow-x: auto; }

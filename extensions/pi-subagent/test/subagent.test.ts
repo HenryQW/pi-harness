@@ -333,6 +333,7 @@ function harness(options: {
 	ui?: boolean;
 	skills?: Array<{ name: string; path: string }>;
 	onGetCommands?: () => void;
+	onAppendEntry?: (customType: string, data: any) => void;
 	trusted?: boolean;
 	availableModels?: any[];
 	currentModel?: any;
@@ -359,8 +360,14 @@ function harness(options: {
 		on(event: string, handler: (...args: any[]) => any) {
 			const previous = handlers.get(event);
 			handlers.set(event, (...args) => {
-				const result = previous?.(...args);
-				return result instanceof Promise ? result.then(() => handler(...args)) : handler(...args);
+				const failed = (error: unknown) => {
+					if (event !== "session_start") throw error;
+					notifications.push({ message: String(error), type: "error" }); // Native Pi reports lifecycle errors and continues.
+				};
+				let result: any;
+				try { result = previous?.(...args); } catch (error) { failed(error); }
+				const next = (value: any) => value?.block || value?.cancel ? value : handler(...args);
+				return result instanceof Promise ? result.then(next, (error) => { failed(error); return next(undefined); }) : next(result);
 			});
 		},
 		exec(command: string, args: string[], execOptions?: { cwd?: string; signal?: AbortSignal; timeout?: number }) {
@@ -397,7 +404,10 @@ function harness(options: {
 			if (customType === "subagent-direct-result") messageRenderer = renderer;
 		},
 		registerEntryRenderer() {},
-		appendEntry(customType: string, data: unknown) { sessionEntries.push({ id: `entry-${sessionEntries.length}`, type: "custom", customType, data }); },
+		appendEntry(customType: string, data: unknown) {
+			options.onAppendEntry?.(customType, data);
+			sessionEntries.push({ id: `entry-${sessionEntries.length}`, type: "custom", customType, data });
+		},
 		sendMessage(message: any, deliveryOptions: any) {
 			if (options.sendMessageError) throw options.sendMessageError;
 			sentMessages.push({ message, options: deliveryOptions });
@@ -422,7 +432,7 @@ function harness(options: {
 		isProjectTrusted: () => options.trusted ?? true,
 		modelRegistry: { getAvailable: () => options.availableModels ?? [model] },
 		scopedModels: options.scopedModels ?? [],
-		sessionManager: { getBranch: () => sessionEntries, getEntries: () => sessionEntries, getSessionId: () => "test-session", getSessionFile: () => "test.jsonl" },
+		sessionManager: { getBranch: () => sessionEntries, getEntries: () => [{ type: "message", id: "user", message: { role: "user" } }, ...sessionEntries], getSessionId: () => "test-session", getSessionFile: () => "test.jsonl" },
 		ui: {
 			notify: (message: string, type: string) => notifications.push({ message, type }),
 			setWidget: (_key: string, content: any) => {
@@ -731,7 +741,7 @@ test("authorized direct write and commit use native Pi tools/session and preserv
 			await waitFor(() => app.sentMessages.length === 1, 25_000);
 			assert.equal(app.sentMessages[0]!.message.details.outcome, "completed", app.sentMessages[0]!.message.content);
 			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "other", toolName: "edit", input: {} }, app.ctx), undefined);
-			const record = app.sessionEntries[0].data;
+			const record = app.sessionEntries.find(({ customType }) => customType === "subagent-direct-tab")!.data;
 			t.after(() => rm(dirname(record.sessionFile), { recursive: true, force: true }));
 			assert.match(await readFile(record.sessionFile, "utf8"), /"role":"toolResult"/);
 		});
@@ -766,7 +776,7 @@ test("write-access parallel tasks serialize and invalid completion releases only
 			assert.match(started.content[0].text, /use \/subagent D1 Close\/cancel-and-release/);
 			app.handlers.get("tool_result")!({ toolCallId: "writers" });
 			await waitFor(() => fake.calls.some(([kind, action]) => kind === "agent" && action === "wait"));
-			assert.equal(app.sessionEntries.length, 1, "second tab cannot launch before first finishes");
+			assert.equal(app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-tab").length, 1, "second tab cannot launch before first finishes");
 			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "busy-edit", toolName: "edit", input: {} }, app.ctx)).block, true, "write requests hold admission");
 			assert.ok(fake.calls.find(([kind, action]) => kind === "agent" && action === "prompt")![3]!.includes("Write-access completion:"));
 			release();
@@ -775,7 +785,72 @@ test("write-access parallel tasks serialize and invalid completion releases only
 			assert.match(app.sentMessages[0]!.message.content, /Previous direct task did not complete exactly/);
 			assert.equal(scans, 4, "each worker needs two empty lease scans");
 			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx), undefined);
-			assert.equal(app.sessionEntries.length, 2, "retain exact recovery identities");
+			assert.equal(app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-tab").length, 2, "retain exact recovery identities");
+			assert.deepEqual(app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-admission").map(({ data }) => data.proof), ["not-dispatched", "unproved", "unproved", "unproved", "unproved", "stopped", "stopped"]);
+		});
+	});
+});
+
+test("journal failures and cancelled preparation preserve direct launch boundaries", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			for (const stage of ["hold", "intent", "verified-tab", "tab", "release", "abort", "abort-release"] as const) {
+				const controller = new AbortController();
+				let fail = true, scans = 0;
+				const fake = fakeHerdr(cwd, () => JSON.stringify({ outcome: "succeeded", answer: "done" }));
+				const app = harness({ cwd, lsof: async () => { scans++; return { code: 1, stdout: "", stderr: "" }; },
+					onGetCommands: () => { if (stage.startsWith("abort")) controller.abort(); },
+					onAppendEntry: (type, data) => {
+						if (fail && (stage === "hold" && type === "subagent-direct-admission" && data.state === "held"
+							|| stage === "intent" && type === "subagent-direct-admission" && data.proof === "unproved"
+							|| stage === "verified-tab" && type === "subagent-direct-admission" && data.resources?.at(-1)?.kind === "verified-tab"
+							|| stage === "tab" && type === "subagent-direct-tab"
+							|| (stage === "release" || stage === "abort-release") && type === "subagent-direct-admission" && data.state === "released")) throw new Error(`journal ${stage} failed`);
+					},
+					herdr: async (args) => {
+						if (args[0] === "tab" && args[1] === "create") assert.equal(app.sessionEntries[0]?.data.state, "held", "persist admission before allocation");
+						return fake.exec(args);
+					},
+				});
+				await app.handlers.get("session_start")!({}, app.ctx);
+				const params = { mode: "direct", role: "worker", name: stage, task: "authorized test", access: "write" };
+				await app.handlers.get("tool_call")!({ toolCallId: stage, toolName: "delegate_task", input: params }, app.ctx);
+				const run = app.tool.execute(stage, params, controller.signal, undefined, app.ctx);
+				if (stage === "release") { await run; await waitFor(() => app.sentMessages.length === 1); assert.equal(scans, 2); }
+				else await assert.rejects(run, /journal .* failed|abort/i);
+				app.handlers.get("tool_result")!({ toolCallId: stage });
+				const write = () => app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx);
+				const retained = ["verified-tab", "tab", "release", "abort-release"].includes(stage);
+				assert.equal(Boolean((await write())?.block), retained);
+				if (["hold", "abort", "abort-release"].includes(stage)) assert.equal(fake.calls.length, 0, "preflight never allocates or stops workers");
+				if (stage === "intent") assert.ok(!fake.calls.some(([kind, action]) => kind === "tab" && action === "create"));
+				if (stage === "tab" || stage === "verified-tab") assert.ok(!fake.calls.some(([kind, action]) => kind === "agent" && action === "start"));
+				if (stage === "abort") assert.deepEqual(app.sessionEntries.map(({ data }) => [data.state, data.proof]), [["held", "not-dispatched"], ["released", "not-dispatched"]]);
+				if (retained) {
+					const close = async () => {
+						let menu = 0;
+						app.ctx.hasUI = true;
+						app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.startsWith("  "))
+							: menu === 2 ? choices.find((choice) => choice.startsWith("Close/cancel")) : undefined;
+						await app.commands.get("subagent")!.handler("", app.ctx);
+					};
+					if (stage === "verified-tab") {
+						await close();
+						assert.equal((await write())?.block, true, "a failed evidence retry retains local ownership");
+					}
+					fail = false;
+					await close();
+					assert.equal(await write(), undefined, "a saved release clears admission after a guarded retry");
+					if (stage === "verified-tab") {
+						const receipt = app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-admission").at(-1)!.data;
+						assert.equal(receipt.proof, "stopped");
+						assert.equal(receipt.resources.filter(({ kind }: any) => kind === "verified-tab").length, 1);
+						assert.equal(scans, 4, "both local Close attempts require exact stop proof");
+					}
+				}
+				await app.handlers.get("session_shutdown")!({}, app.ctx); // Failed preflight release must not leave settlement pending.
+			}
 		});
 	});
 });
@@ -798,7 +873,7 @@ test("a failed writer with a normal final turn stops later tasks and releases ad
 				await waitFor(() => app.sentMessages.length === 1);
 				assert.equal(app.sentMessages[0]!.message.details.entries[0].status, "rejected");
 				assert.match(app.sentMessages[0]!.message.content, /Commit failed; partial changes remain/);
-				assert.equal(app.sessionEntries.length, 1, "no second worker launches");
+				assert.equal(app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-tab").length, 1, "no second worker launches");
 				assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx), undefined);
 			}
 		});
@@ -938,7 +1013,7 @@ test("failed direct termination retains admission and exact Close retries withou
 				app.handlers.get("tool_result")!({ toolCallId: failure });
 				await waitFor(() => app.sentMessages.length === 1);
 				assert.equal(app.pendingResult(), false, "retained admission after failure owns no future result");
-				const sessionFile = app.sessionEntries[0].data.sessionFile;
+				const sessionFile = app.sessionEntries.find(({ customType }) => customType === "subagent-direct-tab")!.data.sessionFile;
 				assert.match(app.sentMessages[0]!.message.content, /ownership retained \(write requests also keep checkout admission\):.*Close\/cancel-and-release/s);
 				const write = () => app.handlers.get("tool_call")!({ toolCallId: "main-write", toolName: "add_directory", input: {} }, app.ctx);
 				assert.equal((await write()).block, true);
@@ -1045,7 +1120,7 @@ test("uncertain direct allocation retains admission and recovery intent without 
 				await assert.rejects(app.tool.execute(failure, params, undefined, undefined, app.ctx), /timed out|unverified/);
 				app.handlers.get("tool_result")!({ toolCallId: failure });
 				assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "bash", toolName: "bash", input: {} }, app.ctx))?.block, true);
-				assert.deepEqual(app.sessionEntries.map(({ customType, data }) => [customType, data.display]), [
+				assert.deepEqual(app.sessionEntries.filter(({ customType }) => customType !== "subagent-direct-admission").map(({ customType, data }) => [customType, data.display]), [
 					["subagent-direct-allocation", { workflow: 1, worker: 1, workers: 1, title: "Uncertain", role: "worker" }],
 				]);
 				const create = fake.calls.find(([kind, command]) => kind === "tab" && command === "create")!;
@@ -1625,6 +1700,7 @@ test("display numbers continue after reload and carried workflows never reuse a 
 			assert.deepEqual(rows.map((row) => row.replace(/ \[\d+\]$/, "")).sort(), [
 				"  ⚠ D1.1 · worker · Other · recorded only; not proof of running or completion",
 				"  ⚠ D2 · 2 workers · recorded only; not proof of running or completion",
+				"  ⚠ Direct admission journal · admission recovery blocked · journal-failure",
 				"  ⚠ Legacy label · allocation unverified; admission retained · direct-alloc",
 				"  ⚠ direct-legacy · recorded only; not proof of running or completion",
 			]);
@@ -2018,6 +2094,48 @@ test("continueFrom relaunches a finished worker in a new tab with the same sessi
 	});
 });
 
+test("writer continuation saves admission before old-worker stop and recovered evidence cannot repeat that stop", async () => {
+	await environment(async (agentDir) => {
+		await writeWorkerRole(agentDir);
+		await herdrEnvironment(async (cwd) => {
+			const fake = fakeHerdr(cwd);
+			let stop = false;
+			const app = harness({ cwd, herdr: async (args) => {
+				if (stop && args[0] === "agent" && args[1] === "list") {
+					assert.equal(app.sessionEntries.at(-1)!.data.state, "held");
+					throw new Error("continued stop inspection failed");
+				}
+				return fake.exec(args);
+			} });
+			await app.handlers.get("session_start")!({}, app.ctx);
+			await app.tool.execute("first", { role: "worker", name: "Read", task: "inspect", access: "read" }, undefined, undefined, app.ctx);
+			await waitFor(() => app.sentMessages.length === 1);
+			stop = true;
+			const params = { mode: "direct", role: "worker", name: "Write", task: "authorized test", access: "write", continueFrom: "D1.1" };
+			await app.handlers.get("tool_call")!({ toolCallId: "continue", toolName: "delegate_task", input: params }, app.ctx);
+			await assert.rejects(app.tool.execute("continue", params, undefined, undefined, app.ctx), /continued stop inspection failed/);
+			assert.equal((await app.handlers.get("tool_call")!({ toolCallId: "edit", toolName: "edit", input: {} }, app.ctx)).block, true);
+			assert.equal(fake.calls.filter(([kind, action]) => kind === "tab" && action === "create").length, 1);
+			const recovered = harness({ cwd, herdr: async () => { throw new Error("recovery must not control a worker"); } });
+			recovered.sessionEntries.push(...app.sessionEntries);
+			await recovered.handlers.get("session_start")!({}, recovered.ctx);
+			await assert.rejects(recovered.tool.execute("reader", { ...params, access: "read" }, undefined, undefined, recovered.ctx), /recorded evidence grants no stop authority/);
+			await recoverDirect(recovered);
+			assert.ok(!recovered.notifications.some(({ message }) => message.includes("recovery must not control")));
+			const held = app.sessionEntries.filter(({ customType }) => customType === "subagent-direct-admission").at(-1)!.data;
+			assert.equal(held.resources[0].kind, "continuation-sources");
+			assert.equal(held.resources[0].sources[0].sessionFile, app.sessionEntries[0]!.data.sessionFile);
+			stop = false;
+			let menu = 0;
+			app.ctx.hasUI = true;
+			app.ctx.ui.select = async (_title, choices) => menu++ === 0 ? choices.find((choice) => choice.includes(held.taskId))
+				: menu === 2 ? choices.find((choice) => choice.startsWith("Close/cancel")) : undefined;
+			await app.commands.get("subagent")!.handler("", app.ctx);
+			assert.equal(await app.handlers.get("tool_call")!({ toolCallId: "recovered-edit", toolName: "edit", input: {} }, app.ctx), undefined, "local Close retries the saved continuation source");
+		});
+	});
+});
+
 test("continueFrom refuses owned, unknown, mismatched, working, unsettled, legacy, and missing workers before launch", async () => {
 	await environment(async (agentDir) => {
 		await writeWorkerRole(agentDir);
@@ -2057,6 +2175,11 @@ test("continueFrom refuses owned, unknown, mismatched, working, unsettled, legac
 			app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
 				...source, turn: undefined, taskId: "legacy", tabId: "t-legacy", display: { ...source.display, workflow: 5 } } });
 			await refuse({ continueFrom: "D5.1" }, /no turn identity .*not continuable/);
+			app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
+				...source, leaseIdentity: undefined, taskId: "legacy-lease", tabId: "t-legacy-lease", display: { ...source.display, workflow: 7 } } });
+			const calls = fake.calls.length;
+			await refuse({ continueFrom: "D7.1" }, /original process lease identity is missing or invalid/);
+			assert.equal(fake.calls.length, calls, "legacy continuation cannot inspect or stop a worker");
 			app.sessionEntries.push({ type: "custom", customType: "subagent-direct-tab", data: {
 				...source, cwd: "/elsewhere", taskId: "elsewhere", tabId: "t-elsewhere", display: { ...source.display, workflow: 6 } } });
 			await refuse({ continueFrom: "D6.1" }, /ran in \/elsewhere .*not this checkout and workspace/);

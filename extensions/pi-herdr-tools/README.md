@@ -64,15 +64,56 @@ Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` 
 
 In the interactive terminal, run `/commands`, select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
 
-RPC, the remote procedure call mode, keeps the text notification; non-interactive mode keeps the status list.
+RPC, the remote procedure call mode, uses native selection and input dialogs when `ctx.hasUI` is true. Output uses a notification, not the custom terminal view. Without a user interface, `/commands` only reports the inventory and makes no changes. The `background_command` cancellation tool remains available.
 
 The view shows output as literal text, not Markdown. It keeps spaces and line breaks and wraps long lines to fit the terminal. Terminal and directional control characters, including tabs and carriage returns, appear as Unicode escapes. In a one-column terminal, wide characters also appear as escapes. These display changes do not change the log file. Empty output shows `(No output.)`.
 
 Each command gets a dedicated, unfocused Herdr tab and pane. The extension sends a direct argument array through `layout.apply`; it does not type shell input. The packaged JavaScript runner uses Node to execute `/bin/sh -c` with closed standard input, in the current working directory. It inherits the Herdr terminal environment.
 
-Launch needs a free checkout. A writer keeps checkout admission until its runner proves termination. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
+The complete serialized specification must fit within 65,536 bytes. This limit includes command text, escaped characters, paths, and session data. An invalid or oversized specification is rejected before reservation or publication.
+
+Launch needs a free checkout. A writer keeps checkout admission until termination or non-dispatch is proved, or the user explicitly releases protection through `/commands`. Read jobs release admission after their specification is saved. Existing Main writes and direct subagent writers block launch. Main reads, command status, and cancellation remain available. This coordination covers the current Pi process and recovered command records, not arbitrary external writers or other Pi processes.
+
+An incomplete command specification makes write admission and full-store lists wait for publication, with a bounded lock wait. A valid specification for another checkout needs no publication lock. If the specification stays missing, invalid, or unsafe, writes stay blocked. The extension preserves the record for inspection.
 
 Do not use interactive commands, remote jobs, detached processes, or commands that escape their process group. The runner controls ordinary descendants in its own group. Cancellation first requests termination, then uses a forced kill if necessary. It never signals a process from a saved process number. A disappeared pane or screen text cannot prove completion.
+
+### Stuck command recovery
+
+In `/commands`, first select `Cancel and recheck` or `Recheck proof`. Cancellation asks the live runner to stop its own child group. A recheck releases protection only when saved records prove completion. Neither action starts another command or signals a saved process number.
+
+If termination remains unproved, the next selection defaults to `Keep protection`. You can cancel again or recheck again. To override protection, select `Release protection despite this risk`, then type the exact command ID, which is its saved job identifier. Spaces, partial identifiers, and Escape do not confirm release.
+
+**A live command could still write after release. Both Pi writes and checkout removal can become possible.** Release is a user decision, not proof of termination. Without verified completion, status shows `unknown` and `released by user, termination unproved`. The extension preserves the active record, evidence, and output.
+
+The release also asks the live runner to stop, but does not wait for proof. It survives reload and prevents older recovery scans from restoring this owner. A later valid terminal result updates status and permits normal completion delivery. The release audit stays saved and reports `released by user; completion later verified`.
+
+Release needs a verified private specification with the same identity and checkout scope. A malformed specification cannot be released. A held mutable-record lock does not prevent release. A held start lock can prevent it; retry after that holder stops. The extension never steals or removes kernel lock files.
+
+Release and shell start use the same start lock. A released command cannot acquire a new runner or start a shell, including after delayed dispatch.
+
+```mermaid
+flowchart LR
+    A[Cancel and recheck] --> B{Completion proved?}
+    B -->|Yes| C[Release protection by proof]
+    B -->|No| D[Keep protection by default]
+    D --> E[Explicit risk selection and exact job identifier]
+    E --> F[Release by user; termination unproved]
+```
+
+### Prune finished output
+
+Select a verified finished command in `/commands`, then select `Prune finished output`. The confirmation defaults to `Keep output`. Select `Delete output despite this risk` only if you accept permanent loss of the saved log. Escape and the default selection keep the output.
+
+**Another Pi session may still need this output. Pi cannot prove that all readers have finished. Deletion cannot be undone.** This confirmation accepts possible output loss; it is not proof of exclusive consumption. A delivery receipt or user release does not provide that proof either.
+
+Pruning requires the idle launching session, a branch that contains the launch, and a matching delivery receipt. Local pending delivery, queued messages, or an active follow-up block pruning. Unknown commands and released commands without verified completion cannot be pruned. The extension checks identity, state, delivery, output safety, and the local lifecycle again under the record locks before deletion. No dialog holds a command lock. Autonomous tools cannot prune output, and mode without a user interface only reports status.
+
+Pruning deletes only `output.log`. It does not erase the saved command text. The specification, claim, terminal result, delivery record, and any dispatch, cancellation, release, or other audit evidence remain. A small pruning receipt records permission for deletion. Lock files remain unchanged. These retained records prevent another launch after reload.
+
+Pruned commands disappear from the default `/commands` list. Run `/commands pruned` for a read-only receipt view; status reports that output has been pruned. Only records with a pruning receipt and absent output are excluded from the `retainedJobs` limit. If deletion fails or is interrupted, output that still exists stays visible. Before another deletion, Pi requires new human confirmation.
+
+Every dialog checks the session, branch, and lifecycle again before it permits a change. Escape makes no change. A changed session or branch requires you to reopen `/commands`. No dialog holds a command lock.
 
 ### Clones
 
@@ -156,11 +197,34 @@ Status clears on answer, cancellation, failure, `/reload`, session switch, or ex
 
 ![Managed command states, durable ownership, and recovery without another launch.](./docs/commands-flow.svg)
 
-The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown. Only an exact runner record can restore status or prove completion.
+The specification is saved before dispatch. A one-time claim prevents duplicate execution. A lost response, runner crash, or stale heartbeat cannot cause another launch. Ownership stays held when termination is unknown.
+
+A typed transport error can prove that dispatch did not occur. The extension saves and validates a terminal proof before it releases ownership. The proof and runner claim use the same write-once file, `claim.json`. Only one can create that file. The proof does not create a runner or terminal identity.
+
+A cancelled request before dispatch records `cancelled`; another proved non-dispatch records `failed`. A duplicate call returns the saved job, not a new launch. An error after dispatch, an untyped error, or conflicting records cannot supply this proof.
+
+```mermaid
+flowchart LR
+    A[Save specification] --> B[Request dispatch once]
+    B --> C[Proved non-dispatch]
+    C --> D[Save exclusive terminal proof]
+    B --> E[Runner claim or unknown dispatch]
+    E --> F[Require runner termination proof]
+    D --> G[Release ownership]
+    F --> G
+```
+
+An older shared checkout coordinator without the required command-protection methods stops command registration before any controls are written. Reload with the current Pi Herdr package; the extension does not create a separate coordinator.
+
+Verified terminal owners and owners released by the user cannot be restored by an older recovery scan. A missing record does not prove completion; unknown owners without an explicit release stay held.
 
 The runner survives Pi shutdown, reload, and conversation rewind. Completion stays pending until the launching session is idle and its current branch contains the assistant tool-call entry that launched the command. On other branches, use `/commands` to inspect the result. Return to the launch branch to receive the pending notice.
 
 After a success or failure, delivery requests one model turn. The agent can inspect the result and continue the request if needed. If Pi cannot start the turn, Pi reports an error. Reload the session to retry a notice that is not in the session history. The delivery record and session history prevent duplicate notices and turn requests after a rewind.
+
+A corrupt delivery record blocks only that job's notice. Other verified terminal jobs can still deliver. The corrupt file stays unchanged.
+
+A delivery receipt from another process does not clear a local pending notice. Matching local session history can clear it after local work is idle. This also works when the shared receipt already exists.
 
 Pi sends the notice asynchronously. The delivery record is saved only after the notice appears in session history. If dispatch fails before that point, inspect `/commands` and the session history. Reload to retry only after the earlier dispatch cannot still complete; otherwise, a duplicate notice is possible. The extension cannot detect an asynchronous dispatch failure or retry it during the same load.
 
@@ -170,13 +234,31 @@ Pi sends the notice asynchronously. The delivery record is saved only after the 
 
 `/done` requires `HERDR_ENV=1`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, and `HERDR_PANE_ID`. Commit or discard changes, then confirm removal; declining changes nothing. Normal and forced completion wait for idle Pi.
 
-Both normal and forced completion require the exact current pane, tab, and workspace to own the target linked checkout. A primary checkout, folder workspace, different checkout, stale pane, or unverified repository identity blocks removal and tab closure. A subdirectory of the owned checkout is allowed.
+Both normal and forced completion require the exact current pane, tab, and workspace to own the target linked checkout. A primary checkout, folder workspace, different checkout, stale pane, or unverified repository identity blocks removal and tab closure. A subdirectory of the owned checkout is allowed. These identity checks run before command recovery and again on the fresh removal check.
 
-Active or unknown managed commands block both normal and forced removal, including read jobs. Cancel the job and wait for verified completion. Other admitted writers also block removal.
+Active or unknown managed commands block both normal and forced removal, including read jobs. `/done` offers the same recovery dialog as `/commands`, only for commands in its target checkout. `Keep protection` is the default. You can cancel, recheck termination proof, or type the exact command ID to confirm release without termination proof. A released live command can still write. Other admitted writers still block removal.
+
+Recovery dialogs run after all removal locks are released. Native dialogs also work in remote mode. Without a user interface, blocked removal fails without release. Session, branch, pane, or lifecycle changes stop recovery. Locks held by other processes cannot be stolen.
+
+After verified completion or confirmed release, `/done` makes one fresh removal check. It checks worktree registration, repository identity, panes, tabs, checkout ownership, and command ownership again. A new blocker stops removal; it does not start another recovery cycle. Removal is never retried after it may have started.
+
+```mermaid
+flowchart LR
+    A[Command ownership blocks removal] --> B[Release removal locks]
+    B --> C[Cancel, recheck, or typed release]
+    C -->|Keep protection| D[Keep checkout]
+    C -->|Completion proof or confirmed release| E[One fresh removal check]
+    E -->|All checks pass| F[Remove checkout]
+    E -->|Blocked| D
+```
+
+`/done` holds the checkout lock, then the command-store lock, through actual checkout removal. The Git child inherits both lock descriptors. A parent crash cannot release them while that child continues. The primary update child inherits its primary-checkout lock.
+
+These two mutations use native child processes. Git has no runtime timeout. After Git exits, Pi reads error output for at most 100 milliseconds. Later output from descendants is not saved. The error output buffer holds at most 8192 bytes. Other commands use Pi's executor.
 
 Normal removal rejects dirty worktrees and checkout use by other workspaces. Close listed tabs and retry; labels identify them, or IDs without labels. Primary-checkout tabs do not block removal or updates.
 
-**`/done -f` skips confirmation and cross-workspace checks. It passes `--force` to Git, can permanently delete uncommitted work, and can leave other workspaces' tabs pointing at a removed checkout.**
+**`/done -f` skips the initial removal confirmation and cross-workspace checks, but not separate command-release consent. It passes `--force` to Git, can permanently delete uncommitted work, and can leave other workspaces' tabs pointing at a removed checkout.**
 
 Cleanup runs `git worktree remove <checkout>`, closes other tabs in the current workspace, then updates a non-bare primary checkout with `git pull --ff-only`. The current tab closes last, even if the update fails. Tabs in other workspaces do not close.
 
@@ -216,8 +298,8 @@ Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. For the shared r
 | --- | --- | --- | --- |
 | `runtimeMs` | Maximum command runtime in milliseconds. | Integer, 100 to 86400000. | `600000` |
 | `outputBytes` | Maximum combined standard output and error bytes per job. | Integer, 1024 to 104857600. | `10485760` |
-| `concurrency` | Maximum active or unknown jobs in the command store. | Integer, 1 to 16. | `4` |
-| `retainedJobs` | Maximum saved job records before launch is refused. | Integer, 1 to 10000. | `1000` |
+| `concurrency` | Maximum active or unknown jobs that the user has not released. | Integer, 1 to 16. | `4` |
+| `retainedJobs` | Maximum job records whose output has not been pruned before launch is refused. | Integer, 1 to 10000. | `1000` |
 
 Edit the file to change policy; each launch loads it again. Existing jobs keep their saved limits. No automatic job queue or retry is provided.
 
@@ -229,13 +311,21 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 ## State and storage
 
-Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically. Archive only verified terminal records when the record limit is reached; never delete active, unknown, or malformed state to permit another launch.
+Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically.
+
+The record limit does not authorize output deletion. Use `/commands` to inspect verified finished commands and explicitly accept the warned output loss before pruning. Never delete active, unknown, or malformed state to permit another launch.
 
 Write admission checks only jobs in the exact target checkout set. Startup and periodic recovery check the current checkout. Removal checks its target checkout, including read jobs.
 
-A valid immutable specification can exclude a foreign job without its mutable-state lock. A busy foreign job does not block these checks. Completion still requires a locked, validated read. Full-store lists and launch-limit checks still inspect all jobs.
+A valid immutable specification can exclude a foreign job without its mutable-state lock. A busy foreign job does not block these checks. Completion still requires a locked, validated read. Full-store lists and launch-limit checks still inspect all jobs. While the global store lock is held, a busy job lock makes launch or removal fail without a long retry. No record is skipped, and global capacity limits still apply.
 
-Malformed state is preserved and blocks writes in the matching checkout. An unreadable or invalid specification blocks all checkout checks because its scope is unknown. A named pipe in command state or output is refused without waiting for a writer. The file is preserved. Repair requires inspection of the original files and actual owned processes. There is no force-release action for unknown ownership.
+Malformed state is preserved and blocks writes in the matching checkout. An unreadable or invalid specification blocks all checkout checks because its scope is unknown. A named pipe in command state or output is refused without waiting for a writer. The file is preserved. Repair requires inspection of the original files and actual owned processes.
+
+The `/commands` inventory reports each record independently of strict write admission. A locked or malformed record does not hide other records. Diagnostics use fixed categories and do not include command text or tokens.
+
+Runtime limits, cancellation, and output limits stop the child group without waiting for its record lock. Cancellation uses an atomic private control file. The cancel tool validates the immutable specification and writes the request before it reads locked status. Its status response can still wait for that lock. A late cancellation request does not change a verified terminal result.
+
+A pending heartbeat must finish before the final state is saved, but not before the child is stopped. A state-write failure cannot release ownership.
 
 The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
 
@@ -262,6 +352,8 @@ Clones are separate session files in the Pi-selected session directory. Each con
 | Failure | Recovery |
 | --- | --- |
 | Unknown command ownership | Inspect `/commands` and the private state directory. Cancellation is a request, not proof of termination. Do not retry the command or delete its state. |
+| Recovery or delivery warning | The first three distinct warnings can identify a job, a state-file stage, and a fixed error category. One generic warning covers further failures or missing safe context. Warnings do not include commands, tokens, or exception text. Inspect the named job; do not delete unknown state. |
+| Proved non-dispatch | Inspect the saved failed or cancelled result. The command did not start. Any later launch requires a new explicit decision. |
 | Command runtime or output limit | Inspect the bounded log and error status. Any later launch is a new explicit decision. |
 | Definite clone-tab creation failure | The clone file is removed. Cleanup errors name any remaining file. |
 | Worktree creation or pre-launch extra-tab failure | No clone session exists yet. |
