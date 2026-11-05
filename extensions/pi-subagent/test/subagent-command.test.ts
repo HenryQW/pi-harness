@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type KeybindingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, getKeybindings, KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, CURSOR_MARKER, getKeybindings, KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS, Markdown, Spacer, stripTerminalSequences, Text, visibleWidth, type Component, type Focusable, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../src/discard.ts";
 import { registerSubagentCommand, reportMarkdown, type IsolatedInventory, type PrunePlan, type Report, type SubagentCommandAdapter } from "../extensions/subagent-command.ts";
 
@@ -107,7 +107,8 @@ function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "
 				const render = (width = 200) => component.render(width).map(stripTerminalSequences);
 				// Read all labels for the existing command-policy tests, then drive the real component with keys.
 				const lines = render();
-				const dialog: Dialog = { kind: "select", title: lines[0]!, options: lines.slice(1, -1).map((line) => line.slice(2)) };
+				const optionLines = lines.filter((line) => /^(→ |  )/.test(line) && !/^  \(\d+\/\d+\)/.test(line));
+				const dialog: Dialog = { kind: "select", title: lines[0]!, options: optionLines.map((line) => line.slice(2).trimEnd()) };
 				dialogs.push(dialog);
 				const interact = pickers.shift();
 				if (interact) interact({ component, terminal, render, options });
@@ -117,7 +118,7 @@ function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "
 					const index = dialog.options!.indexOf(selected ?? "");
 					if (index < 0) component.handleInput!("\x1b");
 					else {
-						const current = lines.findIndex((line) => line.startsWith("→ ")) - 1;
+						const current = optionLines.findIndex((line) => line.startsWith("→ "));
 						for (let n = 0; n < (index - current + dialog.options!.length) % dialog.options!.length; n++) component.handleInput!("\x1b[B");
 						component.handleInput!("\r");
 					}
@@ -193,8 +194,8 @@ const screen = (picker: Picker, height: number, width = 80) => {
 test("long single-choice menus scroll to exact same-named records and retain selection across resize", async () => {
 	const h = harness({ direct: Array.from({ length: 60 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })) });
 	h.pickers.push((picker) => {
-		assert.match(screen(picker, 12), /up\/down scroll.*select.*cancel/);
-		down(picker, 51); // One group header, then worker 50.
+		assert.match(screen(picker, 24), /select.*cancel[\s\S]*up\/down move/);
+		down(picker, 50);
 		for (const [height, width] of [[12, 80], [7, 40], [30, 110], [2, 80]]) {
 			assert.match(screen(picker, height!, width), /→ .*direct-50/);
 		}
@@ -203,6 +204,104 @@ test("long single-choice menus scroll to exact same-named records and retain sel
 	await h.run();
 	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-50`/);
 	assert.deepEqual(h.closed, []);
+	assert.deepEqual(h.discarded, []);
+});
+
+test("search uses full context, keeps exact identity across resize and refresh, and forwards input focus", async () => {
+	const direct = [1, 2].map((n) => ({ id: `exact-${n}`, name: "Same", status: "working", tabs: [],
+		workers: [{ workflow: n, worker: 1, workers: 1, role: "scout", title: `${"同じ ".repeat(80)}${n === 2 ? "needleβ" : "other"}` }] }));
+	const h = harness({ direct });
+	h.pickers.push((picker) => {
+		(picker.component as Component & Focusable).focused = true;
+		assert.ok(picker.component.render(80).some((line) => line.includes(CURSOR_MARKER)), "input focus reaches the native cursor");
+		picker.component.handleInput!("needleβ");
+		for (const width of [1, 5, 24, 40, 80]) screen(picker, 24, width);
+		assert.match(screen(picker, 24, 40), /→ .*D2\.1 · working/);
+		assert.match(screen(picker, 24, 40), /Direct · working · exact-2/);
+		assert.equal(h.inventoryCount, 1, "search and rendering read the loaded inventory only");
+		direct.reverse();
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 24), /Find: needleβ/);
+		picker.component.handleInput!("\x15");
+		assert.match(screen(picker, 24), /→ .*D2\.1 · working/);
+		picker.component.handleInput!("\x1b");
+	});
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `exact-2`/);
+	assert.deepEqual([h.closed, h.discarded], [[], []]);
+});
+
+test("search finds a multi-worker workflow by each worker's reference and title", async () => {
+	const h = harness({ direct: [{ id: "group", name: "Batch", status: "working", tabs: [], workers: [
+		{ workflow: 3, worker: 1, workers: 2, role: "scout", title: "Scan" },
+		{ workflow: 3, worker: 2, workers: 2, role: "implementer", title: "Repair sign-in" },
+	] }] });
+	h.pickers.push((picker) => {
+		picker.component.handleInput!("D3.2");
+		assert.match(screen(picker, 24), /→ .*D3 · 2 workers/);
+		picker.component.handleInput!("\x15");
+		picker.component.handleInput!("Repair sign-in");
+		assert.match(screen(picker, 24), /→ .*D3 · 2 workers/);
+		picker.component.handleInput!("\r");
+	}, (picker) => picker.component.handleInput!("\x1b"));
+	await h.run();
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `group`/);
+});
+
+test("an empty search cannot select or mutate a record; the configured clear key restores choices", async () => {
+	const h = harness({ keys: new TuiKeybindingsManager(TUI_KEYBINDINGS, { "tui.editor.deleteToLineStart": ["ctrl+w"] }) });
+	h.pickers.push((picker) => {
+		picker.component.handleInput!("zzzz-no-match");
+		picker.component.handleInput!("\x1b[B");
+		picker.component.handleInput!("\x1b[6~");
+		picker.component.handleInput!("\r");
+		assert.match(screen(picker, 24, 40), /No matches/);
+		assert.ok(!screen(picker, 24).includes("→ "));
+		picker.component.handleInput!("\x17");
+		assert.match(screen(picker, 24), /→ .*request/);
+		picker.component.handleInput!("\x1b");
+	});
+	await h.run();
+	assert.deepEqual([h.closed, h.discarded, h.sent], [[], [], []]);
+	assert.equal(h.inspectCount, 0);
+});
+
+test("native page navigation captures viewport input and uses injected page and confirm keys", async () => {
+	const h = harness({ direct: Array.from({ length: 80 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })),
+		keys: new TuiKeybindingsManager(TUI_KEYBINDINGS, { "tui.select.pageDown": ["ctrl+n"], "tui.select.pageUp": ["ctrl+p"], "tui.select.confirm": ["ctrl+y"] }) });
+	let selected = "";
+	h.pickers.push((picker) => {
+		assert.equal(picker.component.capturesViewportInput, true);
+		screen(picker, 24);
+		picker.component.handleInput!("\x0e");
+		const firstPage = screen(picker, 24).split("\n").find((line) => line.startsWith("→ "))!;
+		assert.ok(!firstPage.includes("direct-0"));
+		picker.component.handleInput!("\x0e");
+		picker.component.handleInput!("\x10");
+		assert.equal(screen(picker, 24).split("\n").find((line) => line.startsWith("→ ")), firstPage);
+		selected = firstPage.match(/direct-\d+/)![0];
+		picker.component.handleInput!("\x19");
+	}, (picker) => picker.component.handleInput!("\x1b"));
+	await h.run();
+	assert.ok(h.reports[0]!.includes(`**ID:** \`${selected}\``));
+});
+
+test("filtered multi-selection keeps its query and count without selecting hidden records", async () => {
+	const h = harness({ direct: ["other", "needle"].map((name) => ({ id: name, name, status: "working", canClose: true, workers: [], tabs: [] })) });
+	h.responses.push(h.pick("Select multiple"), h.pick("Close/cancel"), h.pick("Close"));
+	h.pickers.push(undefined, (picker) => {
+		picker.component.handleInput!("needle");
+		assert.match(screen(picker, 24), /→ \[ \].*needle/);
+		picker.component.handleInput!("\r");
+	}, (picker) => {
+		assert.match(screen(picker, 24), /1 selected[\s\S]*Find: needle[\s\S]*→ \[x\].*needle/);
+		picker.component.handleInput!("\x15");
+		picker.component.handleInput!("Continue");
+		picker.component.handleInput!("\r");
+	});
+	await h.run();
+	assert.deepEqual(h.closed, ["needle"]);
 	assert.deepEqual(h.discarded, []);
 });
 
@@ -219,18 +318,18 @@ test("menu mouse input scrolls and selects the pressed record across redraws wit
 		const lines = screen(picker, 16).split("\n");
 		assert.equal(mouse(picker, "wheel", 0, 1), undefined, "the title is not part of the list");
 		assert.equal(mouse(picker, "wheel", lines.length - 1, 1), undefined, "key hints are not part of the list");
-		assert.equal(mouse(picker, "click", lines.length - 2), undefined, "the scroll indicator is not a choice");
+		assert.equal(mouse(picker, "click", lines.findIndex((line) => /^  \(\d/.test(line))), undefined, "the scroll indicator is not a choice");
 		assert.equal(mouse(picker, "wheel", 2, 1)?.handled, true);
-		assert.match(screen(picker, 16), /→ .*direct-0/);
+		assert.match(screen(picker, 16), /→ .*direct-1/);
 		assert.equal(mouse(picker, "wheel", 2, -1)?.handled, true);
-		assert.match(screen(picker, 16).split("\n")[1]!, /^→ ── Direct/);
-		assert.match(screen(picker, 16).split("\n")[5]!, /direct-3/);
-		assert.equal(mouse(picker, "press", 5)?.focus, true);
-		assert.match(screen(picker, 16).split("\n")[5]!, /direct-5/, "pressing recenters the visible list");
-		assert.equal(mouse(picker, "click", 5)?.handled, true);
+		assert.match(screen(picker, 16).split("\n")[2]!, /→ .*direct-0/);
+		assert.match(screen(picker, 16).split("\n")[4]!, /direct-2/);
+		assert.equal(mouse(picker, "press", 4)?.focus, true);
+		assert.match(screen(picker, 16).split("\n")[4]!, /direct-3/, "pressing recenters the visible list");
+		assert.equal(mouse(picker, "click", 4)?.handled, true);
 	}, (picker) => { picker.component.handleInput!("\x1b"); });
 	await h.run();
-	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-3`/);
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-2`/);
 	assert.deepEqual([h.closed, h.discarded], [[], []]);
 });
 
@@ -238,20 +337,19 @@ test("resizing between a mouse press and click does not select a different recor
 	const h = harness({ direct: Array.from({ length: 20 }, (_, index) => ({ id: `direct-${index}`, name: "Same", status: "working", workers: [], tabs: [] })) });
 	h.pickers.push((picker) => {
 		screen(picker, 16);
-		mouse(picker, "press", 5);
+		mouse(picker, "press", 4);
 		screen(picker, 20);
-		mouse(picker, "click", 5);
+		mouse(picker, "click", 4);
 		picker.component.handleInput!("\r");
 	}, (picker) => { picker.component.handleInput!("\x1b"); });
 	await h.run();
-	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-3`/);
+	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct-2`/);
 });
 
 test("menu mouse coordinates omit the title offset in a short terminal", async () => {
 	const h = harness({ direct: [{ id: "direct", name: "Worker", status: "working", workers: [], tabs: [] }] });
 	h.pickers.push((picker) => {
 		screen(picker, 2);
-		down(picker, 1);
 		assert.match(screen(picker, 2), /^→ .*direct/);
 		assert.equal(mouse(picker, "click", 0)?.handled, true);
 	}, (picker) => { picker.component.handleInput!("\x1b"); });
@@ -274,7 +372,9 @@ test("menus open in the editor area and leave the transcript visible above them"
 test("menu hints use the injected keybinding manager", async () => {
 	const h = harness({ keys: new TuiKeybindingsManager(TUI_KEYBINDINGS, { "tui.select.up": ["k"], "tui.select.down": ["j"], "tui.select.confirm": ["y"] }) });
 	h.pickers.push((picker) => {
-		assert.match(picker.render().at(-1)!, /k\/j scroll · y select/);
+		assert.match(picker.render().join("\n"), /y select.*k\/j move/);
+		picker.component.handleInput!("j");
+		assert.match(picker.render().join("\n"), /→ Select multiple/);
 		picker.component.handleInput!("\x1b");
 	});
 	await h.run();
@@ -285,7 +385,7 @@ test("long multiple-choice menus reach bottom actions and keep focus after each 
 		inventory: { root: "/git", leaseLive: false, requests: [], invalidIds: [] } });
 	h.pickers.push((picker) => {
 		screen(picker, 12);
-		down(picker, 61);
+		down(picker, 60);
 		assert.match(screen(picker, 12), /→ Select multiple/);
 		picker.component.handleInput!("\r");
 	}, (picker) => {
@@ -322,7 +422,9 @@ test("long prune menus keep Select all and Clear reachable; cancellation removes
 		picker.component.handleInput!("\x1b[A");
 		picker.component.handleInput!("\r");
 	}, (picker) => {
-		assert.match(screen(picker, 20), /→ Select all[\s\S]*Continue \(40 selected\)/);
+		assert.match(screen(picker, 20, 40), /^40 selected[\s\S]*→ Select all/);
+		down(picker, 2);
+		assert.match(screen(picker, 20), /→ Continue \(40 selected\)/);
 		picker.component.handleInput!("\x1b");
 	});
 	await h.reviewPrune();
@@ -364,7 +466,7 @@ test("/subagent roles shows one labeled field per line; the TUI gets a themed en
 
 test("TUI reports use Pi's custom-message box: a tone-colored title over a Markdown body", async () => {
 	const h = harness({ direct: [{ id: "direct_1", name: "Fix *now*", status: "admission retained", recovery: "inspect tab", workers: [], tabs: [] }] });
-	h.responses.push(h.pick("Fix *now* ·"), h.pick("Close"));
+	h.responses.push(h.pick("Fix *now*"), h.pick("Close"));
 	await h.run();
 	const box = h.renderEntry(h.appended.at(-1)!.data);
 	assert.ok(box instanceof Box);
@@ -382,11 +484,14 @@ test("TUI reports use Pi's custom-message box: a tone-colored title over a Markd
 
 test("picker rows start with an uncolored status glyph; identity comes first", async () => {
 	const task = (id: string, status: string) => ({ id, name: id, status, workers: [], tabs: [] });
-	const h = harness({ direct: ["working", "admission retained", "failed", "completed", "recorded only; not proof of running or completion"].map((status) => task(`t-${status}`, status)) });
+	const h = harness({ direct: ["working", "admission retained", "failed", "completed", "recorded only; not proof of running or completion"].map((status, index) => task(`t-${index}`, status)) });
 	h.responses.push(h.pick("Completed / history"), h.pick("Close"));
 	await h.run();
 	const rows = h.dialogs[1]!.options!.filter((label) => label.startsWith("  "));
-	assert.deepEqual(rows, ["  ⚠ t-admission retained · admission retained", "  ✗ t-failed · failed", "  ● t-working · working", "  ⚠ t-recorded only; not proof of running or completion · recorded only; not proof of running or completion", "  ✓ t-completed · completed", "  ● request · working · Same"]);
+	assert.deepEqual(rows.map((row) => row.match(/^  (\S) (\S+) ·/)?.slice(1)), [["⚠", "t-1"], ["✗", "t-2"], ["●", "t-0"], ["⚠", "t-4"], ["✓", "t-3"], ["●", "request"]]);
+	assert.match(rows[0]!, /admission retained/);
+	assert.match(rows[3]!, /recorded only/);
+	assert.ok(rows.every((row) => /Direct|Isolated/.test(row)), "each row keeps its group when the list scrolls");
 });
 
 test("legacy direct recovery, history and duplicate labels retain exact records", async () => {
@@ -394,15 +499,16 @@ test("legacy direct recovery, history and duplicate labels retain exact records"
 		{ id: "direct-a", name: "Same", status: "recorded (not observed)", workers: [], tabs: [{ entryId: "entry-1", name: "worker", tabId: "tab-1", paneId: "pane-1", sessionFile: "/one" }, { entryId: "entry-2", name: "worker", tabId: "tab-2", paneId: "pane-2", sessionFile: "/two" }] },
 		{ id: "direct-b", name: "Same", status: "completed", workers: [], tabs: [{ entryId: "entry-3", name: "worker", tabId: "tab-3", paneId: "pane-3", sessionFile: "/three" }] },
 	] });
-	h.responses.push(h.pick("Same · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
+	h.responses.push(h.pick("direct-a · recorded"), h.pick("Completed / history"), h.pick("direct-b"), h.pick("request ·"), h.pick("Inspect"), h.pick("Back"), h.pick("Close"));
 	await h.run();
 	const [first, second] = h.reports;
 	assert.match(first!, /\*\*tab:\*\* `tab-1`[\s\S]*\*\*tab:\*\* `tab-2`/);
 	assert.match(second!, /^\*\*✓ Direct workflow Same · completed\*\*/);
 	assert.match(second!, /\*\*tab:\*\* `tab-3`/);
 	assert.equal(h.inspectCount, 1);
-	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Isolated (1) ──"));
-	assert.ok(h.dialogs[0]!.options!.some((label) => label === "── Direct (1) ──"));
+	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Isolated · Same")));
+	assert.ok(h.dialogs[0]!.options!.some((label) => label.includes("Direct · Same")));
+	assert.ok(h.dialogs[0]!.options!.every((label) => !label.startsWith("──")), "headings are not selectable actions");
 });
 
 test("direct rows use saved references; multi-worker workflows group under one row with named details", async () => {
@@ -424,7 +530,7 @@ test("direct rows use saved references; multi-worker workflows group under one r
 	await h.run();
 	const rows = h.dialogs[0]!.options!.filter((label) => /^  . D/.test(label));
 	assert.equal(rows.length, 3);
-	for (const prefix of ["  ● D1.1 · worker · Same · observed locally", "  ⚠ D2.1 · worker · Same · admission retained", "  ⚠ D3 · 3 workers · allocation unverified"]) {
+	for (const prefix of ["  ● D1.1 · observed locally", "  ⚠ D2.1 · admission retained", "  ⚠ D3 · 3 workers · allocation"]) {
 		assert.ok(rows.some((label) => label.startsWith(prefix)), prefix);
 	}
 	assert.ok(rows.every((label) => !label.includes("direct-")), "opaque IDs stay in details");
@@ -500,7 +606,7 @@ test("inspection does not launch after the session changes in the menu", async (
 test("failed isolated discovery preserves direct branch recovery and invalid inventory does not suppress healthy requests", async () => {
 	const direct = [{ id: "direct", name: "Rescue", status: "recorded", workers: [], tabs: [{ entryId: "task", name: "worker", tabId: "tab", paneId: "pane", sessionFile: "/recover" }] }];
 	const failed = harness({ direct, isolatedError: new Error("outside Git") });
-	failed.responses.push(failed.pick("Rescue ·"), failed.pick("Close"));
+	failed.responses.push(failed.pick("Rescue"), failed.pick("Close"));
 	await failed.run();
 	assert.ok(failed.notices.some((notice) => notice.message.includes("outside Git")));
 	assert.match(failed.reports[0]!, /\*\*session:\*\* `\/recover`/);
@@ -627,7 +733,7 @@ test("no UI reports requests without dialogs or mutations; unknown arguments fai
 test("direct Close is exact and refuses stale branch/session/epoch dialogs", async () => {
 	for (const change of ["changeBranch", "navigateAncestor", "navigateDescendant", "changeSession", "changeFile", "shutdown", "append"] as const) {
 		const h = harness({ direct: [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, workers: [], tabs: [] }] });
-		h.responses.push(h.pick("Rescue ·"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
+		h.responses.push(h.pick("Rescue"), (dialog) => { h[change](); return h.pick("Close/cancel")(dialog); }, h.pick("Close"));
 		await h.run();
 		assert.deepEqual(h.closed, change === "append" ? ["owned"] : []);
 	}
@@ -702,7 +808,7 @@ test("prune preselects prunable items; Continue removes them and ignored content
 	keepIgnored.responses.push(keepIgnored.pick("Continue (2 selected)"));
 	keepIgnored.confirms.push(false);
 	await keepIgnored.reviewPrune();
-	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["Prune subagent worktrees · prunable items are selected", "Delete ignored content"]);
+	assert.deepEqual(keepIgnored.dialogs.map(({ title }) => title), ["2 selected · Prune subagent worktrees · prunable items are selected", "Delete ignored content"]);
 	assert.deepEqual(keepIgnored.dialogs[0]!.options, [
 		"[x] a · merged into Main HEAD; clean checkout", "[x] b · merged into origin/main; clean checkout",
 		"[ ] e · force · branch has commits not in Main HEAD", "[ ] c · force · checkout has tracked or untracked changes",
@@ -821,7 +927,7 @@ test("Select multiple batches discard of isolated requests and close of direct w
 	const direct = [{ id: "owned", name: "Rescue", status: "admission retained", canClose: true, workers: [], tabs: [] }];
 	const discard = harness({ inventory, direct });
 	discard.responses.push(discard.pick("Select multiple…"), (dialog) => {
-		assert.deepEqual(dialog.options!.slice(0, 3), ["[ ] ⚠ Rescue · admission retained · owned", "[ ] ● one · working · First", "[ ] ⚠ lost · needs_attention · Second"]);
+		assert.deepEqual(dialog.options!.slice(0, 3).map((row) => row.replace(/ {2,}/g, " · ")), ["[ ] ⚠ owned · admission retained · Direct · Rescue", "[ ] ● one · working · Isolated · First", "[ ] ⚠ lost · needs_attention · Orphaned · parent checkout removed · Second"]);
 		return discard.pick("Select all")(dialog);
 	}, discard.pick("Continue (3 selected)"), (dialog) => {
 		assert.deepEqual(dialog.options, ["Close and delete worktrees (discard work) of 2 isolated request(s)",
@@ -887,7 +993,8 @@ test("orphaned requests show the delete action without status or follow-up actio
 	}] } });
 	h.confirms.push(true);
 	h.responses.push(h.pick("Completed / history"), (dialog) => {
-		assert.deepEqual(dialog.options!.slice(0, 2), ["── Orphaned · parent checkout removed (1) ──", `  ✗ orphan · aborted · Lost parent ${"goal ".repeat(9)}go…`]);
+		assert.match(dialog.options![0]!, /^  ✗ orphan · aborted +Orphaned · parent checkout removed · Lost parent /);
+		assert.ok(dialog.options![0]!.endsWith("…"), "the goal is a marked summary");
 		return h.pick("orphan ·")(dialog);
 	}, (dialog) => {
 		assert.ok(!dialog.options!.some((label) => /Inspect|follow-up/.test(label)));
