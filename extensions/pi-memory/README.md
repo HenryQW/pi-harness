@@ -60,7 +60,9 @@ The screen separates the verdict, exact evidence, and proposed changes. It shows
 
 If the stored verdict is missing or its sources changed, the command runs candidate review again before the approval question. If you defer or cancel, it stores the new verdict only if the candidate is unchanged.
 
-For a single add with one same-store conflict, the command shows the complete current entry and offers replacement or discard. It also offers merge when the reviewer supplies an exact merge. It shows the complete proposed merge before you select an action. A merge or replacement gets another review against the other sources. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
+For a single add with one same-store conflict, the command shows the complete current entry and offers replacement or discard. It also offers merge when the reviewer supplies an exact merge. It shows the complete proposed merge before you select an action. A merge or replacement gets one more review against unchanged sources, including the entry it replaces. Overlap or contradiction with that entry alone is expected because the same write removes its text.
+
+Evidence that also matches a retained entry blocks the write. A conflict with another source also blocks it. The error names the conflicting store and its evidence. A queued candidate stays in the review inbox, and an immediate `/remember` reports that nothing was saved. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
 
 **Review later** is selected by default. Press Esc to stop and retain the candidate. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
 
