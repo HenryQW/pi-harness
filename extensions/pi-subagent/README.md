@@ -150,13 +150,27 @@ Staging, validation, and promotion require clean, unchanged Main. After a defini
 
 ### Inspect work
 
-Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows are grouped under **Direct**, **Isolated**, and **Orphaned · parent checkout removed**. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
+Open `/subagent` to browse direct work on this session branch and isolated requests in the current canonical Git checkout, including other sessions. Rows have **Direct**, **Isolated**, and **Orphaned · parent checkout removed** group labels. On a wide terminal, each row shows its group beside its reference and status. Group headings are not actions. Before the menu opens, and after each **Refresh**, a **Current subagent work** report shows which subagents are working. Without interactive UI, `/subagent` sends the report and the request list, including history.
 
-In the terminal, the menu replaces the editor and uses at most half the terminal height. It does not overlay the report or the transcript. While the menu waits for your selection, Pi reports that it needs user input. Key hints use Pi's configured bindings.
+In the terminal, Pi's native input and selection list replace the editor and use at most half the terminal height. The menu does not cover the report or the transcript.
 
-Move through rows with the mouse wheel. Click a row to select it. You can also use the keyboard.
+The selected row has an arrow. A detail preview wraps the selected row's context when space permits. Narrow terminals keep the reference and status before the goal. Very short terminals hide the search field, preview, or extra hints. While the menu waits for your selection, Pi reports that it needs user input.
 
-Each row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. Terminal requests stay hidden until you select **Completed / history**; this filter deletes no records. `/subagent` reports show as transcript entries that the model does not get.
+Type to filter the current menu by reference, record identifier, Role, name, or status. Search includes details that do not fit in a row. The menu shows the number of matching rows and the total row count, including actions. Search changes no records. The menu keeps the filter and selected record when you return from details. Select **Refresh** to load current status; search and navigation use the loaded inventory only.
+
+| Default key | Action |
+| --- | --- |
+| `Up` / `Down` | Move to another row. |
+| `PageUp` / `PageDown` | Move one page within the list, not the transcript. |
+| `Enter` | Select a row or toggle it in a multiple-selection menu. |
+| `Ctrl+U` | Clear the filter and show all rows. |
+| `Escape` | Cancel the menu without selecting a row. |
+
+Key hints show Pi's configured bindings. In fullscreen mode, move through rows with the mouse wheel and click a row to select it. In regular mode, use the keyboard; the terminal owns mouse input.
+
+Each work row starts with a status symbol: `●` active, `✓` completed, `⚠` needs attention, `✗` failed. Status text stays beside the reference; color is not required. Terminal requests stay hidden until you select **Completed / history**; this filter deletes no records. `/subagent` reports show as transcript entries that the model does not get.
+
+**Select multiple…** and prune review keep the filter after each toggle. The title shows the selected count, including selected rows hidden by the filter. Search does not select or clear rows. Clear the filter to reach **Select all**, **Clear**, or **Continue**. **Select all** selects every offered row, not only matches. **Continue** uses the selected rows; cancellation returns no selection.
 
 Every isolated request, including an orphaned request, has **Close and delete worktrees (discard work)**. Select it to review owned resources and confirm deletion. **This permanently deletes committed, uncommitted, and ignored content in the listed checkouts.** Cancel makes no change, and agents and tools cannot trigger this action. **Select multiple…** applies one action to many rows, with one confirmation. See [Close and delete isolated worktrees](./docs/orchestration.md#close-and-delete-isolated-worktrees) for guards and partial cleanup.
 

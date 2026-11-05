@@ -1,5 +1,5 @@
 import { getMarkdownTheme, getSelectListTheme, rawKeyHint, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, SelectList, Spacer, Text, truncateToWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Box, fuzzyFilter, getSelectPageIndex, Input, Markdown, SelectList, Spacer, Text, truncateToWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { DiscardPlan } from "../dist/discard.js";
 import type { PruneItem, PruneProgress } from "../dist/prune.js";
 import { TERMINAL_RUN_STATUSES } from "../dist/schema.js";
@@ -332,63 +332,121 @@ export function workingReport(direct: readonly DirectTask[], inventory: Isolated
 	}), ...moreSection(fitted.more)] };
 }
 
-type Choice<T> = { label: string; value: T };
-async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[], selectedIndex = 0): Promise<T | undefined> {
+type Choice<T> = { label: string; value: T; description?: string; detail?: string; search?: string; key?: string };
+type MenuState = { index: number; query: string; key?: string };
+async function choose<T>(ctx: ExtensionContext, title: string, items: readonly Choice<T>[], state: MenuState = { index: 0, query: "" }): Promise<T | undefined> {
 	// Numeric suffixes only tell duplicate labels apart. Never parse display text into an identity.
 	const clipped = items.map((item) => clean(item.label, 145));
-	const labels = clipped.map((label, index) => clipped.indexOf(label) === clipped.lastIndexOf(label) ? label : `${label} [${index + 1}]`);
+	const counts = new Map<string, number>();
+	for (const label of clipped) counts.set(label, (counts.get(label) ?? 0) + 1);
+	const labels = clipped.map((label, index) => counts.get(label) === 1 ? label : `${label} [${index + 1}]`);
 	if (ctx.mode !== "tui") {
 		const selected = await ctx.ui.select(title, labels);
 		const index = labels.indexOf(selected ?? "");
 		return index < 0 ? undefined : items[index]!.value;
 	}
 	return ctx.ui.custom<T | undefined>((tui, theme, keys, done) => {
-		const keyText = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action).join("/");
+		const keyText = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action)[0] ?? "unbound";
 		const keyHint = (action: Parameters<typeof keys.getKeys>[0], description: string) => rawKeyHint(keyText(action), description);
-		const rows = labels.map((label, index) => ({ label, value: String(index) }));
-		// The menu replaces the editor, not the screen; cap its height to leave room for other content.
+		const rows = items.map((item, index) => ({ label: labels[index]!, value: String(index),
+			description: clean(item.description ?? "", 4000), detail: clean(item.detail ?? item.label, 4000).trim(),
+			search: clean([item.label, item.description, item.detail, item.search].filter(Boolean).join(" "), 8000) }));
+		const input = new Input({ prompt: "Find: ", placeholder: "type to filter", placeholderStyle: (text) => theme.fg("dim", text) });
+		input.setValue(state.query);
+		const previewText = new Text("", 0, 0);
+		const hints = new Text("", 0, 0);
+		const filter = () => fuzzyFilter(rows, input.getValue(), (row) => row.search);
+		let filtered = filter();
+		// The menu replaces the editor, not the screen; leave half the terminal for the transcript.
 		const menuHeight = () => Math.max(1, Math.floor(tui.terminal.rows / 2));
 		let height = menuHeight();
+		let width = 0;
 		let listHeight = 0;
 		let pressed = false;
 		let cancelClick = false;
+		const headerHeight = () => height >= 6 ? 2 : height >= 4 ? 1 : 0;
+		const hintHeight = () => height >= 12 && width < 60 ? 3 : height >= 8 ? 2 : height >= 4 ? 1 : 0;
+		const detailHeight = () => height >= 12 ? 3 : height >= 10 ? 2 : 0;
+		const pageSize = () => Math.max(1, height - headerHeight() - hintHeight() - detailHeight() - 1);
+		const remember = (value: string) => { state.index = Number(value); state.key = items[state.index]!.key; };
 		const createList = () => {
-			// Reserve title, key hints, and the native scroll indicator. Very short menus show only the list.
-			const list = new SelectList(rows, Math.max(1, height - (height >= 4 ? 3 : 1)), getSelectListTheme());
-			list.setSelectedIndex(selectedIndex);
-			list.onSelectionChange = ({ value }) => { selectedIndex = Number(value); };
-			list.onSelect = ({ value }) => done(items[Number(value)]!.value);
-			list.onCancel = () => done(undefined);
+			const list = new SelectList(filtered, pageSize(), { ...getSelectListTheme(), noMatch: () => theme.fg("warning", "  No matches. Clear the filter.") }, { maxPrimaryColumnWidth: 42,
+				truncatePrimary: ({ text, maxWidth }) => truncateToWidth(text, maxWidth) });
+			const index = filtered.findIndex(({ value }) => state.key ? items[Number(value)]!.key === state.key : Number(value) === state.index);
+			list.setSelectedIndex(Math.max(0, index));
+			list.onSelectionChange = ({ value }) => remember(value);
+			list.onSelect = ({ value }) => { remember(value); done(items[Number(value)]!.value); };
 			return list;
 		};
 		let list = createList();
+		const resetPress = () => { if (pressed) cancelClick = true; pressed = false; };
 		return {
-			render(width) {
-				// Keep the pressed item across redraws: a press can recenter the visible rows before its click.
-				if (height !== menuHeight()) {
-					if (pressed) cancelClick = true;
-					pressed = false;
-					height = menuHeight(); list = createList();
+			// Native list paging must not scroll the fullscreen transcript instead.
+			capturesViewportInput: list.capturesViewportInput,
+			get focused() { return input.focused; },
+			set focused(value: boolean) { input.focused = value; },
+			render(nextWidth) {
+				if (height !== menuHeight() || width !== nextWidth) {
+					resetPress();
+					height = menuHeight(); width = nextWidth; list = createList();
 				}
-				const lines = list.render(width);
-				listHeight = Math.min(lines.length, height);
-				if (height < 4) return lines.slice(0, height);
-				return [truncateToWidth(theme.fg("accent", title), width), ...lines,
-					truncateToWidth([rawKeyHint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "scroll"),
-						keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel")].join(" · "), width)];
+				const lines = list.render(width).map((line) => truncateToWidth(line, width));
+				listHeight = Math.min(lines.length, height - headerHeight() - hintHeight() - detailHeight());
+				const selected = list.getSelectedItem();
+				const detail = selected ? rows[Number(selected.value)]!.detail : "No matches. Clear or change the filter.";
+				previewText.setText(theme.fg("muted", detail));
+				const limit = detailHeight();
+				const preview = limit ? previewText.render(width).slice(0, limit + 1) : [];
+				if (limit && preview.length > limit) preview[limit - 1] = truncateToWidth(`${preview[limit - 1]}…`, width, "…", true);
+				hints.setText([keyHint("tui.select.confirm", "select"), keyHint("tui.select.cancel", "cancel"),
+					`${filtered.length}/${rows.length}`, rawKeyHint(`${keyText("tui.select.up")}/${keyText("tui.select.down")}`, "move"),
+					rawKeyHint(`${keyText("tui.select.pageUp")}/${keyText("tui.select.pageDown")}`, "page"), keyHint("tui.editor.deleteToLineStart", "clear")].join(" · "));
+				return [
+					...(headerHeight() ? [theme.fg("accent", title)] : []),
+					...(headerHeight() === 2 ? input.render(width) : []),
+					...lines.slice(0, listHeight),
+					...preview.slice(0, limit),
+					...hints.render(width).slice(0, hintHeight()),
+				].map((line) => truncateToWidth(line, width));
 			},
-			handleInput(data) { list.handleInput(data); tui.requestRender(); },
+			handleInput(data) {
+				resetPress();
+				if (keys.matches(data, "tui.select.cancel")) { done(undefined); return; }
+				if (keys.matches(data, "tui.select.confirm")) {
+					const selected = list.getSelectedItem();
+					if (selected) list.onSelect!(selected);
+					return;
+				}
+				const index = filtered.findIndex(({ value }) => value === list.getSelectedItem()?.value);
+				const page = getSelectPageIndex(keys, data, index, filtered.length, pageSize());
+				const up = keys.matches(data, "tui.select.up"), down = keys.matches(data, "tui.select.down");
+				if (up || down || page !== undefined) {
+					if (filtered.length) list.setSelectedIndex(page ?? (index + (up ? -1 : 1) + filtered.length) % filtered.length);
+					const selected = list.getSelectedItem();
+					if (selected) remember(selected.value);
+				} else {
+					if (keys.matches(data, "tui.editor.deleteToLineStart")) input.setValue("");
+					else input.handleInput(data);
+					if (state.query !== input.getValue()) {
+						state.query = input.getValue(); filtered = filter(); list = createList();
+						const selected = list.getSelectedItem();
+						if (selected) remember(selected.value);
+					}
+				}
+				tui.requestRender();
+			},
 			handleMouse(event: TuiMouseEvent) {
 				if (event.type === "click" && cancelClick) { cancelClick = false; return { handled: true }; }
 				if (event.type === "press") cancelClick = false;
-				const y = event.y - (height >= 4 ? 1 : 0);
+				if (headerHeight() === 2 && event.y === 1) return input.handleMouse({ ...event, y: 0, height: 1 });
+				const y = event.y - headerHeight();
 				if (y < 0 || y >= listHeight) return undefined;
 				const result = list.handleMouse({ ...event, y, height: listHeight });
 				if (event.type === "press") pressed = result?.handled === true;
 				if (event.type === "click") pressed = false;
 				return result;
 			},
-			invalidate() { list.invalidate(); },
+			invalidate() { input.invalidate(); list.invalidate(); previewText.invalidate(); hints.invalidate(); },
 		};
 	}, { blocked: { kind: "question", message: title } });
 }
@@ -399,16 +457,16 @@ async function chooseMany<T>(ctx: ExtensionContext, title: string, items: readon
 	valid: () => boolean): Promise<T[] | undefined> {
 	type Pick = { kind: "toggle"; value: T } | { kind: "all" } | { kind: "clear" } | { kind: "continue" } | { kind: "cancel" };
 	const chosen = new Set(preselected);
-	let selectedIndex = 0;
+	const state: MenuState = { index: 0, query: "" };
 	for (;;) {
 		const choices: Choice<Pick>[] = [
-			...items.map((item) => ({ label: `${chosen.has(item.value) ? "[x]" : "[ ]"} ${item.label}`, value: { kind: "toggle" as const, value: item.value } })),
+			...items.map((item) => ({ ...item, label: `${chosen.has(item.value) ? "[x]" : "[ ]"} ${item.label}`, value: { kind: "toggle" as const, value: item.value } })),
 			{ label: "Select all", value: { kind: "all" } }, { label: "Clear", value: { kind: "clear" } },
 			{ label: `Continue (${chosen.size} selected)`, value: { kind: "continue" } }, { label: "Cancel", value: { kind: "cancel" } },
 		];
-		const picked = await choose(ctx, title, choices, selectedIndex);
+		const picked = await choose(ctx, `${chosen.size} selected · ${title}`, choices, state);
 		if (!valid() || !picked || picked.kind === "cancel") return undefined;
-		selectedIndex = choices.findIndex(({ value }) => value === picked);
+		state.index = choices.findIndex(({ value }) => value === picked);
 		if (picked.kind === "continue") return items.map(({ value }) => value).filter((value) => chosen.has(value));
 		if (picked.kind === "all") for (const { value } of items) chosen.add(value);
 		else if (picked.kind === "clear") chosen.clear();
@@ -608,7 +666,8 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					const options = reviewed.shown.filter((item) => item.prunable || item.override);
 					if (!options.length) return;
 					// Continue confirms prunable items; each is re-verified first. Blocked items need their own confirmation below.
-					const picked = await chooseMany(ctx, "Prune subagent worktrees · prunable items are selected", options.map((item) => ({ label: pruneLabel(item), value: item })),
+					const picked = await chooseMany(ctx, "Prune subagent worktrees · prunable items are selected", options.map((item) => ({ label: pruneLabel(item),
+						detail: `${item.branch} · ${item.path ?? "no checkout"} · ${item.reason}`, value: item })),
 						options.filter((item) => item.prunable), valid);
 					if (!picked?.length) return;
 					const forceable = picked.filter((item) => item.override === "force");
@@ -674,6 +733,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				return;
 			}
 			let history = false;
+			const menu: MenuState = { index: 0, query: "" };
 			// The working report shows on open and on each Refresh, not after other menu actions.
 			let report = true;
 			for (;;) {
@@ -690,14 +750,27 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "many" } | { kind: "close" };
-				// A header row selects Refresh; rows sort by status priority within their group.
+				// Terminal rows carry their group, so headings cannot be mistaken for actions.
 				const group = <T extends { status: string }>(title: string, items: readonly T[], choice: (item: T) => Choice<Selection>): Choice<Selection>[] =>
-					items.length ? [{ label: `── ${title} (${items.length}) ──`, value: { kind: "refresh" } },
+					items.length ? [...(ctx.mode === "tui" ? [] : [{ label: `── ${title} (${items.length}) ──`, value: { kind: "refresh" as const } }]),
 						...[...items].sort((a, b) => priority(a.status) - priority(b.status)).map(choice)] : [];
 				const requests = (inventory?.requests ?? []).filter((request) => history || !completed(request.status) || /retained/i.test(request.status));
-				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => ({ label: `  ${glyph(request.status)} ${isolatedLabel(request)}`, value: { kind: "isolated", request, root: inventory!.root } });
-				// One row per workflow; new records keep opaque IDs in details. Status is last so clipping preserves the reference.
-				const directChoice = (task: DirectTask): Choice<Selection> => ({ label: `  ${glyph(task.status)} ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`, value: { kind: "direct", task } });
+				const isolatedChoice = (request: IsolatedRequest): Choice<Selection> => {
+					const group = request.orphaned ? "Orphaned · parent checkout removed" : "Isolated";
+					return { label: `  ${glyph(request.status)} ${ctx.mode === "tui" ? `${request.id} · ${request.status}` : isolatedLabel(request)}`,
+						description: `${group} · ${summary(request.name)}`, detail: `${group} · ${request.status} · ${request.id} · ${request.name}`,
+						key: `isolated:${request.directory ?? inventory!.root}:${request.id}`, value: { kind: "isolated", request, root: inventory!.root } };
+				};
+				// Put identity and status before the goal. Keep full context in the selected-row preview and search.
+				const directChoice = (task: DirectTask): Choice<Selection> => {
+					const [first] = task.workers;
+					const ref = first ? first.workers === 1 ? directRef(first) : `D${first.workflow} · ${first.workers} workers` : task.id;
+					return { label: ctx.mode === "tui" ? `  ${glyph(task.status)} ${ref} · ${task.status}${costSuffix(task.cost)}`
+						: `  ${glyph(task.status)} ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}${task.workers.length || task.name === task.id ? "" : ` · ${task.id}`}`,
+						description: `Direct · ${directLabel(task)}`, detail: `Direct · ${task.status}${costSuffix(task.cost)} · ${task.id} · ${directLabel(task)}`,
+						search: [task.name, ...task.workers.map(workerLabel)].join(" "),
+						key: `direct:${task.id}`, value: { kind: "direct", task } };
+				};
 				const groups = [
 					group("Direct", direct.filter((task) => history || !completed(task.status)), directChoice),
 					group("Isolated", requests.filter((request) => !request.orphaned), isolatedChoice),
@@ -712,12 +785,12 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					{ label: "Close", value: { kind: "close" } },
 				];
 				if (!unavailable && !direct.length && !inventory?.requests.length && !inventory?.invalidIds.length) ctx.ui.notify("No direct tasks recorded on this session branch or isolated requests in this checkout. Ask Main to start delegation.", "info");
-				const selected = await choose(ctx, history ? "Subagent · completed / history" : "Subagent · current work", selections);
+				const selected = await choose(ctx, history ? "Subagent · completed / history" : "Subagent · current work", selections, menu);
 				if (!valid() || !selected || selected.kind === "close") return;
 				if (selected.kind === "refresh") { report = true; continue; }
 				if (selected.kind === "history") { history = !history; continue; }
 				if (selected.kind === "many") {
-					const picked = await chooseMany(ctx, "Subagent · select work", rows.map(({ label, value }) => ({ label: label.trim(), value })), [], valid);
+					const picked = await chooseMany(ctx, "Subagent · select work", rows.map((item) => ({ ...item, label: item.label.trim() })), [], valid);
 					if (!picked?.length) { if (!valid()) return; continue; }
 					const isolated = picked.flatMap((item) => item.kind === "isolated" ? [item.request] : []);
 					const closable = picked.flatMap((item) => item.kind === "direct" && item.task.canClose ? [item.task] : []);
