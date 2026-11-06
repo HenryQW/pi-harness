@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { defineConfig } from "blume";
 import { orama } from "blume/search";
 import { custom, type ContentSource } from "blume/sources";
-import { projectLinks } from "@henryqw/theme/projects";
+import { footer } from "@henryqw/theme/projects";
 import { colors } from "@henryqw/theme/tokens";
 
 import { catalog, extensions, repoRoot, supportLibraries } from "./extension-catalog.ts";
@@ -104,14 +104,7 @@ export default defineConfig({
   title: "Henry Pi Harness",
   description: "Opinionated Pi extensions for memory, delegation, Git, model routing, and interaction.",
   feedback: false,
-  footer: {
-    links: [
-      { label: "npm profile", href: "https://www.npmjs.com/~henryqw" },
-      { label: "MIT License", href: "https://github.com/HenryQW/pi-harness/blob/main/LICENSE" },
-      { label: "About Henry", href: "https://henry.wang" },
-      ...projectLinks(site),
-    ],
-  },
+  footer: footer(site, "HenryQW/pi-harness", [{ label: "npm profile", href: "https://www.npmjs.com/~henryqw" }]),
   logo: { image: "/favicon.ico", text: "Henry Pi Harness" },
   content: {
     sources: [custom(packageDocs)],
