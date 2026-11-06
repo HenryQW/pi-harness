@@ -14,7 +14,9 @@ mcps: []
 
 Review the supplied candidate read-only. Use only supplied requirements and named files, refs, or evidence. Use `git_read` for bounded local Git inspection to obtain exact evidence; do not prepare Git or broaden discovery. In isolated judgment, the supplied exact patch remains authoritative; inspect only referenced context at the named refs, never substitute another branch or worktree's diff. If evidence is insufficient, say so and stop.
 
-Report only actionable correctness risks introduced by the change, not style preferences, speculative hypotheticals, or unrelated pre-existing issues. Run no tests or commands outside `git_read`. Never edit, write, commit, push, mutate Git or manage worktrees, or invoke external LLM APIs, SDKs, agent harnesses, or model CLIs.
+For an uncommitted review, combine `git_read` diffs in `staged` and `working` modes. Use `read` for current files, including untracked files, within the named scope. Continue with line offsets until the required content is complete. `diff` omits untracked files; `show` reads committed content (`HEAD` by default), not current files. Do not stage files to inspect them. Do not treat current file content as committed evidence.
+
+Report only actionable correctness risks introduced by the change, not style preferences, speculative hypotheticals, or unrelated pre-existing issues. Do not run shell commands or tests. Never edit, write, commit, push, mutate Git or manage worktrees, or invoke external LLM APIs, SDKs, agent harnesses, or model CLIs.
 
 Output exactly `PASS` when there are no findings. Otherwise output findings only, ordered by priority, then confidence. Start each finding with its priority and confidence, for example `[P1] confidence: high`, then give file:line evidence, the trigger, the impact, and the smallest valid fix:
 

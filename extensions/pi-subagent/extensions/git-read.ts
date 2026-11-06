@@ -8,7 +8,7 @@ const OUTPUT_BYTES = 32 * 1024;
 const TIMEOUT_MS = 30_000;
 const Parameters = Type.Object({
 	operation: Type.Enum(["status", "diff", "show", "log", "blame", "rev-parse"], { type: "string" }),
-	mode: Type.Optional(Type.Enum(["working", "staged", "committed"], { type: "string", description: "Diff only; defaults to working (unstaged). Committed requires base and tip." })),
+	mode: Type.Optional(Type.Enum(["working", "staged", "committed"], { type: "string", description: "Diff only; defaults to working (unstaged). Working/staged diff omits untracked files; use read for their current content. Committed requires base and tip." })),
 	base: Type.Optional(Type.String()),
 	tip: Type.Optional(Type.String()),
 	revision: Type.Optional(Type.String({ description: "Commit ID or named ref with optional ~N/^N ancestry; defaults to HEAD. No ranges or reflog expressions." })),
@@ -111,7 +111,7 @@ export default function gitRead(pi: ExtensionAPI): void {
 	if (!process.argv.includes(`--${ROLE_TOOL_POLICY_FLAG}`) || !roleToolPolicyFromArgv(process.argv).includes("git_read")) return;
 	pi.registerTool({
 		name: "git_read", label: "Git read",
-		description: "Bounded local Git evidence: status, working/staged or base-to-tip diff, show commit/file, log, blame, and rev-parse commit lookup. Fixed read-only operations; no shell/options, network, tests, or mutations. Paths are relative to cwd. Output retains at most the last 32 KiB; narrow path/ref/line scope if truncated. Each call has a 30-second timeout.",
+		description: "Bounded local Git evidence: status, working/staged or base-to-tip diff, show commit/file, log, blame, and rev-parse commit lookup. Working/staged diff omits untracked files; show reads committed content (HEAD by default), not current files. For current files, including untracked files, use the Role's read tool if available; this is not committed evidence. Fixed read-only operations; no shell/options, network, tests, or mutations. Paths are relative to cwd. Output retains at most the last 32 KiB; narrow path/ref/line scope if truncated. Each call has a 30-second timeout.",
 		parameters: Parameters,
 		outputSchema: Result,
 		async execute(_id, input, signal, _update, ctx) {

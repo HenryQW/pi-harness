@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { mock } from "node:test";
 import { loadBuiltinRole, loadRoleCatalog, prepareExactReviewEvidence, REVIEW_MAX_PATCH_BYTES, ROLE_TOOL_POLICY_FLAG } from "../src/index.ts";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createReadTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import gitRead from "../extensions/git-read.ts";
 
 function git(cwd: string, ...args: string[]): string {
@@ -27,12 +27,13 @@ async function repository(t: import("node:test").TestContext): Promise<string> {
 }
 
 function gitReadTool() {
-	let tool!: { parameters: object; execute: (...args: any[]) => Promise<{ content: { text: string }[]; structuredContent: { output: string; stderr: string; truncated: boolean } }> };
+	let tool!: { description: string; parameters: object; execute: (...args: any[]) => Promise<{ content: { text: string }[]; structuredContent: { output: string; stderr: string; truncated: boolean } }> };
 	const argv = process.argv;
 	try {
 		process.argv = ["node", "pi", `--${ROLE_TOOL_POLICY_FLAG}`, '["git_read"]'];
 		gitRead({ registerTool(value: typeof tool) {
 			tool = value;
+			assert.match(tool.description, /diff omits untracked files.*show reads committed content.*read tool/is);
 			const schema = JSON.parse(JSON.stringify(tool.parameters));
 			assert.equal(schema.type, "object");
 			for (const name of ["operation", "mode"]) {
@@ -59,11 +60,22 @@ test("git_read obtains exact committed, staged, working, and historical evidence
 	await writeFile(join(repo, "tracked.txt"), "staged\nsecond line\n");
 	git(repo, "add", "tracked.txt");
 	await writeFile(join(repo, "tracked.txt"), "working\nsecond line\n");
-	await writeFile(join(repo, "untracked.txt"), "untracked\n");
+	const untracked = "export const added = true;\n// current file, not committed evidence\n";
+	await writeFile(join(repo, "new.ts"), untracked);
 	const index = await readFile(join(repo, ".git", "index"));
 	const indexTime = (await stat(join(repo, ".git", "index"))).mtimeMs;
 	const output = async (params: unknown, cwd = repo) => (await inspectGit(cwd, params)).structuredContent.output;
-	assert.match(await output({ operation: "status" }), /MM tracked.txt\n\?\? untracked.txt/);
+	assert.match(await output({ operation: "status" }), /MM tracked.txt\n\?\? new.ts/);
+	for (const mode of ["working", "staged"]) {
+		assert.equal(await output({ operation: "diff", mode, path: "new.ts" }), "");
+	}
+	assert.equal(await output({ operation: "diff", mode: "committed", base, tip, path: "new.ts" }), "");
+	await assert.rejects(inspectGit(repo, { operation: "show", path: "new.ts" }), /git_read show.*exited 128.*new\.ts/);
+	const read = createReadTool(repo);
+	const first = await read.execute("current-file", { path: "new.ts", limit: 1 });
+	assert.match(first.content[0]!.type === "text" ? first.content[0]!.text : "", /export const added = true;.*\n.*Use offset=2/s);
+	const rest = await read.execute("current-file-rest", { path: "new.ts", offset: 2 });
+	assert.equal(rest.content[0]!.type === "text" ? rest.content[0]!.text : "", untracked.split("\n").slice(1).join("\n"));
 	assert.match(await output({ operation: "diff", mode: "committed", base, tip, path: "tracked.txt" }), /-base\n\+candidate\n\+second line/);
 	assert.match(await output({ operation: "diff", mode: "staged" }), /-candidate\n\+staged/);
 	assert.match(await output({ operation: "diff" }), /-staged\n\+working/);

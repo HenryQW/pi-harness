@@ -54,12 +54,17 @@ test("missing config directory still returns validated built-in implementer, rev
 		/Review the supplied candidate read-only/i,
 		/evidence is insufficient, say so and stop/i,
 		/actionable correctness risks introduced by the change.*not style preferences/is,
-		/Run no tests or commands outside `git_read`.*Never edit, write, commit, push, mutate Git or manage worktrees/is,
+		/Do not run shell commands or tests.*Never edit, write, commit, push, mutate Git or manage worktrees/is,
 		/`git_read` for bounded local Git inspection.*exact patch remains authoritative.*never substitute another branch or worktree/is,
 		/Output exactly `PASS` when there are no findings/i,
 		/Any finding blocks approval.*never combine `PASS` with findings/is,
 	]) assert.match(reviewer!.systemPrompt, contract);
 	assert.doesNotMatch(reviewer!.systemPrompt, /\bbash\b/i);
+	for (const role of [reviewer!, scout!]) {
+		assert.match(role.systemPrompt, /Use `read` for current files, including untracked files/i);
+		assert.match(role.systemPrompt, /`diff` omits untracked files.*`show` reads committed content/is);
+		assert.match(role.systemPrompt, /Do not treat current file content as committed evidence/i);
+	}
 
 	assert.match(scout!.systemPrompt, /Answer only the bounded discovery questions/i);
 	assert.match(scout!.systemPrompt, /Do not design, recommend, implement, edit, or run shell commands/i);
