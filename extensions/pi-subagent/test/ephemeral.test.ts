@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -356,7 +357,7 @@ if (task === "Task: first") {
 	}
 });
 
-test("post-exit hard stdio deadline releases a queued permit despite inherited output", async (t) => {
+test("post-exit hard stdio deadline releases a queued permit despite inherited output", { timeout: 10_000 }, async (t) => {
 	const cwd = await useRunner(t, `import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 const task = process.argv.at(-1);
@@ -370,38 +371,59 @@ if (task === "Task: first") {
 }
 `);
 	const pidFile = join(cwd, "escaped.pid");
-	t.after(async () => {
-		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let firstExited!: (child: ChildProcess) => void;
+	const firstExit = new Promise<ChildProcess>((resolve) => { firstExited = resolve; });
+	const originalEmit = ChildProcess.prototype.emit;
+	t.mock.method(ChildProcess.prototype, "emit", function(this: ChildProcess, event: string | symbol, ...args: unknown[]) {
+		const emitted = originalEmit.call(this, event, ...args);
+		if (event === "exit") firstExited(this);
+		return emitted;
 	});
 	const executorInstance = executor();
 	const launches: string[] = [];
-	let firstOutputAt = 0;
-	let secondStarted!: () => void;
-	const secondStart = new Promise<void>((resolve) => { secondStarted = resolve; });
+	const controller = new AbortController();
+	const cancelled = once(t.signal, "abort").then(() => { throw t.signal.reason; });
 	const first = executorInstance.run({
-		onUpdate: (output) => { if (output === "first") firstOutputAt = Date.now(); },
+		signal: controller.signal,
 		prepare: async () => {
 			launches.push("first");
 			return prepared(cwd, "first", { env: { EPHEMERAL_ESCAPED_PID_FILE: pidFile }, args: [] });
 		},
 	});
 	const second = executorInstance.run({
+		signal: controller.signal,
 		prepare: async () => {
 			launches.push("second");
-			secondStarted();
 			return prepared(cwd, "second");
 		},
 	});
-	await Promise.race([
-		secondStart,
-		new Promise<never>((_, reject) => setTimeout(() => reject(new Error("post-exit hard stdio deadline did not release the queued permit")), 1_250)),
-	]);
-	assert.ok(firstOutputAt > 0);
-	assert.ok(Date.now() - firstOutputAt < 1_250);
-	assert.deepEqual(launches, ["first", "second"]);
-	const [firstResult, secondResult] = await Promise.all([first, second]);
-	assert.equal(firstResult.output, "first");
-	assert.equal(secondResult.output, "second");
+	const settled = Promise.allSettled([first, second]);
+	try {
+		t.signal.throwIfAborted();
+		const child = await Promise.race([firstExit, cancelled]);
+		// Renew the idle timer with real inherited output, not elapsed startup time.
+		for (let elapsed = 0; elapsed < 800; elapsed += 200) {
+			await once(child.stdout!, "data", { signal: t.signal });
+			t.mock.timers.tick(200);
+		}
+		await once(child.stdout!, "data", { signal: t.signal });
+		t.mock.timers.tick(199);
+		assert.equal(child.stdout!.destroyed, false);
+		assert.deepEqual(launches, ["first"]);
+		t.mock.timers.tick(1);
+		assert.equal(child.stdout!.destroyed, true);
+		assert.equal(child.stderr!.destroyed, true);
+		const [firstResult, secondResult] = await Promise.race([Promise.all([first, second]), cancelled]);
+		assert.deepEqual(launches, ["first", "second"]);
+		assert.equal(firstResult.output, "first");
+		assert.equal(secondResult.output, "second");
+	} finally {
+		t.mock.timers.reset();
+		controller.abort();
+		try { process.kill(Number(await readFile(pidFile, "utf8")), "SIGKILL"); } catch {}
+		await settled;
+	}
 });
 
 test("abort and normal completion stop child process trees", async (t) => {
