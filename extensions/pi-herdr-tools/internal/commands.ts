@@ -6,12 +6,14 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir, registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrToolsConfigStore } from "./config.ts";
-import { showCommandOutput } from "./command-output.ts";
-import { checkoutAdmission, checkoutKey, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
-import { cancelJob, jobId, listJobs, outputTail, privateDirectory, readJob, readPrivate, terminal, writePrivate, type Job, type JobSpec } from "./command-state.ts";
+import { showCommandOutput, showCommandText } from "./command-output.ts";
+import { selectCommandOutput } from "./command-select.ts";
+import { checkoutAdmission, checkoutKey, HerdrRequestError, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
+import { cancelJob, inventoryJobs, jobId, listJobs, outputTail, privateDirectory, pruneJob, readJob, readPrivate, readPublishedSpec, recordNonDispatch, recoveryDiagnostic, releaseJob, terminal, userReleased, validateSpec, withCommandRemovalGuard, withCommandStoreLock, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
 const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const completionType = "background-command-completion";
+const pruneWarning = "Another Pi session may still need it. Pi cannot prove that all readers have finished. Deletion cannot be undone. Only output.log is deleted; identity, completion, delivery, and audit records remain.";
 export const commandParameters = Type.Object({
 	action: Type.String({ enum: ["launch", "list", "status", "cancel"] }),
 	command: Type.Optional(Type.String({ minLength: 1, maxLength: 16_384 })),
@@ -43,6 +45,9 @@ export class CommandManager {
 	readonly admission: CheckoutAdmission;
 	readonly request: typeof requestHerdr;
 	constructor(root: string, admission: CheckoutAdmission, request = requestHerdr) {
+		for (const method of ["install", "guard", "restore", "release", "complete", "reserve"] as const) {
+			if (typeof admission[method] !== "function") throw new Error("The active checkout coordinator cannot protect managed commands. Reload with the current Pi Herdr package before command actions.");
+		}
 		this.root = root; this.admission = admission; this.request = request;
 		admission.guard("background-commands", async (checkouts) => { await this.refresh(checkouts); });
 	}
@@ -50,9 +55,11 @@ export class CommandManager {
 		const jobs = await listJobs(this.root, checkouts);
 		for (const job of jobs) {
 			const owner = `command:${job.spec.id}`;
-			if (job.spec.access === "write" && !terminal(job.state)) {
+			if (job.released) { this.admission.complete(owner); }
+			else if (job.spec.access === "write" && !terminal(job.state)) {
 				this.admission.restore(owner, job.spec.checkout);
-			} else { this.admission.release(owner); }
+			} else if (terminal(job.state)) { this.admission.complete(owner); }
+			else { this.admission.release(owner); }
 		}
 		// Removed records are not proof of termination. Keep their restored ownership.
 		return jobs;
@@ -63,15 +70,16 @@ export class CommandManager {
 		const socketPath = process.env.HERDR_SOCKET_PATH;
 		if (process.env.HERDR_ENV !== "1" || !workspaceId || !socketPath?.startsWith("/")) throw new Error("Background commands require a local Herdr pane and HERDR_SOCKET_PATH.");
 		if (signal?.aborted) throw new Error("Command launch aborted before dispatch.");
+		const id = randomUUID();
+		const spec: JobSpec = { ...input, runtimeMs: policy.runtimeMs, outputBytes: policy.outputBytes, version: 1, id, token: randomUUID(), workspaceId, socketPath, createdAt: Date.now() };
+		validateSpec(spec);
 		await privateDirectory(this.root, true);
-		const prepared = await withWorktreeLock(this.root, async () => {
+		const prepared = await withCommandStoreLock(this.root, async () => {
 			const jobs = await this.refresh();
 			const duplicate = jobs.find((job) => job.spec.sessionId === input.sessionId && job.spec.callId === input.callId);
 			if (duplicate) return { job: duplicate, fresh: false };
-			if (jobs.length >= policy.retainedJobs) throw new Error("Command record limit reached; archive verified terminal records before launch.");
-			if (jobs.filter((job) => !terminal(job.state)).length >= policy.concurrency) throw new Error("Command concurrency limit reached; wait for owned commands to stop.");
-			const id = randomUUID();
-			const spec: JobSpec = { ...input, runtimeMs: policy.runtimeMs, outputBytes: policy.outputBytes, version: 1, id, token: randomUUID(), workspaceId, socketPath, createdAt: Date.now() };
+			if (jobs.filter(job => !job.pruned).length >= policy.retainedJobs) throw new Error("Command record limit reached; use /commands to inspect finished output and explicitly confirm pruning.");
+			if (jobs.filter((job) => !terminal(job.state) && !job.released).length >= policy.concurrency) throw new Error("Command concurrency limit reached; wait for owned commands to stop.");
 			const dir = join(this.root, id);
 			const release = await this.admission.reserve(`command:${id}`, input.checkout);
 			try {
@@ -85,6 +93,8 @@ export class CommandManager {
 		const { job } = prepared;
 		// Once the specification exists, no transport or process outcome can cause another launch.
 		try {
+			if (await userReleased(job.dir, job.spec)) return await this.get(job.spec.id);
+			if (signal?.aborted) throw new HerdrRequestError("aborted", "Command launch aborted before dispatch.", false);
 			const response = await this.request("layout.apply", {
 				workspace_id: workspaceId, focus: false,
 				root: { type: "pane", cwd: input.cwd, command: [process.execPath, runner, job.dir], env: {} },
@@ -92,40 +102,88 @@ export class CommandManager {
 			const layout = response.layout as { workspace_id?: unknown; tab_id?: unknown; root?: { type?: unknown; pane_id?: unknown } } | undefined;
 			if (response.type !== "layout_apply" || layout?.workspace_id !== workspaceId || typeof layout.tab_id !== "string" || layout.root?.type !== "pane" || typeof layout.root.pane_id !== "string") throw new Error("Herdr did not return the exact command terminal identity.");
 			await writePrivate(join(job.dir, "dispatch.json"), { id: job.spec.id, token: job.spec.token, workspaceId, tabId: layout.tab_id, paneId: layout.root.pane_id });
-		} catch {
-			await writePrivate(join(job.dir, "uncertain.json"), { id: job.spec.id, token: job.spec.token });
+		} catch (error) {
+			if (!await recordNonDispatch(job, error)) await writePrivate(join(job.dir, "uncertain.json"), { id: job.spec.id, token: job.spec.token });
 		}
 		await this.refresh([input.checkout]);
 		return await readJob(job.dir);
 	}
 	async get(id: string): Promise<Job> { return await readJob(join(this.root, jobId(id))); }
-	async guardRemoval(checkout: string): Promise<() => void> {
+	async cancel(id: string, expected?: JobSpec, check: () => void = () => {}): Promise<void> {
+		const dir = join(this.root, jobId(id));
+		await privateDirectory(dir);
+		const spec = await readPublishedSpec(this.root, dir);
+		if (expected && JSON.stringify(spec) !== JSON.stringify(expected)) throw new Error("Command identity or scope changed; cancellation was not sent.");
+		check();
+		await cancelJob({ dir, spec }, check);
+	}
+	async release(spec: JobSpec, typedId: string, check: () => void): Promise<void> {
+		await releaseJob(join(this.root, jobId(spec.id)), spec, typedId, check);
+		// This seals admission against a recovery scan that read the old state.
+		this.admission.complete(`command:${spec.id}`);
+	}
+	async guardRemoval<T>(checkout: string, operation: (descriptor: number) => Promise<T>): Promise<T> {
 		const key = await realpath(checkout);
-		await privateDirectory(this.root, true);
-		return await withWorktreeLock(this.root, async () => {
-			const jobs = await this.refresh([key]);
-			if (jobs.some((job) => !terminal(job.state))) throw new Error("Active or unknown background commands block worktree removal, including forced completion. Inspect /commands.");
-			return await this.admission.reserve(`done:${randomUUID()}`, key);
+		return await withCommandRemovalGuard(this.root, key, async (descriptor) => {
+			const release = await this.admission.reserve(`done:${randomUUID()}`, key);
+			try { return await operation(descriptor); }
+			finally { release(); }
 		});
+	}
+
+	async recoverRemoval(checkout: string, ctx: ExtensionContext, check: () => void): Promise<boolean> {
+		if (!ctx.hasUI) throw new Error("Command recovery requires a user interface; worktree removal is blocked.");
+		const key = await realpath(checkout);
+		const candidates = (await inventoryJobs(this.root)).filter(item => item.spec?.checkout === key && (!item.job || (!terminal(item.job.state) && !item.job.released)));
+		check();
+		if (!candidates.length) throw new Error("No command with verified checkout identity can be recovered here. Inspect /commands; worktree removal stays blocked.");
+		for (const item of candidates) if (!await recoverCommand(this, item.spec!, ctx, check)) return false;
+		return true;
 	}
 }
 
+async function recoverCommand(manager: CommandManager, spec: JobSpec, ctx: ExtensionContext, check: () => void, cancelFirst = false): Promise<boolean> {
+	if (!ctx.hasUI) throw new Error("Command recovery requires a user interface; protection stays held.");
+	if (cancelFirst) { await manager.cancel(spec.id, spec, check); ctx.ui.notify("Cancellation requested. This is not proof of termination.", "info"); }
+	while (true) {
+		const current = (await inventoryJobs(manager.root)).find(entry => entry.id === spec.id);
+		check();
+		if (!current?.spec || JSON.stringify(current.spec) !== JSON.stringify(spec)) throw new Error("Command identity or scope cannot be verified; protection stays held.");
+		if (current.job && terminal(current.job.state)) { await manager.refresh([spec.checkout]); check(); ctx.ui.notify(`Verified completion: ${current.job.state}.`, "info"); return true; }
+		if (current.job?.released) { ctx.ui.notify("released by user, termination unproved", "warning"); return true; }
+		const answer = await ctx.ui.select(`Termination is unproved for ${spec.id}. A live command could still write. Release can permit both Pi writes and checkout removal at ${JSON.stringify(spec.checkout)}. All records and output stay saved.`, ["Keep protection", "Cancel and recheck", "Recheck proof", "Release protection despite this risk"]);
+		check();
+		if (answer === "Cancel and recheck") { await manager.cancel(spec.id, spec, check); continue; }
+		if (answer === "Recheck proof") continue;
+		if (answer !== "Release protection despite this risk") return false;
+		const typed = await ctx.ui.input("Type the exact command ID to release protection. Termination remains unproved.", spec.id);
+		check();
+		if (typed === undefined) return false;
+		await manager.release(spec, typed, check);
+		ctx.ui.notify("released by user, termination unproved. A live command could still write; Pi writes and checkout removal can now proceed if no other owner blocks them.", "warning");
+		return true;
+	}
+}
+
+function recovery(job: Job): string | null {
+	return job.released ? terminal(job.state) ? "released by user; completion later verified" : "released by user, termination unproved" : null;
+}
 function summary(job: Job) {
-	return { id: job.spec.id, state: job.state, access: job.spec.access, checkout: job.spec.checkout,
+	return { id: job.spec.id, state: job.state, recovery: recovery(job), outputPruned: job.pruned === true, access: job.spec.access, checkout: job.spec.checkout,
 		sessionId: job.spec.sessionId, runnerId: job.claim?.runnerId ?? null, workspaceId: job.spec.workspaceId,
 		tabId: job.claim?.tabId ?? null, paneId: job.claim?.paneId ?? null, outputPath: job.outputPath,
-		exitCode: job.result?.exitCode ?? null, signal: job.result?.signal ?? null, failure: job.result?.failure ?? null };
+		exitCode: job.result?.exitCode ?? null, signal: job.result?.signal ?? null, failure: job.nonDispatch?.reason ?? job.result?.failure ?? null };
 }
 const summarySchema = Type.Object({
-	id: Type.String(), state: Type.String(), access: Type.String(), checkout: Type.String(), sessionId: Type.String(),
+	id: Type.String(), state: Type.String(), recovery: Type.Union([Type.String(), Type.Null()]), outputPruned: Type.Boolean(), access: Type.String(), checkout: Type.String(), sessionId: Type.String(),
 	runnerId: Type.Union([Type.String(), Type.Null()]), workspaceId: Type.String(), tabId: Type.Union([Type.String(), Type.Null()]),
 	paneId: Type.Union([Type.String(), Type.Null()]), outputPath: Type.String(), exitCode: Type.Union([Type.Number(), Type.Null()]), failure: Type.Union([Type.String(), Type.Null()]), signal: Type.Union([Type.String(), Type.Null()]),
 });
 
 export function registerCommands(pi: ExtensionAPI): CommandManager {
 	const admission = checkoutAdmission(pi);
-	admission.install(pi);
 	const manager = new CommandManager(join(extensionConfigDir("pi-herdr-tools"), "commands"), admission);
+	admission.install(pi);
 	const store = createHerdrToolsConfigStore();
 	const reporter = registerConfigReporting(pi, [store]);
 	pi.registerTool({
@@ -153,8 +211,8 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 					sessionId, sessionFile, cwd, checkout }, loaded.value, signal)];
 			} else if (input.action === "list") jobs = await manager.refresh();
 			else {
-				let job = await manager.get(input.id!);
-				if (input.action === "cancel") { await cancelJob(job); job = await manager.get(input.id!); }
+				if (input.action === "cancel") await manager.cancel(input.id!);
+				const job = await manager.get(input.id!);
 				jobs = [job]; output = await outputTail(job);
 			}
 			const structuredContent = { jobs: jobs.sort((a, b) => Number(terminal(a.state)) - Number(terminal(b.state)) || b.spec.createdAt - a.spec.createdAt).slice(0, 20).map(summary), totalJobs: jobs.length, ...(output === undefined ? {} : { output }) };
@@ -162,74 +220,186 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 			return { content: [{ type: "text", text: JSON.stringify(structuredContent) }], details: undefined, structuredContent, isError };
 		},
 	});
+	let lifecycle = 0;
+	const pending = new Set<string>();
 	pi.registerCommand("commands", {
-		description: "Inspect or cancel managed background commands",
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "prune", description: "Select finished outputs for confirmed deletion" },
+				{ value: "pruned", description: "Inspect retained receipts for deleted output" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
+		description: "Inspect commands; use prune to select finished outputs for deletion, or pruned to inspect receipts",
 		async handler(args, ctx) {
-			if (args.trim()) throw new Error("Usage: /commands");
-			const jobs = await manager.refresh();
-			if (!ctx.hasUI) { process.stdout.write(JSON.stringify(jobs.map(summary)) + "\n"); return; }
-			const selected = await ctx.ui.select("Background commands", jobs.map((job) => `${job.spec.id} ${job.state}`));
+			const showPruned = args.trim() === "pruned", batchPrune = args.trim() === "prune";
+			if (args.trim() && !showPruned && !batchPrune) throw new Error("Usage: /commands [prune|pruned]");
+			if (batchPrune && !ctx.hasUI) throw new Error("/commands prune requires a user interface for selection and confirmation.");
+			const generation = lifecycle, sessionId = ctx.sessionManager.getSessionId(), leaf = ctx.sessionManager.getLeafId();
+			const check = () => {
+				if (generation !== lifecycle || sessionId !== ctx.sessionManager.getSessionId() || leaf !== ctx.sessionManager.getLeafId()) {
+					throw new Error("Session, branch, or command lifecycle changed; reopen /commands.");
+				}
+			};
+			const checkPrune = (spec: JobSpec) => {
+				check();
+				if (spec.sessionId !== sessionId || !ctx.isIdle() || ctx.hasPendingMessages() || pending.has(spec.id) ||
+					!ctx.sessionManager.getBranch().some(entry => entry.id === spec.callEntryId)) {
+					throw new Error("Pruning requires the idle launching session and branch, with no local pending delivery or active follow-up.");
+				}
+			};
+			const inventory = (await inventoryJobs(manager.root)).filter(item => showPruned ? item.job?.pruned : !item.job?.pruned);
+			check();
+			if (!ctx.hasUI) {
+				process.stdout.write(JSON.stringify(inventory.map(item => item.job ? summary(item.job) : { id: item.id, category: item.category, diagnostic: item.diagnostic })) + "\n");
+				return;
+			}
+			if (batchPrune) {
+				const eligible: Job[] = [], skipped: string[] = [];
+				for (const item of inventory) {
+					try {
+						if (!item.job || !terminal(item.job.state)) throw new Error("Completion is not verified.");
+						checkPrune(item.job.spec);
+						const delivered = await readPrivate(join(item.job.dir, "delivered.json")) as { id?: unknown; runnerId?: unknown } | undefined;
+						if (delivered?.id !== item.job.spec.id || delivered.runnerId !== (item.job.claim?.runnerId ?? null)) throw new Error("Completion delivery is pending or unverified.");
+						eligible.push(item.job);
+					} catch (error) { skipped.push(`${item.id ?? "Unverified record"}: ${error instanceof Error ? error.message : "Cannot verify output."}`); }
+				}
+				check();
+				if (skipped.length) ctx.ui.notify(`Skipped ${skipped.length} output(s):\n${skipped.join("\n")}`, "warning");
+				if (!eligible.length) { ctx.ui.notify("No eligible finished outputs to prune.", "info"); return; }
+				const selected = new Set<Job>();
+				const label = (job: Job) => `${job.spec.id} (${job.state}) · ${JSON.stringify(job.outputPath)}`;
+				for (;;) {
+					const rows = eligible.map(job => `${selected.has(job) ? "[x]" : "[ ]"} ${label(job)}`);
+					const review = `Review selection (${selected.size})`;
+					const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review]);
+					check();
+					if (!answer || answer === "Cancel") return;
+					if (answer === review) break;
+					if (answer === "Select all") for (const job of eligible) selected.add(job);
+					else if (answer === "Clear selection") selected.clear();
+					else {
+						const job = eligible[rows.indexOf(answer)];
+						if (job && !selected.delete(job)) selected.add(job);
+					}
+				}
+				if (!selected.size) return;
+				const chosen = eligible.filter(job => selected.has(job));
+				// Keep the exact selection in scrollable rows, not an unbounded dialog title.
+				for (;;) {
+					const answer = await selectCommandOutput(ctx, `Delete these ${chosen.length} saved output(s)? Select an output to inspect its path.\n${pruneWarning}`,
+						["Keep output", ...chosen.map(label), "Delete output despite this risk"]);
+					check();
+					if (!answer || answer === "Keep output") return;
+					if (answer === "Delete output despite this risk") break;
+					const job = chosen.find(job => label(job) === answer);
+					if (job) {
+						if (ctx.mode === "tui") await showCommandText(ctx, "Selected output", label(job));
+						else ctx.ui.notify(`Selected output: ${label(job)}`, "info");
+						check();
+					}
+				}
+				const outcomes: string[] = [];
+				let removed = 0, failed = 0, retained = 0;
+				for (const job of chosen) {
+					try { checkPrune(job.spec); }
+					catch (error) { retained++; outcomes.push(`Skipped ${job.spec.id}: ${(error as Error).message}`); continue; }
+					try {
+						await pruneJob(job.dir, job.spec, () => checkPrune(job.spec));
+						removed++; outcomes.push(`Pruned ${job.spec.id}`);
+					} catch (error) { failed++; outcomes.push(`Failed ${job.spec.id}: ${error instanceof Error ? error.message : "Output removal could not be confirmed."}`); }
+				}
+				ctx.ui.notify(`Pruned ${removed}; skipped ${retained}; failed ${failed}.\n${outcomes.join("\n")}\nUse /commands pruned to inspect retained records.`, failed || retained ? "warning" : "info");
+				return;
+			}
+			if (!inventory.length) { ctx.ui.notify(showPruned ? "No pruned command receipts." : "No unpruned commands. Use /commands pruned to inspect receipts.", "info"); return; }
+			const selected = await ctx.ui.select(showPruned ? "Pruned command receipts" : "Background commands", inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`));
+			check();
 			if (!selected) return;
-			const job = await manager.get(selected.split(" ")[0]!);
-			const action = await ctx.ui.select(`${job.spec.id}: ${job.state}`, ["Show output", ...(!terminal(job.state) ? ["Cancel"] : [])]);
-			if (action === "Cancel") { await cancelJob(job); ctx.ui.notify("Cancellation requested. Ownership stays held until the runner proves completion.", "info"); }
-			else if (action === "Show output") {
+			const item = inventory[Number(selected.split(".")[0]) - 1];
+			if (!item?.spec) { ctx.ui.notify("Command identity and checkout scope cannot be verified. No cancellation, release, or pruning is permitted. Records and locks are preserved.", "error"); return; }
+			const spec = item.spec, dir = join(manager.root, spec.id);
+			const action = await ctx.ui.select(`${spec.id}: ${item.job?.state ?? item.category}`, ["Show output",
+				...(!terminal(item.job?.state ?? "unknown") ? [...(item.job?.released ? [] : ["Cancel and recheck"]), "Recheck proof"] : []),
+				...(item.job && terminal(item.job.state) && !item.job.pruned ? ["Prune finished output"] : [])]);
+			check();
+			if (action === "Show output") {
+				const job = item.job ?? { spec, dir, state: "unknown" as const, outputPath: join(dir, "output.log") };
 				const output = await outputTail(job);
-				if (ctx.mode === "tui") await showCommandOutput(ctx, JSON.stringify(summary(job), null, 2), output);
-				else ctx.ui.notify(`${JSON.stringify(summary(job))}\n${output}`, "info");
+				check();
+				const metadata = JSON.stringify({ ...summary(job), diagnostic: item.diagnostic }, null, 2);
+				if (ctx.mode === "tui") await showCommandOutput(ctx, metadata, output);
+				else ctx.ui.notify(`${metadata}\n${output}`, "info");
+				check();
+			} else if (action === "Prune finished output") {
+				checkPrune(spec);
+				const answer = await ctx.ui.select(`Delete saved output for ${spec.id}? ${pruneWarning}`, ["Keep output", "Delete output despite this risk"]);
+				checkPrune(spec);
+				if (answer !== "Delete output despite this risk") return;
+				await pruneJob(dir, spec, () => checkPrune(spec));
+				ctx.ui.notify("Output has been pruned. The command is hidden from the default list. Use /commands pruned to inspect its retained records.", "info");
+			} else if (action === "Cancel and recheck" || action === "Recheck proof") {
+				await recoverCommand(manager, spec, ctx, check, action === "Cancel and recheck");
 			}
 		},
 	});
 	let context: ExtensionContext | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
-	let scanning = false;
-	let warned = false;
-	const pending = new Set<string>();
+	let scanning: Promise<void> | undefined;
+	const warnings = new Set<string>();
+	const report = (ctx: ExtensionContext, error: unknown, job?: Job) => {
+		if (context !== ctx) return;
+		const detail = recoveryDiagnostic(error) ?? (job ? `Command ${job.spec.id}: delivery (unverified_state).` : undefined);
+		const key = detail && warnings.size < 3 ? detail : "generic";
+		if (warnings.has(key)) return;
+		warnings.add(key);
+		const message = `${key === "generic" ? "Background command recovery or delivery failed." : detail} Inspect /commands and its private state directory; do not retry unknown jobs.`;
+		if (ctx.hasUI) ctx.ui.notify(message, "error"); else process.stderr.write(message + "\n");
+	};
 	const scan = async () => {
 		const ctx = context;
-		if (!ctx || scanning) return;
-		scanning = true;
+		if (!ctx) return;
 		try {
-			for (const job of await manager.refresh([await checkoutKey(pi, ctx)])) {
+			for (let job of await manager.refresh([await checkoutKey(pi, ctx)])) {
+				if (context !== ctx) return;
 				if (!terminal(job.state) || job.spec.sessionId !== ctx.sessionManager.getSessionId()) continue;
-				await withWorktreeLock(join(job.dir, "spec.json"), async () => {
-					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
+				try { await withWorktreeLock(join(job.dir, "spec.json"), async () => {
+					job = await manager.get(job.spec.id);
+					if (job.pruned || !terminal(job.state)) return;
+					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle() || ctx.hasPendingMessages()) return;
 					const delivered = await readPrivate(join(job.dir, "delivered.json"));
 					if (delivered !== undefined) {
 						const value = delivered as { id?: string; runnerId?: string } | null;
-						if (value?.id !== job.spec.id || value.runnerId !== job.claim?.runnerId) throw new Error("Foreign completion delivery record.");
-						return;
+						if (value?.id !== job.spec.id || value.runnerId !== (job.claim?.runnerId ?? null)) throw new Error("Foreign completion delivery record.");
 					}
 					const recorded = ctx.sessionManager.getEntries().some((entry) => entry.type === "custom_message" && entry.customType === completionType &&
 						(entry.details as { id?: string; runnerId?: string } | undefined)?.id === job.spec.id &&
-						(entry.details as { runnerId?: string }).runnerId === job.claim?.runnerId);
-					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle()) return;
-					if (!recorded) {
-						if (pending.has(job.spec.id) || !ctx.sessionManager.getBranch().some((entry) => entry.id === job.spec.callEntryId)) return;
-						// Pi dispatches asynchronously and does not expose its completion or failure here.
-						pending.add(job.spec.id);
-						pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}. Inspect the result and continue the existing request when appropriate.`, display: true, details: summary(job) }, { triggerTurn: true, deliverAs: "followUp" });
+						(entry.details as { runnerId?: string | null }).runnerId === (job.claim?.runnerId ?? null));
+					if (context !== ctx || job.spec.sessionId !== ctx.sessionManager.getSessionId() || !ctx.isIdle() || ctx.hasPendingMessages()) return;
+					if (recorded) {
+						if (delivered === undefined) await writePrivate(join(job.dir, "delivered.json"), { id: job.spec.id, runnerId: job.claim?.runnerId ?? null });
+						pending.delete(job.spec.id);
 						return;
 					}
-					await writePrivate(join(job.dir, "delivered.json"), { id: job.spec.id, runnerId: job.claim!.runnerId });
-					pending.delete(job.spec.id);
-				});
+					if (delivered !== undefined) return;
+					if (pending.has(job.spec.id) || !ctx.sessionManager.getBranch().some((entry) => entry.id === job.spec.callEntryId)) return;
+					// Pi dispatches asynchronously and does not expose its completion or failure here.
+					pending.add(job.spec.id);
+					pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}. Inspect the result and continue the existing request when appropriate.`, display: true, details: summary(job) }, { triggerTurn: true, deliverAs: "followUp" });
+				}); } catch (error) { report(ctx, error, job); }
 			}
-		} catch {
-			if (!warned && context === ctx) {
-				warned = true;
-				const message = "Background command recovery or delivery failed. Inspect /commands and its private state directory; do not retry unknown jobs.";
-				if (ctx.hasUI) ctx.ui.notify(message, "error"); else process.stderr.write(message + "\n");
-			}
-		}
-		finally { scanning = false; }
+		} catch (error) { report(ctx, error); }
 	};
 	pi.on("session_start", async (_event, ctx) => {
-		context = ctx;
+		lifecycle++; context = ctx;
 		if (timer) clearInterval(timer);
-		timer = setInterval(() => { void scan(); }, 1000); timer.unref();
+		timer = setInterval(() => { if (!scanning) scanning = scan().finally(() => { scanning = undefined; }); }, 1000); timer.unref();
 		await manager.refresh([await checkoutKey(pi, ctx)]);
 	});
-	pi.on("session_shutdown", () => { context = undefined; if (timer) clearInterval(timer); timer = undefined; });
+	pi.on("session_tree", () => { lifecycle++; });
+	pi.on("session_before_switch", () => { lifecycle++; });
+	pi.on("session_shutdown", async () => { lifecycle++; context = undefined; if (timer) clearInterval(timer); timer = undefined; await scanning; });
 	return manager;
 }

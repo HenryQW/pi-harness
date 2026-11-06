@@ -17,13 +17,14 @@ export interface DirectDisplay {
 }
 export const directRef = ({ workflow, worker }: DirectDisplay): string => `D${workflow}.${worker}`;
 
-/** Read-only branch records; the adapter groups all tabs of a direct workflow. */
+/** Session-wide saved reservations and local ownership; records alone grant no process control. */
 export interface DirectTask {
 	id: string;
 	/** Legacy label: saved allocation label, otherwise the exact task ID. */
 	name: string;
 	status: string;
 	canClose?: boolean;
+	admission?: { identity: string; checkouts: readonly string[]; evidence: string; proof: boolean; canRecover: boolean };
 	/** Entry IDs of running workers in a locally owned all-read workflow; each can be stopped alone. */
 	stoppable?: readonly string[];
 	recovery?: string;
@@ -74,6 +75,7 @@ export interface PrunePlan {
 export interface SubagentCommandAdapter {
 	direct(ctx: ExtensionContext): readonly DirectTask[];
 	closeDirect(task: DirectTask, current: () => boolean): Promise<string>;
+	recoverDirect?(task: DirectTask, ctx: ExtensionContext, current: () => boolean): Promise<string>;
 	stopDirect(task: DirectTask, entryId: string, current: () => boolean): Promise<string>;
 	isolated(cwd: string, current: () => boolean): Promise<IsolatedInventory>;
 	recover(cwd: string): Promise<string>;
@@ -285,6 +287,11 @@ function directReport(task: DirectTask): Report {
 	const untabbed = task.workers.filter((worker) => !task.tabs.some((tab) => tab.display?.worker === worker.worker));
 	return { tone: statusTone(task.status), title: `Direct workflow ${directLabel(task)} · ${task.status}${costSuffix(task.cost)}`, sections: [
 		{ rows: [{ label: "ID", value: task.id, code: true }, ...(task.recovery ? [{ label: "recovery", value: clean(task.recovery, 4000), tone: "warning" as const }] : [])] },
+		...(task.admission ? [{ heading: "Checkout protection", rows: [
+			{ label: "reservation", value: task.admission.identity, code: true },
+			{ label: "complete checkout set", value: task.admission.checkouts.join("\n"), code: true },
+			{ label: "saved effect evidence", value: task.admission.evidence, code: true },
+		] }] : []),
 		...task.tabs.map((tab): Section => ({ heading: tab.display ? workerLabel(tab.display) : tab.name, rows: [
 			...([["task", tab.entryId], ["agent", tab.name], ["tab", tab.tabId], ["pane", tab.paneId], ["session", tab.sessionFile]] as const).map(([label, value]) => ({ label, value, code: true })),
 			...(compactCost(tab.cost) === undefined ? [] : [{ label: "cost", value: compactCost(tab.cost)! }]),
@@ -525,6 +532,19 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 	pi.on("session_shutdown", invalidatePrune);
 	pi.on("session_tree", invalidatePrune);
 	pi.registerCommand("subagent", {
+		getArgumentCompletions: (prefix) => {
+			const nested = /^(\s*prune )(\S*)$/.exec(prefix);
+			const items = nested ? [
+				{ value: "cancel", description: "Stop the prune scan or cleanup; completed removals stay removed" },
+			] : [
+				{ value: "prune", description: "Scan leftover worktrees, or review a ready plan" },
+				{ value: "recover", description: "Report interrupted isolated work to Main" },
+				{ value: "roles", description: "List Roles, resources, and model routes" },
+			];
+			const partial = nested?.[2] ?? prefix.trimStart();
+			return items.filter(({ value }) => value.startsWith(partial))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - partial.length) + item.value }));
+		},
 		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover with /subagent recover, or scan/review leftovers with /subagent prune (stop with /subagent prune cancel)",
 		handler: async (args, ctx) => {
 			const command = args.trim();
@@ -720,8 +740,17 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				} finally { if (job.state.kind === "reviewing") clearPrune(job); }
 			}
 			if (!ctx.hasUI) {
-				const inventory = await adapter.isolated(ctx.cwd, current);
-				deliver(ctx, workingReport(adapter.direct(ctx), inventory));
+				const direct = adapter.direct(ctx);
+				let inventory: IsolatedInventory;
+				try { inventory = await adapter.isolated(ctx.cwd, current); }
+				catch (error) {
+					deliver(ctx, workingReport(direct, undefined));
+					for (const task of direct) deliver(ctx, directReport(task));
+					deliver(ctx, textReport("warning", `Isolated inventory unavailable: ${errorText(error)}. Direct release requires interactive confirmation.`));
+					return;
+				}
+				deliver(ctx, workingReport(direct, inventory));
+				for (const task of direct) deliver(ctx, directReport(task));
 				const head: Report = { tone: "info", title: "Isolated requests (report only)", sections: [] };
 				const row = (request: IsolatedRequest): Row => ({ text: `${glyph(request.status)} ${request.orphaned ? "orphaned · " : ""}${isolatedLabel(request)}` });
 				const listed = fitItems(`${reportMarkdown(head)}\n`, inventory.requests, (request) => sectionMarkdown({ rows: [row(request)] }), ROLES_REPORT_CODE_POINTS,
@@ -747,7 +776,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 				if (!valid()) return;
 				if (report) deliver(ctx, workingReport(direct, inventory));
 				report = false;
-				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct branch recovery remains available; check the canonical Git checkout/configuration.`, "warning");
+				if (unavailable) ctx.ui.notify(`Isolated inventory unavailable (${unavailable}). Direct recovery remains available; check the canonical Git checkout/configuration.`, "warning");
 				if (inventory?.invalidIds.length) for (const id of inventory.invalidIds) ctx.ui.notify(`Unreadable isolated state ID: ${JSON.stringify(id)}. Preserve this file; inspect the state store before making changes.`, "warning");
 				type Selection = { kind: "direct"; task: DirectTask } | { kind: "isolated"; request: IsolatedRequest; root: string } | { kind: "refresh" } | { kind: "history" } | { kind: "many" } | { kind: "close" };
 				// Terminal rows carry their group, so headings cannot be mistaken for actions.
@@ -784,7 +813,7 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					{ label: history ? "Active work" : "Completed / history (including retained work)", value: { kind: "history" } },
 					{ label: "Close", value: { kind: "close" } },
 				];
-				if (!unavailable && !direct.length && !inventory?.requests.length && !inventory?.invalidIds.length) ctx.ui.notify("No direct tasks recorded on this session branch or isolated requests in this checkout. Ask Main to start delegation.", "info");
+				if (!unavailable && !direct.length && !inventory?.requests.length && !inventory?.invalidIds.length) ctx.ui.notify("No direct tasks recorded in this session or isolated requests in this checkout. Ask Main to start delegation.", "info");
 				const selected = await choose(ctx, history ? "Subagent · completed / history" : "Subagent · current work", selections, menu);
 				if (!valid() || !selected || selected.kind === "close") return;
 				if (selected.kind === "refresh") { report = true; continue; }
@@ -822,13 +851,20 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 					const label = clean(directLabel(task));
 					deliver(ctx, directReport(task));
 					const stoppable = task.tabs.filter((tab) => task.stoppable?.includes(tab.entryId));
-					if (task.canClose || stoppable.length) {
-						const action = await choose<{ kind: "close" | "back" } | { kind: "stop"; entryId: string }>(ctx, `Direct · ${label}`, [
+					if (task.canClose || stoppable.length || task.admission?.canRecover) {
+						const action = await choose<{ kind: "close" | "back" | "recover" } | { kind: "stop"; entryId: string }>(ctx, `Direct · ${label}`, [
 							...(task.canClose ? [{ label: "Close/cancel-and-release ALL owned workers in this workflow (preserve files and commits)", value: { kind: "close" as const } }] : []),
+							...(task.admission?.canRecover && adapter.recoverDirect ? [{ label: "Review recovered checkout protection", value: { kind: "recover" as const } }] : []),
 							...stoppable.map((tab) => ({ label: `Stop this worker: ${tab.display ? workerLabel(tab.display) : tab.name} (other workers continue)`, value: { kind: "stop" as const, entryId: tab.entryId } })),
 							{ label: "Back / refresh", value: { kind: "back" as const } },
 						]);
 						if (!valid()) return;
+						if (action?.kind === "recover") {
+							try {
+								const report = await adapter.recoverDirect!(task, ctx, current);
+								if (valid()) deliver(ctx, textReport(task.admission!.proof ? "info" : "warning", report));
+							} catch (error) { if (valid()) ctx.ui.notify(`Protection retained: ${errorText(error)}`, "error"); }
+						}
 						if (action?.kind === "stop") {
 							try {
 								const report = await adapter.stopDirect(task, action.entryId, current);

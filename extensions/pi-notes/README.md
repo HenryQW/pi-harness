@@ -12,6 +12,8 @@ pi install npm:@henryqw/pi-notes
 
 ## Use
 
+Type `/note `, `/note-rm `, or `/note-clear ` to see `--project`, which selects a worktree path. After a path in `/note`, completion offers `--`, which separates the path from the note text. Completion keeps paths with spaces and does not suggest note text.
+
 Run `/note Verify the migration rollback.` in a Git worktree. The reminder appears immediately and in later sessions.
 
 | Surface | Type | Purpose |

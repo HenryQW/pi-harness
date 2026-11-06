@@ -31,6 +31,7 @@ async function harness(t: TestContext) {
 		[second, { repository: canonicalRepository, worktree: await realpath(second), gitDir: await realpath(secondGitDir) }],
 	]);
 	const handlers: Record<string, CommandHandler> = {};
+	const completions = new Map<string, NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>>();
 	let sessionStart: ((event: unknown, ctx: ExtensionContext) => Promise<void> | void) | undefined;
 	const pi = {
 		exec: async (_command: string, _args: string[], options: { cwd?: string }) => {
@@ -42,8 +43,9 @@ async function harness(t: TestContext) {
 		on(event: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void> | void) {
 			if (event === "session_start") sessionStart = handler;
 		},
-		registerCommand(name: string, options: { handler: CommandHandler }) {
-			handlers[name] = options.handler;
+		registerCommand(name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			handlers[name] = options.handler as CommandHandler;
+			if (options.getArgumentCompletions) completions.set(name, options.getArgumentCompletions);
 		},
 	} as unknown as ExtensionAPI;
 
@@ -71,6 +73,7 @@ async function harness(t: TestContext) {
 		second,
 		firstGitDir,
 		identities,
+		completions,
 		handlers,
 		context,
 		runSessionStart: (ctx: ExtensionContext) => sessionStart!({}, ctx),
@@ -80,6 +83,25 @@ async function harness(t: TestContext) {
 		pickWith: (fn: (options: string[]) => Promise<string | undefined>) => { select = fn; },
 	};
 }
+
+test("note completion keeps paths with spaces and never completes free text", async (t) => {
+	const h = await harness(t);
+	for (const name of ["note", "note-rm", "note-clear"]) {
+		const complete = h.completions.get(name)!;
+		assert.equal((await complete(" --p"))?.[0]?.value, " --project");
+		assert.deepEqual(await complete("--project "), []);
+		assert.deepEqual(await complete("a reminder"), []);
+	}
+	const complete = h.completions.get("note")!;
+	const items = await complete(`--project ${h.second} with spaces -`);
+	assert.equal(items?.[0]?.value, `--project ${h.second} with spaces --`);
+	assert.match(items![0]!.description!, /note text/);
+	assert.deepEqual(await complete("--project first repo -- reminder "), []);
+	assert.deepEqual(await complete("--project first repo -- "), []);
+	const value = (await complete(`--project ${h.second} `))![0]!.value;
+	await h.handlers.note(`${value} saved`, h.context(h.first));
+	assert.match(h.notified()!, /saved/);
+});
 
 test("parseNotes validates safe worktree records", () => {
 	const valid = {

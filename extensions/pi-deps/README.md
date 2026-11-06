@@ -10,6 +10,8 @@ pi install npm:@henryqw/pi-deps
 
 ## Use
 
+Type `/deps ` to see `--project`, which selects a repository path for this command. Completion does not suggest paths.
+
 Run `/deps` in a trusted repository. Create a worktree through Git, then open Pi there in TUI mode to see install progress.
 
 | Surface | Type | Purpose |

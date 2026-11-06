@@ -6,7 +6,7 @@ import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { capEphemeralSubagentOutput as capOutput, createEphemeralSubagentExecutor, createSubagentConfigStore, DEFAULT_SUBAGENT_CONFIG, DELEGATE_TASK, findRole, formatDuration, loadRoleCatalog, prepareRoleLaunch, resolveRolePackageResources, resolveTaskRoute, ROLE_TOOL_POLICY_FLAG, type ExecutionPolicySnapshot, type Role } from "@henryqw/pi-subagent";
 import { resolveExecutionPolicy } from "./config.ts";
 import { captureFallbackWarning } from "./task-model-fallback.ts";
-import { registerCheckoutAdmission } from "./admission.ts";
+import { registerDirectAdmission } from "./admission.ts";
 import { registerIsolatedExtension } from "./isolated.ts";
 import { registerWorkspaceExtension } from "./workspace.ts";
 import { resolveWorkspaceScope } from "../dist/workspace-scope.js";
@@ -16,6 +16,7 @@ import { compactCost, compactTokens, ENTRY_STATUS_PRESENTATION, formatWorkflowRe
 import { checkoutNote, DelegateTaskParameters, identifyWorkflowEntries, parseDelegateTask, runForegroundWorkflow, snapshotCheckout, writesCheckout, type CheckoutSnapshot, type ParsedWorkflow, type WorkflowEntry } from "./workflow.ts";
 import { workspaceNeedsCollection } from "../dist/collection.js";
 import { assertSettledDirectSession, createDirectHerdr, DirectAllocationError, directTaskReader, type DirectAllocation, type DirectHandle, type DirectTab, type DirectToolActivity, type DirectUsage } from "../dist/direct-herdr.js";
+import { isProcessLeaseIdentity } from "../dist/process-lease.js";
 import { materializeTransientLaunch } from "../dist/launch-runtime.js";
 const WIDGET_KEY = "subagent-status";
 const WIDGET_INTERVAL_MS = 1_000;
@@ -136,10 +137,10 @@ const DIRECT_RESULT_TYPE = "subagent-direct-result";
 const DIRECT_TAB_TYPE = "subagent-direct-tab";
 const DIRECT_ALLOCATION_TYPE = "subagent-direct-allocation";
 // Legacy records have no display metadata.
-type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string; display?: DirectDisplay };
+type DirectAllocationRecord = DirectAllocation & { taskId: string; entryId: string; failure: string; access?: "read" | "write"; display?: DirectDisplay };
 // Records saved before continuation support lack turn, workspace, and checkout identity and cannot be continued.
 type DirectTabRecord = Omit<DirectTab, "turn" | "workspaceId" | "cwd"> & Partial<Pick<DirectTab, "turn" | "workspaceId" | "cwd">>
-	& { taskId: string; entryId: string; display?: DirectDisplay };
+	& { taskId: string; entryId: string; access?: "read" | "write"; display?: DirectDisplay };
 
 function boundedError(error: unknown): Error {
 	const message = capOutput(error instanceof Error ? error.message : String(error));
@@ -235,7 +236,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			return true;
 		}
 	};
-	const holdAdmission = registerCheckoutAdmission(pi, canWrite, async (input, ctx) => {
+	const directAdmission = registerDirectAdmission(pi, canWrite, async (input, ctx) => {
 		if (!input || typeof input !== "object" || !Object.hasOwn(input, "repositories")) return [];
 		const parsed = parseDelegateTask(input);
 		if (parsed.mode !== "direct" || !parsed.workflow.repositories) return [];
@@ -265,7 +266,6 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		beforeRoleLaunch,
 		onFinished: (ctx) => automaticCollection(ctx),
 	});
-	let directSequence = 0;
 	const directTasks = new Map<string, {
 		controller: AbortController; settled: Promise<void>; handles: DirectHandle[]; tabs: DirectTabRecord[];
 		pendingResult?: (sessionId: string) => boolean;
@@ -305,7 +305,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				seen.add(tab.tabId);
 				const unowned = () => current() && !directTasks.has(tab.taskId)
 					&& ![...directTasks.values()].some((task) => task.continues?.has(tab.sessionFile));
-				if (!unowned()) continue;
+				if (!unowned() || !directAdmission.canUseRecordedTask(ctx)) continue;
 				try {
 					if (!await eligible(tab.workspaceId) || !unowned()) continue;
 					const herdr = createDirectHerdr(pi, ctx.cwd, currentPolicy().childIdleMs);
@@ -375,9 +375,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				if (details?.taskId) results.set(details.taskId, details);
 			}
 			const entryCost = (taskId: string, entryId: string) => results.get(taskId)?.entries.find(({ id }) => id === entryId)?.cost;
-			for (const entry of ctx.sessionManager.getBranch()) {
+			for (const entry of ctx.sessionManager.getEntries()) {
 				if (entry.type !== "custom" || !entry.data || (entry.customType !== DIRECT_TAB_TYPE && entry.customType !== DIRECT_ALLOCATION_TYPE)) continue;
 				const record = entry.data as DirectTabRecord | DirectAllocationRecord;
+				// Incomplete saved evidence is reported by the journal row, not treated as a tab.
+				const fields = entry.customType === DIRECT_TAB_TYPE ? ["taskId", "entryId", "name", "tabId", "paneId", "sessionFile"] : ["taskId", "label", "failure"];
+				if (fields.some((key) => typeof (record as any)[key] !== "string")) continue;
 				const local = directTasks.get(record.taskId);
 				let task = grouped.get(record.taskId);
 				if (!task) grouped.set(record.taskId, task = { id: record.taskId, name: record.taskId,
@@ -402,8 +405,56 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					task.tabs.push({ entryId, name, tabId, paneId, sessionFile, ...(display ? { display } : {}), ...(cost === undefined ? {} : { cost }) });
 				}
 			}
+			// Local ownership must remain visible even when its first tab write failed.
+			for (const [id, local] of directTasks) {
+				const task: NonNullable<ReturnType<typeof grouped.get>> = grouped.get(id) ?? { id, name: id, status: "observed locally", workers: [], tabs: [] };
+				Object.assign(task, { status: local.allocation ? "allocation unverified; admission retained locally" : local.recovery ? "admission retained locally" : "observed locally", recovery: local.recovery,
+					canClose: Boolean(local.close) && !local.allocation, tabs: [...local.tabs], workers: [...local.tabs, ...(local.allocation ? [local.allocation] : [])].flatMap(({ display }) => display ? [display] : []) });
+				grouped.set(id, task);
+			}
+			const inventory = directAdmission.inventory(ctx);
+			for (const record of inventory.records) {
+				const task: NonNullable<ReturnType<typeof grouped.get>> = grouped.get(record.taskId) ?? { id: record.taskId, name: record.taskId, status: "", workers: [], tabs: [] };
+				const local = directTasks.has(record.taskId);
+				task.status = record.state === "held" ? local ? directTasks.get(record.taskId)!.allocation ? "allocation unverified; admission retained locally" : "admission retained locally" : "recovered admission retained"
+					: "protection released by user; termination unproved";
+				task.admission = { identity: `${record.sessionId}/${record.taskId}/${record.token}`, checkouts: record.checkouts,
+					evidence: directAdmission.evidence(record, ctx), proof: directAdmission.hasProof(record, ctx),
+					canRecover: record.state === "held" && !local && !inventory.failure };
+				task.recovery = record.state === "released" ? "A worker may still change these checkouts. Inspect changes before new work."
+					: local ? task.recovery ?? "Use local Close; saved records do not replace local authority."
+					: task.admission.proof ? record.proof === "not-dispatched" ? "Saved proof: no external effect was dispatched."
+						: "Saved proof: the local owner proved every effect stopped before release failed."
+					: "Complete termination proof is unavailable. Saved records cannot stop workers. Only a warned human release can waive protection.";
+				grouped.set(record.taskId, task);
+			}
+			if (inventory.failure) grouped.set("journal-failure", { id: "journal-failure", name: "Direct admission journal", status: "admission recovery blocked",
+				recovery: `${inventory.failure} Reservation identity or scope may be unknown. Restore authoritative evidence; no session-wide waiver is available.`, workers: [], tabs: [] });
 			for (const task of grouped.values()) task.workers.sort((a, b) => a.worker - b.worker);
 			return [...grouped.values()];
+		},
+		async recoverDirect(task, ctx, current) {
+			if (!ctx.hasUI || !current() || directTasks.has(task.id) || !task.admission?.canRecover) throw new Error("Use local Close for owned tasks; recovered release requires the current interactive session.");
+			const record = directAdmission.inventory(ctx).records.find(({ taskId }) => taskId === task.id);
+			if (!record || `${record.sessionId}/${record.taskId}/${record.token}` !== task.admission.identity) throw new Error("Direct reservation changed; reopen /subagent.");
+			const owned = () => current() && !directTasks.has(task.id);
+			const claim = directAdmission.claim(record, ctx, owned);
+			try {
+				const review = `Reservation: ${task.admission.identity}\nComplete checkout set:\n${record.checkouts.join("\n")}\nSaved resources:\n${directAdmission.evidence(record, ctx)}\n${task.recovery ?? ""}`;
+				const proof = directAdmission.hasProof(record, ctx);
+				if (proof) {
+					if (!await ctx.ui.confirm("Release protection from saved proof", `${review}\nNo worker will be stopped, replayed, or deleted. Release this exact reservation?`) || !owned()) return "Protection retained.";
+					claim.release("proved");
+					return "Saved proof accepted; exact checkout reservation released. Files, commits and session evidence preserved.";
+				}
+				const warning = "Release protection despite unproved termination";
+				const choice = await ctx.ui.select(`${review}\nA worker may still change ANY listed checkout. This does not stop workers or prove termination.`, ["Keep protection", warning]);
+				if (!owned() || choice !== warning) return "Protection retained.";
+				const typed = await ctx.ui.input(`Type the exact reservation identity to accept this risk: ${task.admission.identity}`);
+				if (!owned() || typed !== task.admission.identity) return "Protection retained; identity confirmation did not match.";
+				claim.release("user-unproved", typed);
+				return "Protection released by user; worker termination remains unproved. A worker may still change any listed checkout. Inspect changes before new work. All evidence preserved.";
+			} finally { claim.close(); }
 		},
 		async closeDirect(task, current) {
 			const local = directTasks.get(task.id);
@@ -464,7 +515,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 						{ ...prepared, args: [...transient.launch.args] }, `i-${randomUUID().replaceAll("-", "").slice(0, 24)}`,
 						`${directRef(display)} ${display.title}`, `Analyze this saved, read-only status snapshot for request ${id}. Summarize blockers and safe next decisions; do not infer missing evidence. The subagent_status tool in Main remains authoritative for exact action identities.\n\n${READ_ACCESS_NOTICE}\n\n${snapshot}`,
 						controller.signal, (tab) => {
-							const record = { taskId, entryId: id, display, ...tab };
+							const record = { taskId, entryId: id, access: "read" as const, display, ...tab };
 							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
 							tabs.push(record);
 						});
@@ -824,12 +875,14 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const source = matches[0]!;
 				if (source.display!.role !== role) throw refuse(`it ran with Role ${source.display!.role}, not ${role}; use the recorded Role`);
 				if (source.turn === undefined) throw refuse("its record has no turn identity (saved by an older pi-subagent), so it is not continuable; start a fresh task");
+				if (!isProcessLeaseIdentity(source.leaseIdentity)) throw refuse("its original process lease identity is missing or invalid; do not use a replacement lease as proof");
 				if (source.workspaceId !== herdr.workspaceId || source.cwd !== herdr.cwd) {
 					throw refuse(`it ran in ${source.cwd ?? "an unrecorded checkout"} (Herdr workspace ${source.workspaceId ?? "unrecorded"}), not this checkout and workspace; start a fresh task here`);
 				}
 				if ([...directTasks.values()].some(({ tabs, continues }) => continues?.has(source.sessionFile)
 					|| tabs.some(({ sessionFile }) => sessionFile === source.sessionFile))) throw refuse("a locally active direct task still owns its session");
 				if ([...sources.values()].some(({ sessionFile }) => sessionFile === source.sessionFile)) throw refuse("this request already continues its session");
+				if (!directAdmission.canUseRecordedTask(ctx)) throw refuse("its admission is unresolved or cannot be restored; recorded evidence grants no stop authority");
 				sources.set(index, { ...source, turn: source.turn });
 			}
 			if (parsed.dryRun) return await planDirect(workflow, sources, herdr.cwd, latestCtx ?? ctx);
@@ -857,7 +910,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				...(usage?.cost === undefined ? {} : { cost: usage.cost }),
 				...(startedAt.has(id) ? { elapsedMs: Date.now() - startedAt.get(id)! } : {}),
 			});
-			const taskId = `direct-${++directSequence}-${Date.now().toString(36)}`;
+			const taskId = `direct-${randomUUID()}`;
 			const workflowNumber = nextWorkflow(ctx);
 			const ref = `D${workflowNumber}`;
 			const displayOf = ({ index, delegation }: WorkflowEntry): DirectDisplay => ({
@@ -879,7 +932,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
 			// Register before Herdr can create a tab: session switches must await this
 			// launch, including its identity callback, before copying recovery records.
-			const releaseAdmission = writes ? holdAdmission(toolCallId) : () => {};
+			signal?.throwIfAborted();
+			const releaseAdmission = writes ? directAdmission.hold(toolCallId, taskId, ctx) : Object.assign(() => {}, { effect: (_resource: unknown) => {} });
+			let pendingSource: DirectTabRecord | undefined;
 			const local: NonNullable<ReturnType<typeof directTasks.get>> = { controller, settled, handles, tabs,
 				continues: new Set([...sources.values()].map(({ sessionFile }) => sessionFile)) };
 			if (!writes) local.stopWorker = {
@@ -904,6 +959,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 				const inScope = () => current() && (local.closeScope?.() ?? true);
 				try {
 					if (local.allocation) throw new Error(local.allocation.failure);
+					if (pendingSource) {
+						await herdr.stop(pendingSource, inScope, terminate ? "terminate" : "proof");
+						pendingSource = undefined;
+					}
 					for (const tab of tabs) await herdr.stop(tab, inScope, terminate ? "terminate" : "proof");
 					if (!inScope()) throw new Error("Direct task scope changed; reopen /subagent.");
 					releaseAdmission();
@@ -943,15 +1002,16 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 					handle = await herdr.start({ ...prepared, args: [...transient.launch.args] },
 						`d-${randomUUID().replaceAll("-", "").slice(0, 24)}`, `${directRef(display)} ${display.title}`,
 						`${entry.delegation.access === "read" ? `${entry.delegation.task}\n\n${READ_ACCESS_NOTICE}` : entry.delegation.task}${selected ? `\n\nExplicit selected repository map: ${JSON.stringify(workflow.repositories)}. Do not modify other repositories or workspace-root files. Selection and admission are not a sandbox.` : ""}\n\nFinal answer budget: ${answerBytes} bytes, conclusions first. Main sees only that much inline; a longer answer is saved to a file.`, activeSignal, (tab) => {
-							const record = { taskId, entryId: entry.id, display, ...tab };
-							// Persist before agent start, or let the new session carry the exact identity after settlement.
-							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
+							const record = { taskId, entryId: entry.id, access: writes ? "write" as const : "read" as const, display, ...tab };
+							// Keep local ownership even if saving the tab fails after allocation.
 							tabs.push(record);
 							tabByEntry.set(entry.id, record);
-						}, writes, sources.get(entry.index));
+							releaseAdmission.effect({ kind: "verified-tab", ...record });
+							if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_TAB_TYPE, record);
+						}, writes, sources.get(entry.index), (allocation) => releaseAdmission.effect({ kind: "allocation-intent", entryId: entry.id, ...allocation }));
 				} catch (error) {
 					if (error instanceof DirectAllocationError) {
-						local.allocation = { taskId, entryId: entry.id, display, ...error.allocation, failure: error.message };
+						local.allocation = { taskId, entryId: entry.id, access: writes ? "write" : "read", display, ...error.allocation, failure: error.message };
 						if (recordEpoch === directRecordEpoch) pi.appendEntry(DIRECT_ALLOCATION_TYPE, local.allocation);
 					}
 					// A failed start can still be in flight. Keep its private prompt for recovery.
@@ -971,11 +1031,17 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			const abortLaunch = () => controller.abort(signal?.reason);
 			signal?.addEventListener("abort", abortLaunch, { once: true });
 			try {
+				if (signal?.aborted) abortLaunch();
+				controller.signal.throwIfAborted();
 				for (const [index, source] of sources) {
 					try {
 						await assertSettledDirectSession(source.sessionFile, source.turn);
-						// Close only an idle or done exact agent; an absent one still needs two empty lease scans.
+						// Save this exact source before its stop; later sources have no effect yet.
+						controller.signal.throwIfAborted();
+						releaseAdmission.effect({ kind: "continuation-sources", sources: [source] });
+						pendingSource = source;
 						await herdr.stop(source, () => launchEpoch === sessionEpoch && !controller.signal.aborted, "settled");
+						pendingSource = undefined;
 					} catch (error) {
 						throw new Error(`Cannot continue ${workflow.delegations[index]!.continueFrom}: ${error instanceof Error ? error.message : String(error)}.`, { cause: error });
 					}
@@ -990,9 +1056,15 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			} catch (error) {
 				controller.abort();
 				finishWidgetItem(entries[0]!.id, "failure");
-				if (!tabs.length && !local.allocation) { releaseAdmission(); directTasks.delete(taskId); }
-				else local.recovery = local.allocation?.failure ?? "Launch outcome uncertain; inspect the exact recorded tab before Close/cancel-and-release";
-				resolveSettled();
+				try {
+					if (!tabs.length && !local.allocation && (!writes || !pendingSource)) { releaseAdmission(); directTasks.delete(taskId); }
+					else local.recovery = local.allocation?.failure ?? (pendingSource
+						? `Continued worker ${pendingSource.tabId} stop is unproved; admission retained. Manual reconciliation is required.`
+						: "Launch outcome uncertain; inspect the exact recorded tab before Close/cancel-and-release");
+				} catch (releaseError) {
+					local.recovery = `Admission release could not be saved: ${boundedError(releaseError).message}`;
+					throw boundedError(new Error(`${boundedError(error).message}. ${local.recovery}`, { cause: releaseError }));
+				} finally { resolveSettled(); }
 				throw boundedError(error);
 			} finally { signal?.removeEventListener("abort", abortLaunch); }
 			local.pendingResult = (sessionId) => !controller.signal.aborted && launchEpoch === sessionEpoch

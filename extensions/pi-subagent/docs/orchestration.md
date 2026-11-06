@@ -101,7 +101,7 @@ After settlement, the coordinator closes exact owned writer panes. It releases a
 
 Admission stays held if the close fails, identity changes, a leased child survives, or inspection is uncertain. In that case, open `/subagent`. Select the exact direct workflow. Then choose **Close/cancel-and-release ALL owned workers in this workflow** to cancel dispatch and try termination again. This action stops every owned worker of that workflow, not one selected worker.
 
-The action checks session, branch, epoch, and live ownership. Recorded-only tasks cannot unlock anything. After it proves pane absence, it sends `SIGTERM` to each process that holds the exact private lease of an owned worker. Then it sends `SIGKILL` to each process that survives. Before each signal, it scans the lease again for that PID, and it does not signal a PID that no longer holds the lease. If a holder survives, a scan fails, or ownership changes, admission stays held. Resolve the reported blocker, then do the same action again. A restart of Pi is not termination proof.
+The action checks session, branch, epoch, and live ownership. Recorded-only tasks cannot use local Close. Their separate recovery action cannot stop workers. After it proves pane absence, it sends `SIGTERM` to each process that holds the exact private lease of an owned worker. Then it sends `SIGKILL` to each process that survives. Before each signal, it scans the lease again for that PID, and it does not signal a PID that no longer holds the lease. If a holder survives, a scan fails, or ownership changes, admission stays held. Resolve the reported blocker, then do the same action again. A restart of Pi is not termination proof.
 
 Inspect partial changes before new writes. To recover, never retry a commit or delete work without inspection.
 
@@ -114,6 +114,55 @@ A Close that starts while a worker is active keeps its branch, session, and epoc
 Tasks in a write request must return one JSON completion object, such as `{"outcome":"succeeded","answer":"Scoped commit completed."}`. `outcome` must be `succeeded`, `failed`, or `blocked`, and `answer` must be non-empty. A normal final Pi turn is not sufficient. Failure, blocked work, plain text, or a malformed completion stops later dispatch.
 
 But admission depends on proved termination, not on the reported outcome. Success is the explicit report of the worker. It is not an independent validation of its changes.
+
+### Reload and session changes
+
+Direct writes require a saved native Pi conversation. Before a worker allocation or a continued-worker stop, the extension saves an admission journal entry. It contains the session and task identities, a unique admission token, and the complete canonical checkout set. The set includes the workspace and every selected repository.
+
+```mermaid
+flowchart LR
+  A[Admit complete checkout set] --> B[Save held entry]
+  B --> I[Save exact effect intent]
+  I --> C[Allocate or continue worker]
+  C --> D[Prove all workers stopped]
+  D --> P[Save termination receipt]
+  P --> E[Save released entry]
+  E --> F[Clear checkout holds]
+```
+
+If the first journal write fails, no worker is allocated or stopped. A cancelled preparation saves release when no allocation or uncertain stop occurred. If a release write fails, admission stays held. A failed tab-record write also retains admission after allocation. No successful task answer substitutes for termination proof.
+
+Native `/reload` replaces the extension instance and removes its event-bus listeners. The replacement replays **all session entries**, including entries outside the current tree branch, before it admits writes. Release must match the exact saved held checkpoint, admission identity, and checkout set. An exact earlier held entry cannot restore an already released owner.
+
+Every release must name its authority. A proved release requires complete saved proof, not only a `stopped` status. A human release requires the saved typed identity and the exact reviewed admission and worker evidence. Missing, conflicting, or changed release evidence blocks writes and session replacement, including for older receipts. Replay never creates missing consent or inspects live workers. Native forks can change parent links and move labels without changing worker evidence.
+
+A journal error blocks writes even when Pi reports the `session_start` error and continues. An older shared coordinator must support both journal capability detection and the required methods. Otherwise writes remain blocked; load the current Pi Herdr package in every extension. New read-only tasks and read tools remain available.
+
+Recovered admission is a write barrier, not process-control authority. Replay does not restore worker handles, replay tasks, or stop processes. Continuation and collection of recorded workers wait while admission is unresolved. Reload is not termination proof.
+
+The journal saves non-dispatch evidence first. It saves each exact allocation intent before tab creation, and each continuation source before its stop. An interrupted external operation stays unproved. New launches save the private lease and parent filesystem identities before dispatch. Termination checks compare them before and after lease scans. Missing, linked, replaced, or non-private leases block proof.
+
+A legacy worker without its original saved lease identity cannot be stopped or continued. The current lease file cannot establish its historical identity. New workers keep their original baseline throughout local execution. Allocation intents are bound to verified tab and pane identities before agent start. Older receipts for allocated workers without that binding require the warned human release, not proof-based release.
+
+`/subagent` lists local tasks and session-wide held reservations, even without a saved tab or on another branch. It shows the complete checkout set, reservation identity, saved resources, and recovery limit. A completed result does not hide a held reservation. Direct inventory remains available if isolated inventory fails. Without an interactive user interface, the command reports evidence but does not release protection.
+
+Local Close remains the only release authority for locally owned work. It can retry a failed continuation stop or release write. It does not close an unverified allocation or a present shell without proved ownership. Resolve such resources before retrying Close.
+
+For a recovered reservation, select **Review recovered checkout protection**:
+
+- Complete saved proof permits a confirmed release without worker control. Proof means no effect was dispatched, or the local owner saved complete termination evidence before the release write failed. The latter requires complete allocation intents, exact verified tab and pane records, matching original lease identities, and coverage of every saved resource. Missing fields or conflicting identities permit no proof-based release.
+- Missing proof offers **Keep protection** first. The separate **Release protection despite unproved termination** action requires the exact typed session, task, and token identity. It saves the typed identity and reviewed evidence in a distinct receipt before clearing only that reservation.
+- A human release preserves all evidence. Its warning survives reload: **worker termination remains unproved; a worker can still change any listed checkout.** It sends no signal, closes no pane, deletes nothing, and does not replay work or undo changes.
+
+Each recovery claims one exact reservation before dialogs. Session, branch, extension generation, and evidence must remain unchanged through release. A failed receipt write retains the whole checkout set. Releasing one reservation does not release overlapping owners.
+
+Recovery does not inspect or stop live workers from saved records. Older records without non-dispatch or complete termination evidence need a human release, even when their panes appear absent. Empty lease scans cannot settle an unknown external operation. The private lease is not a sandbox for arbitrary extension code or detached processes. Explicit local termination also retains the small race between a process scan and its signal.
+
+Session switch, new session, import, and fork are refused during direct-write preflight, held admission, or failed restore. Once replacement passes this check, new direct writes stay blocked until session start. If a later extension cancels replacement, run `/reload` before direct writing. A fork is also refused if its selected path omits a hold or its release. A complete path can be forked. Tree navigation remains available because replay reads all entries.
+
+Historical records with an exact completed direct result and no recovery flag do not block writes. New read-only records also need no writer admission. For older unresolved records without a journal or an exact completed result, the full checkout set and access cannot be proved. The extension reports that limitation and blocks all writes and session replacement. It does not guess a checkout set or manufacture termination proof. There is no migration or session-wide risky waiver for unknown reservation scope. Restore authoritative evidence first.
+
+Admission coordinates only this Main's Pi calls. Other Pi sessions and external processes remain outside it.
 
 ### Continue or stop one direct worker
 

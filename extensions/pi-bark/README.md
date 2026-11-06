@@ -35,6 +35,8 @@ Treat the Device Key as a secret. Anyone with it can send push notifications to 
 
 ## Use
 
+Type `/bark ` to see described choices. After `default`, completion offers `on` and `off`. Completion does not suggest Device Keys or server addresses.
+
 Run `/copyb` without arguments to copy the latest Pi response to your clipboard and send it to Bark.
 
 | Surface | Type | Purpose |

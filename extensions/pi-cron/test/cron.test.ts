@@ -48,14 +48,15 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 	const prepared: Prepared[] = [];
 	const policies: Required<Limits>[] = [];
 	let command: Command | undefined;
+	let complete!: NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>;
 	let selections: string[] = [];
 	const events = new Map<string, Array<(payload: unknown) => void>>();
 	const pi = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
-		registerCommand(name: string, options: { handler: Command }) {
-			if (name === "cron") command = options.handler;
+		registerCommand(name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			if (name === "cron") { command = options.handler; complete = options.getArgumentCompletions!; }
 		},
 		getCommands: () => [],
 		sendMessage(message: unknown) {
@@ -102,7 +103,7 @@ function harness(executor: (prepared: Prepared) => Promise<{ outcome: "success" 
 		for (const handler of handlers.get(event) ?? []) await handler(payload, ctx);
 	};
 	return {
-		notices, messages, prepared, policies, emit, ctx, pi,
+		notices, messages, prepared, policies, emit, ctx, pi, complete,
 		command: (args: string) => command!(args, ctx),
 		setNow: (value: number) => { now = value; },
 		select: (...choices: string[]) => { selections = choices; },
@@ -153,6 +154,24 @@ test("a new job waits for its slot, then runs once in a persisted session with t
 	await h.settle();
 	assert.equal(h.prepared.length, 1, "the same slot does not fire twice");
 	await h.emit("session_shutdown");
+});
+
+test("cron completion uses current valid job names and rejects extra run arguments", async () => {
+	await writeJobs([{ id: "completion", every: "1d", role: "scout", cwd: agentDir, prompt: "Private prompt", env: { PRIVATE_KEY: "private-value" }, enabled: false }]);
+	const h = harness(async () => ({ outcome: "success", output: "Done" }));
+	try {
+		const items = await h.complete(" run  comp");
+		assert.equal(items?.[0]?.value, " run  completion");
+		assert.match(items![0]!.description!, /schedule disabled/);
+		assert.doesNotMatch(JSON.stringify(items), /Private prompt|private-value/);
+		assert.deepEqual(await h.complete("run completion extra"), []);
+		await h.command("run completion extra");
+		assert.equal(h.notices.at(-1), "Usage: /cron run <job-id>");
+		assert.equal(h.prepared.length, 0);
+		await writeJobs([{ id: "replacement", every: "1d", role: "scout", cwd: agentDir, prompt: "Do work" }, { id: "invalid" }]);
+		assert.deepEqual((await h.complete("run "))?.map(item => item.value), ["run replacement"]);
+		assert.deepEqual(await h.complete("run comp"), []);
+	} finally { await h.emit("session_shutdown"); }
 });
 
 test("/cron run forces a run, refuses a concurrent claim, and follow-up delivery goes through sendMessage", async () => {

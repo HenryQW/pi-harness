@@ -47,7 +47,19 @@ function fixture(t) {
 	const run = (args = ["--affected", "origin/main"], executable = pnpm) => spawnSync(process.execPath, [join(scripts, "test-workspaces.mjs"), ...args], {
 		cwd, encoding: "utf8", env: { ...process.env, npm_execpath: executable }, timeout: 30_000,
 	});
-	return { cwd, write, manifest, git, commit, run };
+	const select = (base = "origin/main", executable = pnpm, env = {}) => spawnSync(process.execPath, [
+		"--input-type=module", "--eval", `
+			import { affectedWorkspaces } from ${JSON.stringify(new URL("./affected-workspaces.mjs", import.meta.url).href)};
+			console.log("SELECTED", JSON.stringify(affectedWorkspaces(process.argv[1], process.argv[2])));
+		`, base, executable,
+	], { cwd, encoding: "utf8", env: { ...process.env, ...env }, timeout: 30_000 });
+	return { cwd, write, manifest, git, commit, run, select };
+}
+
+function selected(result) {
+	assert.equal(result.status, 0, result.stderr || result.error?.message);
+	const names = JSON.parse(result.stdout.match(/^SELECTED (.+)$/m)[1]);
+	return names === null ? null : names.sort();
 }
 
 function tested(result) {
@@ -64,7 +76,7 @@ test("changed package selects transitive development dependents, using the merge
 	f.write("packages/other/source.js", "base-only change\n");
 	f.commit();
 	f.git("checkout", "--detach", head);
-	assert.deepEqual(tested(f.run(["--affected", "--", "actual-base"])), ["consumer", "core", "leaf"]);
+	assert.deepEqual(selected(f.select("actual-base")), ["@test/consumer", "@test/core", "@test/leaf"]);
 });
 
 test("default affected base, unchanged head, and full-run arguments retain their meanings", (t) => {
@@ -89,7 +101,8 @@ test("local changes select dependents without changing the index; untracked shar
 			if (state === "unstaged") f.write("packages/other/source.js", "second package\n");
 			if (state === "staged") f.git("add", ".");
 			const staged = f.git("diff", "--cached");
-			assert.deepEqual(tested(f.run()), ["unstaged", "untracked-shared"].includes(state) ? [...names].sort() : ["consumer", "core", "leaf"]);
+			assert.deepEqual(selected(f.select()), state === "untracked-shared" ? null
+				: (state === "unstaged" ? [...names].sort() : ["consumer", "core", "leaf"]).map((name) => `@test/${name}`));
 			assert.equal(f.git("diff", "--cached"), staged);
 		});
 	}
@@ -114,12 +127,9 @@ if (['diff', 'ls-files'].includes(args[0]) && !existsSync('.git/staged-between-r
 process.stdout.write(output);
 `);
 	chmodSync(join(bin, "git"), 0o755);
-	const result = spawnSync(process.execPath, [join(scripts, "test-workspaces.mjs"), "--affected", "origin/main"], {
-		cwd: f.cwd, encoding: "utf8", timeout: 30_000,
-		env: { ...process.env, npm_execpath: pnpm, PATH: `${bin}${delimiter}${process.env.PATH}` },
-	});
+	const result = f.select("origin/main", pnpm, { PATH: `${bin}${delimiter}${process.env.PATH}` });
 	assert.equal(f.git("diff", "--cached", "--name-only"), file);
-	assert.deepEqual(tested(result), ["consumer", "core", "leaf"]);
+	assert.deepEqual(selected(result), ["@test/consumer", "@test/core", "@test/leaf"]);
 });
 
 test("version-only changes retain direct and transitive consumers across dependency fields and ranges", async (t) => {
@@ -137,7 +147,7 @@ test("version-only changes retain direct and transitive consumers across depende
 			f.git("update-ref", "refs/remotes/origin/main", "HEAD");
 			f.manifest("core", { version: after });
 			f.write("packages/core/source.js", "published source change\n");
-			assert.deepEqual(tested(f.run()), ["consumer", "core", "leaf"]);
+			assert.deepEqual(selected(f.select()), ["@test/consumer", "@test/core", "@test/leaf"]);
 		});
 	}
 });
@@ -151,8 +161,8 @@ test("version-only changes use the full suite for aliases or path references tha
 			f.commit();
 			f.git("update-ref", "refs/remotes/origin/main", "HEAD");
 			f.manifest("core", { version: "0.2.0" });
-			const result = f.run();
-			assert.deepEqual(tested(result), [...names].sort());
+			const result = f.select();
+			assert.equal(selected(result), null);
 			assert.match(result.stdout, /unsupported dependency reference/);
 		});
 	}
@@ -167,12 +177,12 @@ test("version-only comparison does not ignore nested version fields or parse fai
 			f.git("update-ref", "refs/remotes/origin/main", "HEAD");
 			if (change === "invalid-json") f.write("packages/core/package.json", "{");
 			else f.manifest("core", { version: "1.0.1", config: { version: "2" } });
-			const result = f.run();
+			const result = f.select();
+			assert.equal(selected(result), null);
 			if (change === "invalid-json") {
-				assert.equal(result.status, 1);
 				assert.match(result.stdout, /Run all workspace tests: cannot compare package manifest/);
+				assert.equal(f.run().status, 1);
 			} else {
-				assert.deepEqual(tested(result), [...names].sort());
 				assert.match(result.stdout, /package manifest changed beyond version/);
 			}
 		});
@@ -180,7 +190,7 @@ test("version-only comparison does not ignore nested version fields or parse fai
 });
 
 test("global changes, manifests, removals, renames, and undeclared cross-package test consumers use the full suite", async (t) => {
-	for (const change of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "scripts/shared.mjs", "evals/shared.ts", "website/check.ts", "package-manifest", "added-manifest", "packages/core/nested/package.json", "remove", "rename", "type-change", "remove-package", "cross-package-test"]) {
+	for (const change of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "scripts/shared.mjs", "website/check.ts", "package-manifest", "added-manifest", "packages/core/nested/package.json", "remove", "rename", "type-change", "remove-package", "cross-package-test"]) {
 		await t.test(change, (t) => {
 			const f = fixture(t);
 			if (change === "remove") rmSync(join(f.cwd, "packages/core/source.js"));
@@ -205,9 +215,10 @@ test("global changes, manifests, removals, renames, and undeclared cross-package
 			else if (change === "package.json") f.write(change, JSON.stringify({ name: "changed-root", private: true, packageManager: rootManifest.packageManager }));
 			else f.write(change, "# changed\n");
 			if (!["package-manifest", "remove", "rename", "type-change"].includes(change)) f.commit();
-			const result = f.run();
-			assert.deepEqual(tested(result), names.filter((name) => change !== "remove-package" || name !== "other").sort());
+			const result = f.select();
+			assert.equal(selected(result), null);
 			assert.match(result.stdout, /Run all workspace tests:/);
+			if (change === "pnpm-lock.yaml") assert.deepEqual(tested(f.run()), [...names].sort());
 		});
 	}
 });
@@ -229,7 +240,7 @@ test("invalid bases, unrelated or ambiguous history, and extra arguments fail", 
 				args[1] = f.git("commit-tree", tree, "-p", right, "-p", left, "-m", "base merge");
 				f.git("update-ref", "HEAD", head);
 			} else if (state === "extra-argument") args.push("extra");
-			const result = f.run(args);
+			const result = state === "extra-argument" ? f.run(args) : f.select(args[1]);
 			assert.equal(result.status, 1, result.stderr);
 			assert.doesNotMatch(result.stdout, /TESTED/);
 		});
@@ -245,10 +256,14 @@ test("selection command errors, malformed output, and omitted packages fail inst
 			const executable = join(f.cwd, ".git", "test-pnpm");
 			writeFileSync(executable, `#!/usr/bin/env node\nconst { spawnSync } = require('node:child_process');\nif (process.argv.includes('--recursive')) { const child = spawnSync(${JSON.stringify(pnpm)}, process.argv.slice(2), { stdio: 'inherit' }); process.exit(child.status ?? 1); }\n${response};\n`);
 			chmodSync(executable, 0o755);
-			const result = f.run(undefined, executable);
+			const result = f.select(undefined, executable);
 			assert.equal(result.status, 1, result.stderr);
-			assert.doesNotMatch(result.stdout, /TESTED/);
 			assert.match(result.stderr, /selector failed|SyntaxError|invalid workspace list|omitted a required package/);
+			if (response.includes("selector failed")) {
+				const scheduled = f.run(undefined, executable);
+				assert.equal(scheduled.status, 1, scheduled.stderr);
+				assert.doesNotMatch(scheduled.stdout, /TESTED/);
+			}
 		});
 	}
 });

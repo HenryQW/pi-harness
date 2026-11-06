@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -208,6 +208,10 @@ test("directory fallback requires every pane to agree and must be outside Git", 
 	f.panes[1]!.cwd = join(f.root, "elsewhere");
 	await assert.rejects(withMainTab(f.client, "w1:p1", signal(), "select", unused), /directories do not agree/);
 	f.panes[1]!.cwd = f.root;
+	if (process.platform === "linux") {
+		const flock = execFileSync("/bin/sh", ["-c", "command -v flock"], { encoding: "utf8" }).trim();
+		await symlink(flock, join(f.root, "flock"));
+	}
 	const previousPath = process.env.PATH;
 	process.env.PATH = f.root;
 	try {

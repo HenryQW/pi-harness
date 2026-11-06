@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, readFile, stat, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
+import { fstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -7,8 +9,14 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { withWorktreeLock } from "@henryqw/pi-herdr";
+import { checkoutAdmission, withWorktreeLock } from "@henryqw/pi-herdr";
 import herdrDoneExtension from "../internal/done.ts";
+import { runLockedGit } from "../internal/locked-git.ts";
+import { CommandManager } from "../internal/commands.ts";
+import { CommandRemovalBlocked, readJob, recordNonDispatch, writePrivate, type JobSpec } from "../internal/command-state.ts";
+import { randomUUID } from "node:crypto";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { HerdrRequestError } from "@henryqw/pi-herdr";
 
 type Command = (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
@@ -23,12 +31,20 @@ after(async () => {
 	await rm(mainCheckoutDir, { recursive: true, force: true });
 });
 
-function harness(executor: Executor = () => ok(), guardRemoval: (checkout: string) => Promise<() => void> = async () => () => {}) {
+function harness(executor: Executor = () => ok(),
+	guardRemoval: Parameters<typeof herdrDoneExtension>[1] = async (_checkout, operation) => operation(-1),
+	recoverRemoval?: Parameters<typeof herdrDoneExtension>[2],
+	nativeMutation?: typeof runLockedGit,
+) {
 	let command: Command | undefined;
+	let complete!: NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>;
 	const calls: ExecCall[] = [];
+	const events = new Map<string, () => void>();
+	const inherited: number[][] = [], lockInodes: Array<Array<number | null>> = [];
 	const api = {
-		registerCommand(name: string, options: { handler: Command }) {
-			if (name === "done") command = options.handler;
+		on(name: string, handler: () => void) { events.set(name, handler); },
+		registerCommand(name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			if (name === "done") { command = options.handler; complete = options.getArgumentCompletions!; }
 		},
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
 			const call = { command: executable, args, options };
@@ -36,10 +52,28 @@ function harness(executor: Executor = () => ok(), guardRemoval: (checkout: strin
 			return executor(call);
 		},
 	} as unknown as ExtensionAPI;
-	herdrDoneExtension(api, guardRemoval);
+	herdrDoneExtension(api, guardRemoval, recoverRemoval, async (mutation, descriptors) => {
+		inherited.push([...descriptors]);
+		lockInodes.push(descriptors.map(fd => fd >= 0 ? fstatSync(fd).ino : null));
+		if (nativeMutation) return await nativeMutation(mutation, descriptors);
+		const args = mutation.operation === "remove" ? ["worktree", "remove", ...(mutation.force ? ["--force"] : []), mutation.checkout] : ["pull", "--ff-only"];
+		const result = await api.exec("git", args, { cwd: mutation.cwd });
+		if (result.code !== 0 || result.killed) throw new Error(result.stderr || "killed");
+	});
 	assert.ok(command);
-	return { command, calls };
+	return { command, complete, calls, events, inherited, lockInodes };
 }
+
+test("done completion explains force without executing removal or extending invalid arguments", async () => {
+	const h = harness();
+	const items = await h.complete("--f");
+	assert.equal(items?.[0]?.value, "--force");
+	assert.match(items![0]!.description!, /skip confirmation/);
+	assert.equal((await h.complete("-f"))?.[0]?.value, "-f");
+	assert.deepEqual(await h.complete("--force "), []);
+	assert.deepEqual(await h.complete("path --"), []);
+	assert.equal(h.calls.length, 0);
+});
 
 function snapshotExecutor(options: {
 	toplevel?: string;
@@ -106,7 +140,7 @@ async function withHerdrEnvironment(
 }
 
 const context = (events: string[] = [], confirmed = true) => ({
-	cwd: "/repo/worktree/nested",
+	cwd: "/repo/worktree/nested", hasUI: true, mode: "tui", sessionManager: SessionManager.inMemory(checkout),
 	waitForIdle: async () => { events.push("idle"); },
 	ui: { confirm: async (title: string, message: string) => { events.push(`confirm:${title}:${message}`); return confirmed; } },
 }) as unknown as ExtensionCommandContext;
@@ -356,5 +390,288 @@ test("/done accepts a pane in a subdirectory of its exact linked checkout", asyn
 			: fallback(call));
 		await app.command("--force", context());
 		assert.ok(app.calls.some((call) => call.args[1] === "remove"));
+	});
+});
+
+test("/done excludes a second manager through actual removal and releases store and admission on failure", async (t) => {
+	const store = await mkdtemp(join(tmpdir(), "pi-done-command-store-"));
+	t.after(() => rm(store, { recursive: true, force: true }));
+	const key = await realpath(checkout);
+	const host = () => ({ on() {}, exec: async () => ({ code: 0, stdout: key + "\n" }) });
+	const admission = checkoutAdmission(host());
+	const owner = new CommandManager(store, admission);
+	const request = t.mock.fn(async () => { throw new Error("must not dispatch"); });
+	const other = new CommandManager(store, checkoutAdmission(host()), request);
+	const previousSocket = process.env.HERDR_SOCKET_PATH, previousLease = process.env.PI_SUBAGENT_PROCESS_LEASE, argv = process.argv;
+	process.env.HERDR_SOCKET_PATH = "/tmp/test-herdr.sock"; delete process.env.PI_SUBAGENT_PROCESS_LEASE; process.argv = argv.slice(0, 2);
+	t.after(() => {
+		if (previousSocket === undefined) delete process.env.HERDR_SOCKET_PATH; else process.env.HERDR_SOCKET_PATH = previousSocket;
+		if (previousLease === undefined) delete process.env.PI_SUBAGENT_PROCESS_LEASE; else process.env.PI_SUBAGENT_PROCESS_LEASE = previousLease;
+		process.argv = argv;
+	});
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const fallback = snapshotExecutor();
+		let resumed!: () => void, entered!: () => void;
+		const gate = new Promise<void>(resolve => { resumed = resolve; }), removing = new Promise<void>(resolve => { entered = resolve; });
+		const app = harness(async (call) => {
+			if (call.command === "git" && call.args[1] === "remove") {
+				entered(); await gate;
+				await rm(checkout, { recursive: true });
+			}
+			return fallback(call);
+		}, (path, operation) => owner.guardRemoval(path, operation));
+		// A failed removal operation must not leave either ownership layer held.
+		await assert.rejects(owner.guardRemoval(checkout, async () => { throw new Error("removal failed"); }), /removal failed/);
+		(await admission.reserve("after-failure", key))();
+		const removal = app.command("--force", context());
+		try {
+			await removing;
+			await assert.rejects(other.launch({ command: "true", access: "write", callId: "race", callEntryId: "entry", sessionId: "other", sessionFile: null, cwd: key, checkout: key },
+				{ runtimeMs: 5000, outputBytes: 4096, concurrency: 4, retainedJobs: 100 }), { code: "ELOCKED" });
+			assert.equal(request.mock.callCount(), 0);
+			await assert.rejects(admission.reserve("conflict", key), /active writer/);
+		} finally { resumed(); await removal; }
+		await assert.rejects(realpath(checkout), { code: "ENOENT" });
+		assert.equal(await withWorktreeLock(store, async () => true), true);
+		(await admission.reserve("after-removal", key))();
+		await mkdir(checkout);
+	});
+});
+
+async function recoveryFixture(t: test.TestContext) {
+	const store = await mkdtemp(join(tmpdir(), "pi-done-recovery-"));
+	t.after(() => rm(store, { recursive: true, force: true }));
+	const key = await realpath(checkout);
+	const admission = checkoutAdmission({ on() {}, exec: async () => ({ code: 0, stdout: key + "\n" }) });
+	const manager = new CommandManager(store, admission);
+	const ctx = context();
+	const spec: JobSpec = { version: 1, id: randomUUID(), token: randomUUID(), callId: "call", callEntryId: "launch", sessionId: ctx.sessionManager.getSessionId(), sessionFile: null,
+		createdAt: Date.now() - 60_000, cwd: key, checkout: key, workspaceId: "w1", socketPath: "/tmp/fixture.sock", command: "true", access: "write", runtimeMs: 5000, outputBytes: 4096 };
+	const dir = join(store, spec.id);
+	await mkdir(dir, { mode: 0o700 }); await writePrivate(join(dir, "spec.json"), spec);
+	const other = { ...spec, id: randomUUID(), token: randomUUID(), checkout: await realpath(mainCheckoutDir) };
+	await mkdir(join(store, other.id), { mode: 0o700 }); await writePrivate(join(store, other.id, "spec.json"), other);
+	const choices: string[][] = [], notifications: string[] = [], answers: Array<string | undefined> = [];
+	ctx.ui.select = async (_title, options) => {
+		// Recovery dialogs must run outside both removal locks.
+		await withWorktreeLock(checkout, () => withWorktreeLock(store, async () => {}));
+		choices.push(options); return answers.shift();
+	};
+	ctx.ui.input = async () => { await withWorktreeLock(checkout, () => withWorktreeLock(store, async () => {})); return answers.shift(); };
+	ctx.ui.notify = message => { notifications.push(message); };
+	return { store, manager, ctx, spec, dir, other, choices, notifications, answers };
+}
+
+for (const force of ["", "--force"])
+test(`/done ${force} reuses scoped recovery and makes one fresh attempt after typed release`, async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		Object.assign(f.ctx, { mode: "rpc" });
+		f.answers.push("Cancel and recheck", "Recheck proof", "Release protection despite this risk", f.spec.id);
+		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
+		await app.command(force, f.ctx);
+		assert.equal(f.choices[0]![0], "Keep protection");
+		assert.deepEqual(JSON.parse(await readFile(join(f.dir, "cancel.json"), "utf8")), { id: f.spec.id, token: f.spec.token });
+		assert.equal((await f.manager.get(f.spec.id)).state, "unknown");
+		assert.equal((await f.manager.get(f.spec.id)).released, true);
+		assert.equal((await f.manager.get(f.other.id)).released, undefined);
+		assert.equal(app.calls.filter(call => call.args[1] === "list" && call.command === "git").length, 2);
+		assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
+		assert.ok(app.inherited[0]!.length === 2 && app.inherited[0]!.every(fd => Number.isInteger(fd) && fd >= 0));
+		assert.ok(app.inherited[1]!.length === 1 && app.inherited[1]![0]! >= 0);
+		assert.deepEqual(app.lockInodes, [[(await stat(checkout + ".lock")).ino, (await stat(f.store + ".lock")).ino], [(await stat(mainCheckoutDir + ".lock")).ino]]);
+	});
+});
+
+test("/done recovery accepts real completion proof without writing a release", async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		const select = f.ctx.ui.select;
+		f.ctx.ui.select = async (title, options) => {
+			await select(title, options);
+			await recordNonDispatch(await readJob(f.dir), new HerdrRequestError("closed", "not sent", false));
+			return "Recheck proof";
+		};
+		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
+		await app.command("--force", f.ctx);
+		assert.equal((await f.manager.get(f.spec.id)).released, undefined);
+		assert.match(f.notifications.at(-1)!, /Verified completion/);
+		assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
+	});
+});
+
+for (const choice of [undefined, "Keep protection", "wrong-id", "non-ui", "record-lock", "store-lock", "checkout-lock"])
+test(`/done recovery preserves protection for ${choice ?? "Escape"}`, async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
+		if (choice === "wrong-id") f.answers.push("Release protection despite this risk", "wrong");
+		else f.answers.push(choice);
+		if (choice === "non-ui") Object.assign(f.ctx, { hasUI: false });
+		const run = () => app.command("--force", f.ctx);
+		if (choice === "store-lock" || choice === "checkout-lock") {
+			await withWorktreeLock(choice === "store-lock" ? f.store : checkout, async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
+			assert.equal(f.choices.length, 0);
+		} else if (choice === "record-lock") {
+			// A held start lock cannot be stolen, even after typed consent.
+			f.answers.splice(0, 1, "Release protection despite this risk", f.spec.id);
+			await withWorktreeLock(join(f.dir, "spec.json"), async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
+		} else if (choice === "wrong-id" || choice === "non-ui") await assert.rejects(run(), /exact command ID|Active or unknown/);
+		else await run();
+		assert.equal((await f.manager.get(f.spec.id)).released, undefined);
+		assert.equal(app.calls.some(call => call.args[1] === "remove"), false);
+	});
+});
+
+for (const change of ["branch", "session", "lifecycle", "pane", "checkout", "worktrees", "ownership"])
+test(`/done revalidates ${change} after recovery and never loops over fresh failures`, async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		let recovered = false;
+		const fallback = snapshotExecutor();
+		const app = harness(call => {
+			if (recovered && change === "pane" && call.args[0] === "pane") return ok(JSON.stringify({ result: { pane: { pane_id: "other" } } }));
+			if (recovered && change === "checkout" && call.args.includes("--git-common-dir")) return ok(mainCheckoutDir + "/other.git\n");
+			if (recovered && change === "worktrees" && call.args[0] === "worktree" && call.args[1] === "list") return ok(`worktree ${mainCheckoutDir}\0HEAD a\0\0`);
+			return fallback(call);
+		}, (path, operation) => f.manager.guardRemoval(path, operation), async (path, ctx, check) => {
+			const result = await f.manager.recoverRemoval(path, ctx, check);
+			recovered = true;
+			if (change === "branch") (f.ctx.sessionManager as SessionManager).appendMessage({ role: "user", content: "changed", timestamp: Date.now() });
+			if (change === "session") t.mock.method(f.ctx.sessionManager, "getSessionId", () => "other-session");
+			if (change === "lifecycle") app.events.get("session_before_switch")!();
+			if (change === "ownership") {
+				const spec = { ...f.spec, id: randomUUID(), token: randomUUID() };
+				await mkdir(join(f.store, spec.id), { mode: 0o700 }); await writePrivate(join(f.store, spec.id, "spec.json"), spec);
+			}
+			return result;
+		});
+		f.answers.push("Release protection despite this risk", f.spec.id);
+		await assert.rejects(app.command("--force", f.ctx), /lifecycle changed|identity changed|does not own|registered linked checkout|Active or unknown/);
+		assert.equal(f.choices.length, 1);
+		assert.equal(app.calls.some(call => call.args[1] === "remove"), false);
+	});
+});
+
+test("/done never retries once removal may have started, even for an ownership-shaped failure", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const fallback = snapshotExecutor();
+		let recovery = 0;
+		const app = harness(call => {
+			if (call.args[1] === "remove") throw new CommandRemovalBlocked("mutation already started");
+			return fallback(call);
+		}, undefined, async () => { recovery++; return true; });
+		await assert.rejects(app.command("--force", context()), /mutation already started/);
+		assert.equal(recovery, 0);
+		assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
+	});
+});
+
+test("/done requires separate consent for each blocking command in its checkout", async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		const second = { ...f.spec, id: randomUUID(), token: randomUUID() };
+		await mkdir(join(f.store, second.id), { mode: 0o700 }); await writePrivate(join(f.store, second.id, "spec.json"), second);
+		f.answers.push("Release protection despite this risk", "Release protection despite this risk");
+		f.ctx.ui.input = async (_title, placeholder) => placeholder;
+		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
+		await app.command("--force", f.ctx);
+		assert.equal(f.choices.length, 2);
+		for (const id of [f.spec.id, second.id]) assert.equal((await f.manager.get(id)).released, true);
+		assert.equal((await f.manager.get(f.other.id)).released, undefined);
+		assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
+	});
+});
+
+test("/done without a user interface cannot silently confirm normal removal", async () => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const ctx = context(); Object.assign(ctx, { hasUI: false });
+		const app = harness(snapshotExecutor());
+		await assert.rejects(app.command("", ctx), /user interface for confirmation/);
+		assert.equal(app.calls.length, 0);
+	});
+});
+
+for (const force of ["", "--force"]) for (const mismatch of ["pane", "workspace", "pane-checkout"])
+test(`/done ${force} rejects a mismatched ${mismatch} before recovery for a blocked checkout`, async (t) => {
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const f = await recoveryFixture(t);
+		Object.assign(f.ctx, { mode: "rpc" });
+		f.answers.push("Cancel and recheck", "Release protection despite this risk", f.spec.id);
+		const fallback = snapshotExecutor();
+		const app = harness(call => {
+			if (call.args[0] === "pane" && mismatch !== "workspace") return ok(JSON.stringify({ result: { pane: {
+				pane_id: mismatch === "pane" ? "other" : "p1", tab_id: "w1:t1", workspace_id: "w1", cwd: mismatch === "pane-checkout" ? mainCheckoutDir : checkout,
+			} } }));
+			if (call.args[0] === "workspace" && mismatch === "workspace") return ok(JSON.stringify({ result: { workspace: { workspace_id: "w1", worktree: {
+				checkout_path: mainCheckoutDir, repo_root: mainCheckoutDir, repo_key: join(mainCheckoutDir, ".git"), is_linked_worktree: true,
+			} } } }));
+			return fallback(call);
+		}, (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
+		await assert.rejects(app.command(force, f.ctx), /does not own/);
+		assert.equal(f.choices.length, 0);
+		for (const file of ["cancel.json", "released.json"]) await assert.rejects(readFile(join(f.dir, file)), { code: "ENOENT" });
+		assert.equal(app.calls.some(call => call.args[1] === "remove"), false);
+	});
+});
+
+for (const exitCode of [0, 7])
+test(`/done bounds stderr drain after Git exits with ${exitCode}, not while Git is alive`, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-done-drain-")), store = join(root, "store");
+	await mkdir(store, { mode: 0o700 });
+	const previousPath = process.env.PATH, previousRoot = process.env.DRAIN_ROOT;
+	process.env.PATH = root + ":" + previousPath; process.env.DRAIN_ROOT = root;
+	const waitForFile = async (name: string) => {
+		for (let n = 0; n < 100; n++) {
+			try { await readFile(join(root, name)); return; }
+			catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+			await delay(20);
+		}
+		assert.fail(`Fixture did not create ${name}`);
+	};
+	const descendant = `const fs = require("node:fs"), root = process.env.DRAIN_ROOT;
+process.stderr.on("error", () => {});
+fs.writeFileSync(root + "/ready", "ready");
+const timer = setInterval(() => {
+ if (fs.existsSync(root + "/stop")) { clearInterval(timer); process.stderr.destroy(); fs.writeFileSync(root + "/stopped", "stopped"); }
+ else process.stderr.write("descendant diagnostic\\n");
+}, 20);`;
+	await writeFile(join(root, "git"), `#!${process.execPath}
+if (process.argv[2] === "pull") process.exit(0);
+const fs = require("node:fs"), root = process.env.DRAIN_ROOT;
+require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(descendant)}], { stdio: ["ignore", "ignore", 2] }).unref();
+const timer = setInterval(() => {
+ if (fs.existsSync(root + "/exit")) { clearInterval(timer); process.stderr.write("Git final diagnostic\\n", () => process.exit(${exitCode})); }
+}, 20);
+`, { mode: 0o700 });
+	t.after(async () => {
+		if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+		if (previousRoot === undefined) delete process.env.DRAIN_ROOT; else process.env.DRAIN_ROOT = previousRoot;
+		await rm(root, { recursive: true, force: true });
+	});
+	await withHerdrEnvironment("1", "w1:t1", async () => {
+		const key = await realpath(checkout);
+		const manager = new CommandManager(store, checkoutAdmission({ on() {}, exec: async () => ({ code: 0, stdout: key + "\n" }) }));
+		const app = harness(snapshotExecutor(), (path, operation) => manager.guardRemoval(path, operation), undefined, runLockedGit);
+		const ctx = context(); Object.assign(ctx, { cwd: checkout });
+		let finished = false;
+		const result = app.command("--force", ctx).then(() => undefined, error => error as Error).finally(() => { finished = true; });
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await waitForFile("ready");
+			await delay(200);
+			assert.equal(finished, false, "no drain deadline while Git is alive");
+			for (const path of [checkout, store]) await assert.rejects(withWorktreeLock(path, async () => {}), { code: "ELOCKED" });
+			await writeFile(join(root, "exit"), "exit");
+			const failure = await Promise.race([result, new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error("Git exited but stderr prevented completion")), 2000); })]);
+			if (exitCode === 0) assert.equal(failure, undefined);
+			else { assert.match(failure!.message, /failed \(7\):[\s\S]*Git final diagnostic/); assert.ok(Buffer.byteLength(failure!.message) < 8500); }
+			for (const path of [checkout, store]) await withWorktreeLock(path, async () => {});
+		} finally {
+			clearTimeout(deadline);
+			await writeFile(join(root, "exit"), "exit"); await writeFile(join(root, "stop"), "stop");
+			await result;
+			await waitForFile("stopped");
+		}
 	});
 });

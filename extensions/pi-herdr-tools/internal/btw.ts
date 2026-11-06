@@ -43,7 +43,7 @@ import {
 	MergeCoordinator,
 	type MergeRequest,
 } from "./merge.ts";
-import { HELP_TEXT, parseBtwCommand } from "./router.ts";
+import { completeBtwCommand, HELP_TEXT, parseBtwCommand } from "./router.ts";
 import { configuredTaskRoutes } from "./task-models.ts";
 
 export const BTW_TASK = {
@@ -201,6 +201,7 @@ async function configureChild(
 
 	// Child-side /btw: reviewed merge back to the parent, plus help.
 	pi.registerCommand("btw", {
+		getArgumentCompletions: (prefix) => completeBtwCommand(prefix, true),
 		description:
 			"Side-thread /btw: fold this side thread into the parent and continue there (/btw merge <prompt...>)",
 		handler: async (args, ctx) => {
@@ -470,6 +471,7 @@ export async function registerBtwExtension(
 	});
 
 	pi.registerCommand("btw", {
+		getArgumentCompletions: (prefix) => completeBtwCommand(prefix),
 		// Pi has no argumentHint field for extension commands (only builtins and
 		// prompt templates); the TUI renders template hints as "hint — description",
 		// so we bake the same shape into the description.

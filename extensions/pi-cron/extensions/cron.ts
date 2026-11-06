@@ -236,13 +236,23 @@ export default function cronExtension(pi: ExtensionAPI, options: CronExtensionOp
 	});
 
 	pi.registerCommand("cron", {
+		getArgumentCompletions: (prefix) => {
+			const nested = /^(\s*run\s+)(\S*)$/.exec(prefix);
+			if (!nested) return "run".startsWith(prefix.trimStart())
+				? [{ value: prefix.slice(0, prefix.length - prefix.trimStart().length) + "run", label: "run", description: "Start a configured job now" }] : [];
+			const loaded = configStore.loadSync();
+			if (loaded.status !== "ok") return [];
+			return loaded.value.jobs.filter((job) => job.id.startsWith(nested[2]!))
+				.map((job) => ({ value: nested[1] + job.id, label: job.id, description: `Run this job now${jobEnabled(job) ? "" : " (schedule disabled)"}` }));
+		},
 		description: "list scheduled jobs, run one now, or enable/disable it",
 		handler: async (args, ctx) => {
 			latestCtx = ctx;
 			const config = loadConfig(ctx);
 			if (!config) return;
-			const [verb, target] = args.trim().split(/\s+/);
+			const [verb, target, extra] = args.trim().split(/\s+/);
 			if (verb === "run") {
+				if (extra) { ctx.ui.notify("Usage: /cron run <job-id>", "error"); return; }
 				const job = config.jobs.find((candidate) => candidate.id === target);
 				if (!job) {
 					ctx.ui.notify(target ? `No job ${target} in ${configStore.path}.` : "Usage: /cron run <job-id>", "error");

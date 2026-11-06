@@ -10,6 +10,19 @@ initTheme("dark");
 const TAGGED = { fg: (color: string, text: string) => `<${color}>${text}</${color}>`, bg: (color: string, text: string) => `<${color}>${text}</${color}>`, bold: (text: string) => `<b>${text}</b>` };
 const plainLines = (component: Box, width: number) => component.render(width).map((line) => line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, "").trimEnd());
 
+test("subagent completions preserve the full prune prefix and stop at argument boundaries", async () => {
+	const h = harness();
+	const items = await h.complete("prune c");
+	assert.equal(items?.[0]?.value, "prune cancel");
+	assert.match(items![0]!.description!, /Stop/);
+	await h.run(items![0]!.value);
+	assert.match(h.notices.at(-1)!.message, /No prune operation/);
+	assert.deepEqual(await h.complete("prune cancel "), []);
+	assert.deepEqual(await h.complete("prune  c"), []); // The handler accepts one internal space.
+	assert.deepEqual(await h.complete("unknown"), []);
+	assert.equal((await h.complete("  ro"))?.[0]?.value, "  roles");
+});
+
 const WORKING = "Current subagent work";
 type Dialog = { kind: "select" | "editor" | "confirm"; title: string; options?: string[]; prefill?: string };
 type Picker = { component: Component; terminal: { rows: number }; render: (width?: number) => string[]; options: Parameters<ExtensionContext["ui"]["custom"]>[1] };
@@ -22,6 +35,7 @@ function deferred<T>() {
 
 function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "tui" | "rpc" | "print"; inventory?: IsolatedInventory; isolatedError?: Error; direct?: ReturnType<SubagentCommandAdapter["direct"]>; prune?: PrunePlan; discard?: DiscardPlan; cleanup?: { failed: number; skipped: number } } = {}) {
 	let handler!: (args: string, ctx: ExtensionContext) => Promise<void>;
+	let complete!: NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>;
 	const dialogs: Dialog[] = [];
 	const responses: Array<string | undefined | ((dialog: Dialog) => string | undefined | Promise<string | undefined>)> = [];
 	const pickers: Array<((picker: Picker) => void) | undefined> = [];
@@ -144,7 +158,7 @@ function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "
 	const appended: { customType: string; data: unknown }[] = [];
 	let renderEntry!: (entry: { data: unknown }, options: object, theme: typeof TAGGED) => Box | undefined;
 	let renderMessage!: (message: { content: string }, options: object, theme: typeof TAGGED) => Box | undefined;
-	const settlePrune = registerSubagentCommand({ on: (event: string, handler: () => void | Promise<void>) => { events.set(event, handler); }, registerCommand: (_name: string, command: { handler: typeof handler }) => { handler = command.handler; },
+	const settlePrune = registerSubagentCommand({ on: (event: string, handler: () => void | Promise<void>) => { events.set(event, handler); }, registerCommand: (_name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]) => { handler = command.handler as typeof handler; complete = command.getArgumentCompletions!; },
 		sendMessage: (message: { content: string }) => { messages.push(message.content); },
 		appendEntry: (customType: string, data: unknown) => { appended.push({ customType, data }); },
 		registerEntryRenderer: (type: string, renderer: typeof renderEntry) => { assert.equal(type, "pi-subagent-report"); renderEntry = renderer; },
@@ -154,7 +168,7 @@ function harness(options: { keys?: TuiKeybindingsManager; ui?: boolean; mode?: "
 		const result = dialog.options?.find((label) => label.includes(contains));
 		assert.ok(result, `Missing ${contains} in ${dialog.options}`); return result;
 	};
-	return { run: (args = "") => handler(args, ctx), appended, responses, pickers, adapter, statuses,
+	return { run: (args = "") => handler(args, ctx), complete, appended, responses, pickers, adapter, statuses,
 		event: (name: string) => {
 			assert.ok(events.has(name));
 			const result = events.get(name)!();
@@ -355,6 +369,14 @@ test("menu mouse coordinates omit the title offset in a short terminal", async (
 	}, (picker) => { picker.component.handleInput!("\x1b"); });
 	await h.run();
 	assert.match(h.reports[0]!, /\*\*ID:\*\* `direct`/);
+});
+
+test("report-only mode shows held admission even when isolated inventory fails", async () => {
+	const h = harness({ ui: false, isolatedError: new Error("unavailable"), direct: [{ id: "held", name: "held", status: "recovered admission retained", workers: [], tabs: [],
+		admission: { identity: "session/held/token", checkouts: ["/root", "/second"], evidence: "[]", proof: false, canRecover: true } }] });
+	await h.run();
+	assert.ok(h.messages.some((message) => message.includes("session/held/token") && message.includes("/second")));
+	assert.equal(h.dialogs.length, 0);
 });
 
 test("menus open in the editor area and leave the transcript visible above them", async () => {

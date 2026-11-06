@@ -8,7 +8,7 @@ import { DEFAULT_MAX_BYTES, type ExtensionAPI } from "@earendil-works/pi-coding-
 import { createHerdrClient, hasHerdrErrorCode, herdrCommandFailure, startPiAgent } from "@henryqw/pi-herdr";
 import { utf8Prefix } from "./ephemeral.ts";
 import type { PreparedRoleLaunch, ResolvedRoleLaunch } from "./index.ts";
-import { assertPrivateLease, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
+import { isProcessLeaseIdentity, processLeaseIdentity, type ProcessLeaseIdentity, PI_SUBAGENT_PROCESS_LEASE, scanProcessLease } from "./process-lease.ts";
 
 const OPERATION_MS = 30_000;
 const SESSION_LIMIT = 16 * 1024 * 1024;
@@ -274,7 +274,7 @@ export function createDirectSessionReader(sessionFile: string, prompt: string): 
 
 /** `turn` is the prompt's random turn identity; it proves which session turn a record owns.
  * `workspaceId` and `cwd` bind the record to its launching Herdr workspace and checkout. */
-export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string; turn: string; workspaceId: string; cwd: string };
+export type DirectTab = Pick<DirectHandle, "name" | "tabId" | "paneId" | "sessionFile"> & { leasePath: string; turn: string; workspaceId: string; cwd: string; leaseIdentity?: ProcessLeaseIdentity };
 
 /** Allocation evidence is not ownership and must never authorize pane mutation. */
 export type DirectAllocation = Omit<DirectTab, "tabId" | "paneId"> & { label: string; tabId?: string; paneId?: string };
@@ -309,10 +309,12 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 		 * `settled` refuses to close a listed agent that is not idle or done. Only an explicit
 		 * user stop or Close uses `terminate`: after pane absence it signals each holder that a
 		 * per-PID scan still proves holds the exact lease. Other callers only prove. */
-		async stop(tab: Pick<DirectTab, "name" | "tabId" | "paneId" | "leasePath">, current: () => boolean = () => true, mode: "proof" | "settled" | "terminate" = "proof"): Promise<void> {
+		async stop(tab: Pick<DirectTab, "name" | "tabId" | "paneId" | "leasePath" | "leaseIdentity">, current: () => boolean = () => true, mode: "proof" | "settled" | "terminate" = "proof"): Promise<void> {
 			const requireCurrent = () => { if (!current()) throw new Error("Direct task scope changed; reopen /subagent."); };
 			requireCurrent();
-			await assertPrivateLease(tab.leasePath, false);
+			const leaseIdentity = tab.leaseIdentity;
+			if (!isProcessLeaseIdentity(leaseIdentity)) throw new Error("Original process lease identity is missing or invalid; worker stop is not authorized.");
+			await processLeaseIdentity(tab.leasePath, leaseIdentity);
 			const listed = result(await herdr.json(["agent", "list"], options()), "agent_list");
 			if (!Array.isArray(listed.agents)) throw new Error("Malformed Herdr agent list.");
 			const related = listed.agents.map((value) => {
@@ -344,7 +346,12 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			if ((await panes()).some((pane) => pane.pane_id === tab.paneId || pane.tab_id === tab.tabId)) {
 				throw new Error(`Owned pane ${tab.paneId} is still present; termination is unproved.`);
 			}
-			const scan = (pid?: number) => scanProcessLease(tab.leasePath, (args) => pi.exec("lsof", args, { cwd: workingDir, timeout: 3_000 }), pid);
+			const scan = async (pid?: number) => {
+				await processLeaseIdentity(tab.leasePath, leaseIdentity);
+				const holders = await scanProcessLease(tab.leasePath, (args) => pi.exec("lsof", args, { cwd: workingDir, timeout: 3_000 }), pid);
+				await processLeaseIdentity(tab.leasePath, leaseIdentity);
+				return holders;
+			};
 			let holders = await scan();
 			if (mode === "terminate") {
 				for (const [signal, wait] of [["SIGTERM", 250], ["SIGKILL", 100]] as const) {
@@ -391,7 +398,9 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			return true;
 		},
 		/** `resume` reuses a stopped worker's saved session and private lease instead of a new temp directory. */
-		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath">): Promise<DirectHandle> {
+		async start(launch: ResolvedRoleLaunch & Pick<PreparedRoleLaunch, "tools">, name: string, label: string, task: string, signal: AbortSignal, onTab: (tab: DirectTab) => void, requireSuccess = false, resume?: Pick<DirectTab, "sessionFile" | "leasePath" | "leaseIdentity">, onIntent?: (allocation: DirectAllocation) => void): Promise<DirectHandle> {
+			const originalLease = resume?.leaseIdentity;
+			if (resume && !isProcessLeaseIdentity(originalLease)) throw new Error("Original process lease identity is missing or invalid; continuation is not authorized.");
 			const reader = directTaskReader(task, launch.tools);
 			const caller = result(await herdr.json(["pane", "current", "--current"], options(signal)), "pane_current");
 			const pane = object(caller.pane, "calling pane");
@@ -401,13 +410,13 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			let leasePath: string;
 			if (resume) {
 				({ sessionFile, leasePath } = resume);
-				await assertPrivateLease(leasePath, false);
 			} else {
 				const sessionDir = await mkdtemp(join(tmpdir(), "pi-subagent-direct-"));
 				sessionFile = join(sessionDir, "session.jsonl");
 				leasePath = join(sessionDir, "process.lease");
 				await writeFile(leasePath, "", { flag: "wx", mode: 0o600 });
 			}
+			const leaseIdentity = await processLeaseIdentity(leasePath, originalLease);
 			const turn = randomBytes(16).toString("hex");
 			if (reader) {
 				const taskFile = join(dirname(sessionFile), `task-${turn}.md`);
@@ -420,7 +429,8 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			signal.throwIfAborted();
 			// Tab creation is bounded but not session-cancellable: Herdr may create it
 			// before the CLI responds, and aborting the CLI loses the exact tab ID.
-			const allocation: DirectAllocation = { name, workspaceId, cwd: workingDir, label, sessionFile, leasePath, turn };
+			const allocation: DirectAllocation = { name, workspaceId, cwd: workingDir, label, sessionFile, leasePath, leaseIdentity, turn };
+			onIntent?.(allocation); // Durable evidence before creation can outlive this call.
 			let tabId: string;
 			let paneId: string;
 			try {
@@ -443,7 +453,7 @@ export function createDirectHerdr(pi: Pick<ExtensionAPI, "exec">, cwd: string, i
 			} catch (error) { throw new DirectAllocationError(allocation, error); }
 			try {
 				// Record the tab before the agent start can outlive an aborted launch.
-				onTab({ name, tabId, paneId, sessionFile, leasePath, turn, workspaceId, cwd: workingDir });
+				onTab({ name, tabId, paneId, sessionFile, leasePath, leaseIdentity, turn, workspaceId, cwd: workingDir });
 				signal.throwIfAborted();
 				const started = await startPiAgent(herdr, { name, pane: paneId,
 					args: [...sessionArgs, "--session", sessionFile], options: options(signal), shouldRetry: () => false });

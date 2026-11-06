@@ -10,6 +10,8 @@ pi install npm:@henryqw/pi-goal
 
 ## Use
 
+Type `/goal ` to see the `drop` choice. `/goal` without arguments still shows the current goal.
+
 Ask the agent to work toward a goal, for example: "Make this a goal: all tests pass and the README documents `/export`." The agent calls `goal` with action `create`. When the agent stops before completion, Pi sends a hidden continuation, and the agent continues.
 
 | Surface | Type | Purpose |
