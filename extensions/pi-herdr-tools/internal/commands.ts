@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -221,21 +221,31 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 		},
 	});
 	let lifecycle = 0;
+	let pruning: Promise<void> | undefined;
+	const pruneScanTasks = new Set<Promise<void>>();
+	let pruneScan: { ctx: ExtensionContext; generation: number; sessionId: string; leaf: string | null; phase: "scanning" | "ready" | "reviewing"; eligible: Job[]; skipped: string[]; task?: Promise<void> } | undefined;
+	const invalidatePruneScan = () => {
+		if (!pruneScan) return;
+		const scan = pruneScan;
+		pruneScan = undefined;
+		scan.ctx.ui.setStatus("commands-prune", undefined);
+	};
 	const pending = new Set<string>();
 	pi.registerCommand("commands", {
 		getArgumentCompletions: (prefix) => {
 			const items = [
-				{ value: "prune", description: "Select finished outputs for confirmed deletion" },
+				{ value: "prune", description: "Scan or review finished outputs for confirmed deletion" },
 				{ value: "pruned", description: "Inspect retained receipts for deleted output" },
 			];
 			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
 				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
 		},
-		description: "Inspect commands; use prune to select finished outputs for deletion, or pruned to inspect receipts",
+		description: "Inspect commands; use prune to scan or review finished outputs, or pruned to inspect receipts",
 		async handler(args, ctx) {
 			const showPruned = args.trim() === "pruned", batchPrune = args.trim() === "prune";
 			if (args.trim() && !showPruned && !batchPrune) throw new Error("Usage: /commands [prune|pruned]");
 			if (batchPrune && !ctx.hasUI) throw new Error("/commands prune requires a user interface for selection and confirmation.");
+			if (batchPrune && pruning) { ctx.ui.notify("A confirmed pruning operation is still running.", "info"); return; }
 			const generation = lifecycle, sessionId = ctx.sessionManager.getSessionId(), leaf = ctx.sessionManager.getLeafId();
 			const check = () => {
 				if (generation !== lifecycle || sessionId !== ctx.sessionManager.getSessionId() || leaf !== ctx.sessionManager.getLeafId()) {
@@ -244,78 +254,127 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 			};
 			const checkPrune = (spec: JobSpec) => {
 				check();
-				if (spec.sessionId !== sessionId || !ctx.isIdle() || ctx.hasPendingMessages() || pending.has(spec.id) ||
-					!ctx.sessionManager.getBranch().some(entry => entry.id === spec.callEntryId)) {
-					throw new Error("Pruning requires the idle launching session and branch, with no local pending delivery or active follow-up.");
+				if (!ctx.isIdle() || ctx.hasPendingMessages() || pending.has(spec.id) ||
+					(spec.sessionId === sessionId && !ctx.sessionManager.getBranch().some(entry => entry.id === spec.callEntryId))) {
+					throw new Error("Pruning requires an idle session, no local pending delivery or active follow-up, and the launch on the current branch.");
 				}
 			};
+			const checkPruneScope = async (spec: JobSpec) => {
+				checkPrune(spec);
+				if (spec.sessionId !== sessionId) {
+					try { await lstat(spec.checkout); }
+					catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+						checkPrune(spec);
+						return;
+					}
+					throw new Error("A different launching session has an existing checkout; output is preserved.");
+				}
+			};
+			if (batchPrune) {
+				if (pruneScan && (pruneScan.generation !== generation || pruneScan.sessionId !== sessionId || pruneScan.leaf !== leaf)) {
+					pruneScan = undefined;
+					ctx.ui.setStatus("commands-prune", undefined);
+				}
+				if (!pruneScan) {
+					const scan = { ctx, generation, sessionId, leaf, phase: "scanning" as "scanning" | "ready" | "reviewing", eligible: [] as Job[], skipped: [] as string[], task: undefined as Promise<void> | undefined };
+					pruneScan = scan;
+					ctx.ui.setStatus("commands-prune", "Scanning command outputs...");
+					scan.task = (async () => {
+						const inventory = (await inventoryJobs(manager.root)).filter(item => !item.job?.pruned);
+						for (const item of inventory) {
+							check();
+							if (pruneScan !== scan) return;
+							try {
+								if (!item.job || !terminal(item.job.state)) throw new Error("Completion is not verified.");
+								await checkPruneScope(item.job.spec);
+								const delivered = await readPrivate(join(item.job.dir, "delivered.json")) as { id?: unknown; runnerId?: unknown } | undefined;
+								if (delivered?.id !== item.job.spec.id || delivered.runnerId !== (item.job.claim?.runnerId ?? null)) throw new Error("Completion delivery is pending or unverified.");
+								scan.eligible.push(item.job);
+							} catch (error) { scan.skipped.push(`${item.id ?? "Unverified record"}: ${error instanceof Error ? error.message : "Cannot verify output."}`); }
+						}
+						check();
+						if (pruneScan !== scan) return;
+						scan.phase = "ready";
+						ctx.ui.setStatus("commands-prune", "Command prune ready · /commands prune");
+						ctx.ui.notify("Command prune scan ready. Run /commands prune to review it. No output was deleted.", "info");
+					})().catch(error => {
+						if (pruneScan === scan && generation === lifecycle) ctx.ui.notify(`Command prune scan stopped: ${error instanceof Error ? error.message : "Unknown error."}`, "warning");
+					}).finally(() => {
+						pruneScanTasks.delete(scan.task!);
+						if (pruneScan === scan && scan.phase === "scanning") { pruneScan = undefined; ctx.ui.setStatus("commands-prune", undefined); }
+					});
+					pruneScanTasks.add(scan.task);
+					return;
+				}
+				const scan = pruneScan;
+				if (scan.phase !== "ready") { ctx.ui.notify("Command prune scan or review is still running.", "info"); return; }
+				scan.phase = "reviewing";
+				const { eligible, skipped } = scan;
+				try {
+					if (skipped.length) ctx.ui.notify(`Skipped ${skipped.length} output(s):\n${skipped.join("\n")}`, "warning");
+					if (!eligible.length) { ctx.ui.notify("No eligible finished outputs to prune.", "info"); return; }
+					const selected = new Set<Job>();
+					const label = (job: Job) => `${job.spec.id} (${job.state}) · ${JSON.stringify(job.outputPath)}`;
+					for (;;) {
+						const rows = eligible.map(job => `${selected.has(job) ? "[x]" : "[ ]"} ${label(job)}`);
+						const review = `Review selection (${selected.size})`;
+						const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review]);
+						check();
+						if (!answer || answer === "Cancel") return;
+						if (answer === review) break;
+						if (answer === "Select all") for (const job of eligible) selected.add(job);
+						else if (answer === "Clear selection") selected.clear();
+						else {
+							const job = eligible[rows.indexOf(answer)];
+							if (job && !selected.delete(job)) selected.add(job);
+						}
+					}
+					if (!selected.size) return;
+					const chosen = eligible.filter(job => selected.has(job));
+					// Keep the exact selection in scrollable rows, not an unbounded dialog title.
+					for (;;) {
+						const answer = await selectCommandOutput(ctx, `Delete these ${chosen.length} saved output(s)? Select an output to inspect its path.\n${pruneWarning}`,
+							["Keep output", ...chosen.map(label), "Delete output despite this risk"]);
+						check();
+						if (!answer || answer === "Keep output") return;
+						if (answer === "Delete output despite this risk") break;
+						const job = chosen.find(job => label(job) === answer);
+						if (job) {
+							if (ctx.mode === "tui") await showCommandText(ctx, "Selected output", label(job));
+							else ctx.ui.notify(`Selected output: ${label(job)}`, "info");
+							check();
+						}
+					}
+					if (pruning) { ctx.ui.notify("A confirmed pruning operation is still running.", "info"); return; }
+					ctx.ui.setStatus("commands-prune", "Pruning command outputs...");
+					pruning = (async () => {
+						const outcomes: string[] = [];
+						let removed = 0, failed = 0, retained = 0;
+						for (const job of chosen) {
+							try { await checkPruneScope(job.spec); }
+							catch (error) { retained++; outcomes.push(`Skipped ${job.spec.id}: ${error instanceof Error ? error.message : "Eligibility could not be confirmed."}`); continue; }
+							try {
+								await pruneJob(job.dir, job.spec, () => checkPrune(job.spec), () => checkPruneScope(job.spec));
+								removed++; outcomes.push(`Pruned ${job.spec.id}`);
+							} catch (error) { failed++; outcomes.push(`Failed ${job.spec.id}: ${error instanceof Error ? error.message : "Output removal could not be confirmed."}`); }
+						}
+						ctx.ui.notify(`Pruned ${removed}; skipped ${retained}; failed ${failed}.\n${outcomes.join("\n")}\nUse /commands pruned to inspect retained records.`, failed || retained ? "warning" : "info");
+					})().catch(error => ctx.ui.notify(`Pruning stopped: ${error instanceof Error ? error.message : "Unknown error."}`, "error"))
+						.finally(() => { ctx.ui.setStatus("commands-prune", undefined); pruning = undefined; });
+					return;
+				} finally {
+					if (pruneScan === scan) { pruneScan = undefined; if (!pruning) ctx.ui.setStatus("commands-prune", undefined); }
+				}
+			}
 			const inventory = (await inventoryJobs(manager.root)).filter(item => showPruned ? item.job?.pruned : !item.job?.pruned);
 			check();
 			if (!ctx.hasUI) {
 				process.stdout.write(JSON.stringify(inventory.map(item => item.job ? summary(item.job) : { id: item.id, category: item.category, diagnostic: item.diagnostic })) + "\n");
 				return;
 			}
-			if (batchPrune) {
-				const eligible: Job[] = [], skipped: string[] = [];
-				for (const item of inventory) {
-					try {
-						if (!item.job || !terminal(item.job.state)) throw new Error("Completion is not verified.");
-						checkPrune(item.job.spec);
-						const delivered = await readPrivate(join(item.job.dir, "delivered.json")) as { id?: unknown; runnerId?: unknown } | undefined;
-						if (delivered?.id !== item.job.spec.id || delivered.runnerId !== (item.job.claim?.runnerId ?? null)) throw new Error("Completion delivery is pending or unverified.");
-						eligible.push(item.job);
-					} catch (error) { skipped.push(`${item.id ?? "Unverified record"}: ${error instanceof Error ? error.message : "Cannot verify output."}`); }
-				}
-				check();
-				if (skipped.length) ctx.ui.notify(`Skipped ${skipped.length} output(s):\n${skipped.join("\n")}`, "warning");
-				if (!eligible.length) { ctx.ui.notify("No eligible finished outputs to prune.", "info"); return; }
-				const selected = new Set<Job>();
-				const label = (job: Job) => `${job.spec.id} (${job.state}) · ${JSON.stringify(job.outputPath)}`;
-				for (;;) {
-					const rows = eligible.map(job => `${selected.has(job) ? "[x]" : "[ ]"} ${label(job)}`);
-					const review = `Review selection (${selected.size})`;
-					const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review]);
-					check();
-					if (!answer || answer === "Cancel") return;
-					if (answer === review) break;
-					if (answer === "Select all") for (const job of eligible) selected.add(job);
-					else if (answer === "Clear selection") selected.clear();
-					else {
-						const job = eligible[rows.indexOf(answer)];
-						if (job && !selected.delete(job)) selected.add(job);
-					}
-				}
-				if (!selected.size) return;
-				const chosen = eligible.filter(job => selected.has(job));
-				// Keep the exact selection in scrollable rows, not an unbounded dialog title.
-				for (;;) {
-					const answer = await selectCommandOutput(ctx, `Delete these ${chosen.length} saved output(s)? Select an output to inspect its path.\n${pruneWarning}`,
-						["Keep output", ...chosen.map(label), "Delete output despite this risk"]);
-					check();
-					if (!answer || answer === "Keep output") return;
-					if (answer === "Delete output despite this risk") break;
-					const job = chosen.find(job => label(job) === answer);
-					if (job) {
-						if (ctx.mode === "tui") await showCommandText(ctx, "Selected output", label(job));
-						else ctx.ui.notify(`Selected output: ${label(job)}`, "info");
-						check();
-					}
-				}
-				const outcomes: string[] = [];
-				let removed = 0, failed = 0, retained = 0;
-				for (const job of chosen) {
-					try { checkPrune(job.spec); }
-					catch (error) { retained++; outcomes.push(`Skipped ${job.spec.id}: ${(error as Error).message}`); continue; }
-					try {
-						await pruneJob(job.dir, job.spec, () => checkPrune(job.spec));
-						removed++; outcomes.push(`Pruned ${job.spec.id}`);
-					} catch (error) { failed++; outcomes.push(`Failed ${job.spec.id}: ${error instanceof Error ? error.message : "Output removal could not be confirmed."}`); }
-				}
-				ctx.ui.notify(`Pruned ${removed}; skipped ${retained}; failed ${failed}.\n${outcomes.join("\n")}\nUse /commands pruned to inspect retained records.`, failed || retained ? "warning" : "info");
-				return;
-			}
 			if (!inventory.length) { ctx.ui.notify(showPruned ? "No pruned command receipts." : "No unpruned commands. Use /commands pruned to inspect receipts.", "info"); return; }
-			const selected = await ctx.ui.select(showPruned ? "Pruned command receipts" : "Background commands", inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`));
+			const selected = await selectCommandOutput(ctx, showPruned ? "Pruned command receipts" : "Background commands", inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`));
 			check();
 			if (!selected) return;
 			const item = inventory[Number(selected.split(".")[0]) - 1];
@@ -334,11 +393,11 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 				else ctx.ui.notify(`${metadata}\n${output}`, "info");
 				check();
 			} else if (action === "Prune finished output") {
-				checkPrune(spec);
+				await checkPruneScope(spec);
 				const answer = await ctx.ui.select(`Delete saved output for ${spec.id}? ${pruneWarning}`, ["Keep output", "Delete output despite this risk"]);
-				checkPrune(spec);
+				await checkPruneScope(spec);
 				if (answer !== "Delete output despite this risk") return;
-				await pruneJob(dir, spec, () => checkPrune(spec));
+				await pruneJob(dir, spec, () => checkPrune(spec), () => checkPruneScope(spec));
 				ctx.ui.notify("Output has been pruned. The command is hidden from the default list. Use /commands pruned to inspect its retained records.", "info");
 			} else if (action === "Cancel and recheck" || action === "Recheck proof") {
 				await recoverCommand(manager, spec, ctx, check, action === "Cancel and recheck");
@@ -393,13 +452,20 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 		} catch (error) { report(ctx, error); }
 	};
 	pi.on("session_start", async (_event, ctx) => {
-		lifecycle++; context = ctx;
+		lifecycle++; invalidatePruneScan(); context = ctx;
 		if (timer) clearInterval(timer);
 		timer = setInterval(() => { if (!scanning) scanning = scan().finally(() => { scanning = undefined; }); }, 1000); timer.unref();
 		await manager.refresh([await checkoutKey(pi, ctx)]);
 	});
-	pi.on("session_tree", () => { lifecycle++; });
-	pi.on("session_before_switch", () => { lifecycle++; });
-	pi.on("session_shutdown", async () => { lifecycle++; context = undefined; if (timer) clearInterval(timer); timer = undefined; await scanning; });
+	pi.on("session_tree", () => { lifecycle++; invalidatePruneScan(); });
+	pi.on("session_before_switch", () => { lifecycle++; invalidatePruneScan(); });
+	pi.on("session_shutdown", async () => {
+		lifecycle++;
+		invalidatePruneScan();
+		context = undefined;
+		if (timer) clearInterval(timer);
+		timer = undefined;
+		await Promise.all([scanning, pruning, ...pruneScanTasks]);
+	});
 	return manager;
 }

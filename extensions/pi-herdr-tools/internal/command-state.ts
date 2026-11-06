@@ -324,7 +324,7 @@ export async function startUnreleased<T>(dir: string, spec: JobSpec, start: () =
 	});
 }
 // Only the human command handler calls this after explicit warned confirmation.
-export async function pruneJob(dir: string, expected: JobSpec, check: () => void): Promise<void> {
+export async function pruneJob(dir: string, expected: JobSpec, check: () => void, checkScope: () => Promise<void>): Promise<void> {
 	await checkSpec(dir, expected);
 	await withWorktreeLock(join(dir, "spec.json"), () => withWorktreeLock(dir, async () => {
 		const verify = async () => {
@@ -338,6 +338,7 @@ export async function pruneJob(dir: string, expected: JobSpec, check: () => void
 			const delivered = record(raw);
 			if (delivered.id !== expected.id || delivered.runnerId !== (job.claim?.runnerId ?? null)) throw new Error("Foreign completion delivery record; output is preserved.");
 			await outputTail(job);
+			await checkScope();
 			check();
 			return job;
 		};
