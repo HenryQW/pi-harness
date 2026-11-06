@@ -36,7 +36,29 @@ When the goal has no deliverables, `complete` needs one evidence item with deliv
 
 ## Flow
 
-![Pi Goal flow: a user prompt starts the agent run with hidden goal context; when the agent stops, stop guards add a hidden continuation or let Pi settle](./docs/goal-flow.svg)
+```mermaid
+flowchart TD
+    accTitle: Pi Goal continuation flow
+    accDescr: A prompt starts work with hidden goal context. Each stop reads the goal from the current branch. Completion needs evidence for each deliverable; drop also ends the goal. Another extension can supply the next turn. Otherwise, continuation needs an active goal, a user interface, and a completed run. Abort, error, or compaction stops continuation. Budget and the 20-continuation limit apply before a wait for a live delegated result. Without a pending result, repeated tool activity stops continuation. Stop limits do not complete the goal.
+    Prompt["User prompt"] --> Context["Add hidden goal context"]
+    Context --> Work["Agent work; goal tool actions"]
+    Work --> Stop["Agent stops; read branch goal"]
+    Stop --> Shared{"Another extension continues?"}
+    Shared -->|Yes| Work
+    Shared -->|No| Eligible{"Active goal, interface, completed run?"}
+    Eligible -->|No| Settle["Settle without goal continuation"]
+    Eligible -->|Yes| Limit{"Budget used or 20 continuations?"}
+    Limit -->|Yes| Hold["Settle; goal stays active"]
+    Limit -->|No| Pending{"Live delegated result pending?"}
+    Pending -->|Yes| Wait["Wait; no empty continuation"]
+    Wait -->|Result or failure starts a turn| Work
+    Pending -->|No| Progress{"Same tool activity twice?"}
+    Progress -->|Yes| Hold
+    Progress -->|No| Continue["Hidden continuation with goal context"]
+    Continue --> Work
+```
+
+Read the [static goal flow diagram](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-goal/docs/goal-flow.svg) on npm or without a Mermaid renderer.
 
 1. Before each user prompt, Pi Goal adds the goal, the budget numbers, and the completion rules as hidden context.
 2. When the agent stops, Pi Goal checks the stop limits. If no limit applies and no delegated result is pending, it adds a hidden continuation with the same goal context.

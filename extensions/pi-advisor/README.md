@@ -46,7 +46,32 @@ The advisor is off by default.
 
 ## Flow
 
-![Pi Advisor flow: after the run settles, review gates decide whether the advisor runs; a PASS or notes reply ends the review, and a blocker sends one follow-up message that starts a new turn](./docs/advisor-flow.svg)
+```mermaid
+flowchart TD
+    accTitle: Pi Advisor review flow
+    accDescr: A user prompt or triggering custom message starts a run. Other extensions can continue that same run before it settles. Review needs the advisor on for the branch, a user interface, a recorded run start, tool calls, and a completed run without abort. The background review gets only the latest user prompt and bounded run record, with no tools. No route means no session-model fallback. A blocker starts a new run only when the editor is empty and no blocker follow-up was sent since the latest user prompt. Cancelled or stale replies are ignored.
+    Run["Agent run"] --> Settle["Run settles"]
+    Run -->|Other extension continues| Run
+    Settle --> Gates{"All review conditions met?"}
+    Gates -->|No| End["No new turn"]
+    Gates -->|Yes| Route{"Review route available?"}
+    Route -->|No| Missing["Warn; no session-model fallback"]
+    Missing --> End
+    Route -->|Yes| Review["Background review; no tools; 90 seconds"]
+    Review -->|Cancelled or stale| End
+    Review -->|Timeout or model error| Warning["Show warning"]
+    Warning --> End
+    Review -->|Reply| Valid{"Valid reply within 8,000 characters?"}
+    Valid -->|No| Malformed["Warn once per session"]
+    Malformed --> End
+    Valid -->|Yes| Notes["Show PASS or graded notes"]
+    Notes --> Blocker{"Blocker, empty editor, follow-up unused?"}
+    Blocker -->|No| End
+    Blocker -->|Yes| FollowUp["Visible blocker follow-up; once per prompt"]
+    FollowUp --> Run
+```
+
+Read the [static advisor flow diagram](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-advisor/docs/advisor-flow.svg) on npm or without a Mermaid renderer.
 
 1. A user prompt or a triggering custom message starts a run. Pi Advisor records where the run starts on the branch.
 2. Other extensions can continue the run. All of their turns stay in the same run.

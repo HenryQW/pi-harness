@@ -46,7 +46,32 @@ In remote procedure call (RPC) mode, Show last run keeps the plain-text notice. 
 
 ## Flow
 
-![An open Pi session runs due jobs with limits and delivers their results.](./docs/cron-flow.svg)
+```mermaid
+flowchart TD
+    accTitle: Pi Cron scheduler flow
+    accDescr: An open Pi session reads user-authored job config at session start and every minute. New jobs wait for their next slot; missed slots cause one catch-up run, not a backlog. Manual runs bypass the schedule. Each session admits one local run before it takes a shared claim, so open sessions do not run the same job concurrently. A fresh child uses the job Role, prompt, model route, working directory, and environment, with turn, idle, and runtime limits. Only the claim owner can save the outcome, bounded summary, and available session path before delivery. Shutdown aborts the child and stops delivery. No background daemon runs.
+    Check["Open Pi session; start and minute checks"] --> Config["Read current job config"]
+    Manual["/cron run"] --> Config
+    Config --> Free{"Local run slot free?"}
+    Free -->|No| Wait["No queue; scheduled jobs wait"]
+    Free -->|Yes| Claim{"Due or manual; shared claim available?"}
+    Claim -->|No| Wait
+    Claim -->|Yes| Prepare["Read prompt; resolve Role and model"]
+    Prepare --> Child["Fresh Pi session; turn and time limits"]
+    Prepare -->|Failure| Owner{"Still the claim owner?"}
+    Child -->|Success, failure, timeout, or shutdown| Owner
+    Owner -->|No| Ignore["Keep the replacement run's state"]
+    Owner -->|Yes| Save["Save outcome, summary, and available session path"]
+    Save --> Shutdown{"Session shutting down?"}
+    Shutdown -->|Yes| Recover["No delivery; use /cron to recover"]
+    Shutdown -->|No| Delivery{"Delivery mode?"}
+    Delivery -->|notify| Notice["Notice with an active user interface"]
+    Delivery -->|followUp| FollowUp["Send output and start a turn"]
+    Delivery -->|none| Silent["Silent success; failures need an active interface"]
+    FollowUp -->|Delivery error| Recover
+```
+
+Read the [static cron flow diagram](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-cron/docs/cron-flow.svg) on npm or without a Mermaid renderer.
 
 The extension checks jobs at session start and every minute. First sighting sets the anchor; a new job waits for its next slot. Missed slots produce one catch-up run, not a backlog. Open Pi sessions do not run the same job concurrently.
 
