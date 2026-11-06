@@ -8,6 +8,7 @@ import { colors } from "@henryqw/theme/tokens";
 
 import { catalog, extensions, repoRoot, supportLibraries } from "./extension-catalog.ts";
 import { licenseBadgeUrl, npmBadgeUrl, versionBadgeUrl } from "./npm-badge.ts";
+import { mermaid } from "./mermaid.ts";
 import {
   inlineRelativeSvgImages,
   linkRelativeImagesToGitHub,
@@ -96,6 +97,7 @@ const packageDocs: ContentSource = {
 };
 
 export default defineConfig({
+  integrations: [mermaid()],
   title: "Henry Pi Harness",
   description: "Opinionated Pi extensions for memory, delegation, Git, model routing, and interaction.",
   feedback: false,

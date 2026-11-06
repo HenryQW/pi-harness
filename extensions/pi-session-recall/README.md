@@ -118,7 +118,25 @@ Staged additions, changes, and deletions affect Git-index collections. Unstaged 
 
 ## Flow
 
-![Keyword discovery returns path and matchMessageId for direct transcript scroll.](./docs/session-search-routing.svg)
+```mermaid
+flowchart TD
+    accTitle: Session search routing
+    accDescr: The local session_search tool has five modes. Preparation, discovery, and browse sync the derived index before use. Preparation returns a bounded user and assistant corpus with repository inventory, never thinking or tool results. Discovery searches only user and assistant text and returns metadata and snippets. Use its path and matchMessageId for direct scroll. Read and scroll access saved transcripts without index sync and can put historical tool output, including secrets, in active model context. Scroll keeps branchTip across forks and requires its anchor on that branch. No mode makes model calls.
+    Call["session_search"] --> Mode{"Call arguments?"}
+    Mode -->|operation: prepare-pattern-miner and scope| Prepare["Sync; bounded corpus and repository inventory"]
+    Mode -->|sessionId| Anchor{"aroundMessageId present?"}
+    Mode -->|No sessionId or operation| Sync["Sync derived index"]
+    Sync --> Query{"Non-empty query?"}
+    Query -->|Yes| Discovery["Discovery; metadata and snippets"]
+    Query -->|No| Browse["Browse; recent session metadata"]
+    Discovery -->|path as sessionId; matchMessageId as aroundMessageId| Scroll["Scroll; bounded window with branchTip"]
+    Anchor -->|Yes| Scroll
+    Anchor -->|No| Read["Read; first 20 and last 10 messages if large"]
+    Read --> Raw["Raw transcript; can include sensitive tool output"]
+    Scroll --> Raw
+```
+
+Read the [static session search routing diagram](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-session-recall/docs/session-search-routing.svg) on npm or without a Mermaid renderer.
 
 Search makes no model calls.
 

@@ -4,9 +4,9 @@ Use this guide for diagrams in repository READMEs and documentation.
 
 ## Source files
 
-Keep each diagram's editable HTML and exported SVG together under the owning package's `docs/` directory.
+For new Mermaid diagrams and diagrams converted to Mermaid, Markdown code blocks can be the source of truth. Give these diagrams an accessible title with `accTitle` and an accessible description with `accDescr`. Add a visible Markdown link to a static Scalable Vector Graphics (SVG) fallback for npm and readers without Mermaid support. Keep existing diagram assets. These Mermaid requirements do not require changes to other existing diagrams.
 
-The HTML file is the source of truth. Link the SVG from Markdown so GitHub and npm render it.
+For other diagrams, keep editable Hypertext Markup Language (HTML) and exported SVG files together under the owning package's `docs/` directory. The HTML file is the source of truth. Link the SVG from Markdown so GitHub and npm render it.
 
 Use matching names:
 
@@ -16,6 +16,8 @@ docs/example-flow.svg
 ```
 
 ## Canvas
+
+The following canvas, color, typography, connection, and export rules apply to static SVG diagrams.
 
 Use a `1280 × 720` SVG `viewBox` for full-width README diagrams. Set the SVG `width` and `height` to the same values.
 

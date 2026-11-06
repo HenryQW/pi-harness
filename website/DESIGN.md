@@ -306,13 +306,13 @@ Cycle `Single → Parallel → Chain` while the section is visible and the page 
 
 ## Website Change Approval
 
-Before coding any user-facing website change:
+Use Figma only when the user asks for it. When the user asks for a Figma design before implementation:
 
-1. Update the corresponding Figma design first.
+1. Update the corresponding Figma design.
 2. Iterate on the Figma design until the user approves it.
-3. Then get the user's explicit approval to implement that approved design.
+3. Get the user's explicit approval to implement that approved design.
 
-Do not modify website source code before both approvals. A browser prototype does not replace the Figma design step.
+A browser prototype does not replace a requested Figma design.
 
 ## Diagram Profile
 
