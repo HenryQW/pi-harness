@@ -117,8 +117,8 @@ export class CommandManager {
 		check();
 		await cancelJob({ dir, spec }, check);
 	}
-	async release(spec: JobSpec, typedId: string, check: () => void): Promise<void> {
-		await releaseJob(join(this.root, jobId(spec.id)), spec, typedId, check);
+	async release(spec: JobSpec, confirmed: boolean, check: () => void): Promise<void> {
+		await releaseJob(join(this.root, jobId(spec.id)), spec, confirmed, check);
 		// This seals admission against a recovery scan that read the old state.
 		this.admission.complete(`command:${spec.id}`);
 	}
@@ -137,7 +137,12 @@ export class CommandManager {
 		const candidates = (await inventoryJobs(this.root)).filter(item => item.spec?.checkout === key && (!item.job || (!terminal(item.job.state) && !item.job.released)));
 		check();
 		if (!candidates.length) throw new Error("No command with verified checkout identity can be recovered here. Inspect /commands; worktree removal stays blocked.");
-		for (const item of candidates) if (!await recoverCommand(this, item.spec!, ctx, check)) return false;
+		for (const item of candidates) {
+			const action = await selectCommandOutput(ctx, `Command ${item.spec!.id} blocks checkout removal.`, ["Keep protection", "Cancel and recheck", "Recheck proof"]);
+			check();
+			if (action !== "Cancel and recheck" && action !== "Recheck proof") return false;
+			if (!await recoverCommand(this, item.spec!, ctx, check, action === "Cancel and recheck")) return false;
+		}
 		return true;
 	}
 }
@@ -145,24 +150,18 @@ export class CommandManager {
 async function recoverCommand(manager: CommandManager, spec: JobSpec, ctx: ExtensionContext, check: () => void, cancelFirst = false): Promise<boolean> {
 	if (!ctx.hasUI) throw new Error("Command recovery requires a user interface; protection stays held.");
 	if (cancelFirst) { await manager.cancel(spec.id, spec, check); ctx.ui.notify("Cancellation requested. This is not proof of termination.", "info"); }
-	while (true) {
-		const current = (await inventoryJobs(manager.root)).find(entry => entry.id === spec.id);
-		check();
-		if (!current?.spec || JSON.stringify(current.spec) !== JSON.stringify(spec)) throw new Error("Command identity or scope cannot be verified; protection stays held.");
-		if (current.job && terminal(current.job.state)) { await manager.refresh([spec.checkout]); check(); ctx.ui.notify(`Verified completion: ${current.job.state}.`, "info"); return true; }
-		if (current.job?.released) { ctx.ui.notify("released by user, termination unproved", "warning"); return true; }
-		const answer = await ctx.ui.select(`Termination is unproved for ${spec.id}. A live command could still write. Release can permit both Pi writes and checkout removal at ${JSON.stringify(spec.checkout)}. All records and output stay saved.`, ["Keep protection", "Cancel and recheck", "Recheck proof", "Release protection despite this risk"]);
-		check();
-		if (answer === "Cancel and recheck") { await manager.cancel(spec.id, spec, check); continue; }
-		if (answer === "Recheck proof") continue;
-		if (answer !== "Release protection despite this risk") return false;
-		const typed = await ctx.ui.input("Type the exact command ID to release protection. Termination remains unproved.", spec.id);
-		check();
-		if (typed === undefined) return false;
-		await manager.release(spec, typed, check);
-		ctx.ui.notify("released by user, termination unproved. A live command could still write; Pi writes and checkout removal can now proceed if no other owner blocks them.", "warning");
-		return true;
-	}
+	const current = (await inventoryJobs(manager.root)).find(entry => entry.id === spec.id);
+	check();
+	if (!current?.spec || JSON.stringify(current.spec) !== JSON.stringify(spec)) throw new Error("Command identity or scope cannot be verified; protection stays held.");
+	if (current.job && terminal(current.job.state)) { await manager.refresh([spec.checkout]); check(); ctx.ui.notify(`Verified completion: ${current.job.state}.`, "info"); return true; }
+	if (current.job?.released) { ctx.ui.notify("released by user, termination unproved", "warning"); return true; }
+	const risk = `Termination is unproved for ${spec.id}. A live command could still write. Release can permit both Pi writes and checkout removal at ${JSON.stringify(spec.checkout)}. All records and output stay saved.`;
+	const confirmed = await selectCommandOutput(ctx, `Release protection despite this risk?\n${risk}`, ["No", "Yes"]);
+	check();
+	if (confirmed !== "Yes") return false;
+	await manager.release(spec, true, check);
+	ctx.ui.notify("released by user, termination unproved. A live command could still write; Pi writes and checkout removal can now proceed if no other owner blocks them.", "warning");
+	return true;
 }
 
 function recovery(job: Job): string | null {
@@ -319,7 +318,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 					for (;;) {
 						const rows = eligible.map(job => `${selected.has(job) ? "[x]" : "[ ]"} ${label(job)}`);
 						const review = `Review selection (${selected.size})`;
-						const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review]);
+						const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review], { searchable: true });
 						check();
 						if (!answer || answer === "Cancel") return;
 						if (answer === review) break;
@@ -374,7 +373,9 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 				return;
 			}
 			if (!inventory.length) { ctx.ui.notify(showPruned ? "No pruned command receipts." : "No unpruned commands. Use /commands pruned to inspect receipts.", "info"); return; }
-			const selected = await selectCommandOutput(ctx, showPruned ? "Pruned command receipts" : "Background commands", inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`));
+			const rows = inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`);
+			const searchText = inventory.map((item, index) => `${rows[index]} ${item.spec?.command ?? ""} ${item.spec?.checkout ?? ""}`);
+			const selected = await selectCommandOutput(ctx, showPruned ? "Pruned command receipts" : "Background commands", rows, { searchable: true, searchText });
 			check();
 			if (!selected) return;
 			const item = inventory[Number(selected.split(".")[0]) - 1];
