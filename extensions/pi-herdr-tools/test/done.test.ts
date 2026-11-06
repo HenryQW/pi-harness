@@ -445,6 +445,7 @@ async function recoveryFixture(t: test.TestContext) {
 	const admission = checkoutAdmission({ on() {}, exec: async () => ({ code: 0, stdout: key + "\n" }) });
 	const manager = new CommandManager(store, admission);
 	const ctx = context();
+	Object.assign(ctx, { mode: "rpc" });
 	const spec: JobSpec = { version: 1, id: randomUUID(), token: randomUUID(), callId: "call", callEntryId: "launch", sessionId: ctx.sessionManager.getSessionId(), sessionFile: null,
 		createdAt: Date.now() - 60_000, cwd: key, checkout: key, workspaceId: "w1", socketPath: "/tmp/fixture.sock", command: "true", access: "write", runtimeMs: 5000, outputBytes: 4096 };
 	const dir = join(store, spec.id);
@@ -463,11 +464,11 @@ async function recoveryFixture(t: test.TestContext) {
 }
 
 for (const force of ["", "--force"])
-test(`/done ${force} reuses scoped recovery and makes one fresh attempt after typed release`, async (t) => {
+test(`/done ${force} reuses scoped recovery and makes one fresh attempt after confirmed release`, async (t) => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const f = await recoveryFixture(t);
 		Object.assign(f.ctx, { mode: "rpc" });
-		f.answers.push("Cancel and recheck", "Recheck proof", "Release protection despite this risk", f.spec.id);
+		f.answers.push("Cancel and recheck", "Yes");
 		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
 		await app.command(force, f.ctx);
 		assert.equal(f.choices[0]![0], "Keep protection");
@@ -500,12 +501,12 @@ test("/done recovery accepts real completion proof without writing a release", a
 	});
 });
 
-for (const choice of [undefined, "Keep protection", "wrong-id", "non-ui", "record-lock", "store-lock", "checkout-lock"])
+for (const choice of [undefined, "Keep protection", "No", "cancel-confirmation", "non-ui", "record-lock", "store-lock", "checkout-lock"])
 test(`/done recovery preserves protection for ${choice ?? "Escape"}`, async (t) => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const f = await recoveryFixture(t);
 		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
-		if (choice === "wrong-id") f.answers.push("Release protection despite this risk", "wrong");
+		if (choice === "No" || choice === "cancel-confirmation") f.answers.push("Recheck proof", choice === "No" ? "No" : undefined);
 		else f.answers.push(choice);
 		if (choice === "non-ui") Object.assign(f.ctx, { hasUI: false });
 		const run = () => app.command("--force", f.ctx);
@@ -513,10 +514,10 @@ test(`/done recovery preserves protection for ${choice ?? "Escape"}`, async (t) 
 			await withWorktreeLock(choice === "store-lock" ? f.store : checkout, async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
 			assert.equal(f.choices.length, 0);
 		} else if (choice === "record-lock") {
-			// A held start lock cannot be stolen, even after typed consent.
-			f.answers.splice(0, 1, "Release protection despite this risk", f.spec.id);
+			// A held start lock cannot be stolen, even after explicit consent.
+			f.answers.splice(0, 1, "Recheck proof", "Yes");
 			await withWorktreeLock(join(f.dir, "spec.json"), async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
-		} else if (choice === "wrong-id" || choice === "non-ui") await assert.rejects(run(), /exact command ID|Active or unknown/);
+		} else if (choice === "non-ui") await assert.rejects(run(), /Active or unknown/);
 		else await run();
 		assert.equal((await f.manager.get(f.spec.id)).released, undefined);
 		assert.equal(app.calls.some(call => call.args[1] === "remove"), false);
@@ -546,9 +547,9 @@ test(`/done revalidates ${change} after recovery and never loops over fresh fail
 			}
 			return result;
 		});
-		f.answers.push("Release protection despite this risk", f.spec.id);
+		f.answers.push("Recheck proof", "Yes");
 		await assert.rejects(app.command("--force", f.ctx), /lifecycle changed|identity changed|does not own|registered linked checkout|Active or unknown/);
-		assert.equal(f.choices.length, 1);
+		assert.equal(f.choices.length, 2);
 		assert.equal(app.calls.some(call => call.args[1] === "remove"), false);
 	});
 });
@@ -572,11 +573,13 @@ test("/done requires separate consent for each blocking command in its checkout"
 		const f = await recoveryFixture(t);
 		const second = { ...f.spec, id: randomUUID(), token: randomUUID() };
 		await mkdir(join(f.store, second.id), { mode: 0o700 }); await writePrivate(join(f.store, second.id, "spec.json"), second);
-		f.answers.push("Release protection despite this risk", "Release protection despite this risk");
-		f.ctx.ui.input = async (_title, placeholder) => placeholder;
+		f.answers.push("Recheck proof", "Yes", "Recheck proof", "Yes");
+		f.ctx.ui.input = async () => { throw new Error("Release must not use typed confirmation."); };
 		const app = harness(snapshotExecutor(), (path, operation) => f.manager.guardRemoval(path, operation), (path, ctx, check) => f.manager.recoverRemoval(path, ctx, check));
 		await app.command("--force", f.ctx);
-		assert.equal(f.choices.length, 2);
+		assert.equal(f.choices.length, 4);
+		assert.deepEqual(f.choices[1], ["No", "Yes"]);
+		assert.deepEqual(f.choices[3], ["No", "Yes"]);
 		for (const id of [f.spec.id, second.id]) assert.equal((await f.manager.get(id)).released, true);
 		assert.equal((await f.manager.get(f.other.id)).released, undefined);
 		assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
@@ -597,7 +600,7 @@ test(`/done ${force} rejects a mismatched ${mismatch} before recovery for a bloc
 	await withHerdrEnvironment("1", "w1:t1", async () => {
 		const f = await recoveryFixture(t);
 		Object.assign(f.ctx, { mode: "rpc" });
-		f.answers.push("Cancel and recheck", "Release protection despite this risk", f.spec.id);
+		f.answers.push("Cancel and recheck", "Release protection despite this risk", "Yes");
 		const fallback = snapshotExecutor();
 		const app = harness(call => {
 			if (call.args[0] === "pane" && mismatch !== "workspace") return ok(JSON.stringify({ result: { pane: {

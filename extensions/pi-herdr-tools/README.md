@@ -64,11 +64,13 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
-In the interactive terminal, run `/commands` to inspect commands. Use the arrow keys or Page Up and Page Down to navigate the command list and pruned receipts. The list uses your configured selection keys. If the terminal is too small, enlarge it to select a command.
+In the interactive terminal, run `/commands` to inspect commands. Type in `Search` to filter commands and pruned receipts. Search ignores case and matches text within identifiers, status, command text, and checkout paths. Use Backspace to edit the search or Control+U to clear it.
+
+Use the arrow keys or Page Up and Page Down to navigate matches. Press Tab to switch between search and configured list keys. Enter opens the selected command. Escape or Control+C closes the list without changes. If the terminal is too small, enlarge it to select a command.
 
 Select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
 
-RPC, the remote procedure call mode, uses native selection and input dialogs when `ctx.hasUI` is true. Output uses a notification, not the custom terminal view. Without a user interface, `/commands` only reports the inventory and makes no changes. The `background_command` cancellation tool remains available.
+RPC, the remote procedure call mode, uses native selection dialogs when `ctx.hasUI` is true. The search field is available only in the terminal. Output uses a notification, not the custom terminal view. Without a user interface, `/commands` only reports the inventory and makes no changes. The `background_command` cancellation tool remains available.
 
 The view shows output as literal text, not Markdown. It keeps spaces and line breaks and wraps long lines to fit the terminal. Terminal and directional control characters, including tabs and carriage returns, appear as Unicode escapes. In a one-column terminal, wide characters also appear as escapes. These display changes do not change the log file. Empty output shows `(No output.)`.
 
@@ -86,7 +88,11 @@ Do not use interactive commands, remote jobs, detached processes, or commands th
 
 In `/commands`, first select `Cancel and recheck` or `Recheck proof`. Cancellation asks the live runner to stop its own child group. A recheck releases protection only when saved records prove completion. Neither action starts another command or signals a saved process number.
 
-If termination remains unproved, the next selection defaults to `Keep protection`. You can cancel again or recheck again. To override protection, select `Release protection despite this risk`, then type the exact command ID, which is its saved job identifier. Spaces, partial identifiers, and Escape do not confirm release.
+If termination remains unproved, read the warning. Select `Yes` only if you accept the risk and want to release protection.
+
+The confirmation defaults to `No`. `No`, Escape, and Control+C keep protection. You do not need to type a command identifier.
+
+The recovery confirmation keeps the complete warning visible above a bounded list. In a small terminal, selection stays blocked until the warning and an action fit. RPC uses native `No` and `Yes` selection, with `No` first. Without a user interface, recovery cannot release protection.
 
 **A live command could still write after release. Both Pi writes and checkout removal can become possible.** Release is a user decision, not proof of termination. Without verified completion, status shows `unknown` and `released by user, termination unproved`. The extension preserves the active record, evidence, and output.
 
@@ -101,7 +107,7 @@ flowchart LR
     A[Cancel and recheck] --> B{Completion proved?}
     B -->|Yes| C[Release protection by proof]
     B -->|No| D[Keep protection by default]
-    D --> E[Explicit risk selection and exact job identifier]
+    D --> E[Explicit Yes confirmation]
     E --> F[Release by user; termination unproved]
 ```
 
@@ -109,7 +115,7 @@ flowchart LR
 
 Run `/commands prune` to start a background scan. Pi stays available during the scan. When the scan is ready, run `/commands prune` again to review eligible outputs. A session or branch change invalidates the scan.
 
-Select several outputs, or use `Select all`. Selection starts empty. Use `Clear selection` to start again, or `Cancel` to leave without deletion.
+Select several outputs, or use `Select all`. Selection starts empty. Type in `Search` to filter selection rows in the terminal. Search does not change the selection. `Select all` selects every eligible output, not only search matches. Use `Clear selection` to start again, or `Cancel` to leave without deletion.
 
 Select `Review selection` to open the confirmation list. It contains only the selected outputs. Then make one explicit deletion choice after the irreversible loss warning. The default is `Keep output`.
 
@@ -268,7 +274,9 @@ Pi sends the notice asynchronously. The delivery record is saved only after the 
 
 Both normal and forced completion require the exact current pane, tab, and workspace to own the target linked checkout. A primary checkout, folder workspace, different checkout, stale pane, or unverified repository identity blocks removal and tab closure. A subdirectory of the owned checkout is allowed. These identity checks run before command recovery and again on the fresh removal check.
 
-Active or unknown managed commands block both normal and forced removal, including read jobs. `/done` offers the same recovery dialog as `/commands`, only for commands in its target checkout. `Keep protection` is the default. You can cancel, recheck termination proof, or type the exact command ID to confirm release without termination proof. A released live command can still write. Other admitted writers still block removal.
+Active or unknown managed commands block both normal and forced removal, including read jobs. `/done` offers the same recovery dialog as `/commands`, only for commands in its target checkout. `Keep protection` is the default. You can cancel, recheck termination proof, or request release without termination proof. Release requires `Yes` after a separate risk warning; `No` is the default.
+
+A released live command can still write. Other admitted writers still block removal.
 
 Recovery dialogs run after all removal locks are released. Native dialogs also work in remote mode. Without a user interface, blocked removal fails without release. Session, branch, pane, or lifecycle changes stop recovery. Locks held by other processes cannot be stolen.
 
@@ -277,7 +285,7 @@ After verified completion or confirmed release, `/done` makes one fresh removal 
 ```mermaid
 flowchart LR
     A[Command ownership blocks removal] --> B[Release removal locks]
-    B --> C[Cancel, recheck, or typed release]
+    B --> C[Cancel, recheck, or confirmed release]
     C -->|Keep protection| D[Keep checkout]
     C -->|Completion proof or confirmed release| E[One fresh removal check]
     E -->|All checks pass| F[Remove checkout]

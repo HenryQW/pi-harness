@@ -946,7 +946,7 @@ test(`a delayed refresh cannot restore a ${release ? "user-released" : "terminal
 	const stale = manager.refresh();
 	try {
 		await opened;
-		if (release) await manager.release(f.spec, f.spec.id, () => {});
+		if (release) await manager.release(f.spec, true, () => {});
 		else await atomicState(f.dir, { ...identity, state: "succeeded", updatedAt: Date.now(), exitCode: 0, signal: null });
 		const reloaded = new CommandManager(f.root, host(f.root, h.bus).admission);
 		await reloaded.refresh([f.root]);
@@ -1002,7 +1002,7 @@ test("corrupt delivery checkpoints stay local; non-dispatch completion delivers 
 test("tool variants have a flat object root and reject mixed actions before work", () => {
 	assert.equal(commandParameters.type, "object");
 	assert.equal(Compile(commandParameters).Check({ action: "launch", command: "true", access: "write" }), true);
-	for (const request of [{ action: "prune", id: randomUUID() }, { action: "launch", command: "true" }, { action: "list", id: randomUUID() }, { action: "cancel", id: "../foreign" }, { action: "status", id: randomUUID(), command: "true" }]) assert.throws(() => validateRequest(request));
+	for (const request of [{ action: "release", id: randomUUID() }, { action: "prune", id: randomUUID() }, { action: "launch", command: "true" }, { action: "list", id: randomUUID() }, { action: "cancel", id: "../foreign" }, { action: "status", id: randomUUID(), command: "true" }]) assert.throws(() => validateRequest(request));
 });
 
 test("runner death cannot authorize a replacement runner or release its checkout", async (t) => {
@@ -1142,17 +1142,17 @@ test("diagnostic inventory isolates locked and malformed records without admitti
 	assert.equal(await readFile(join(bad, "spec.json"), "utf8"), '{"secret-token":');
 });
 
-test("typed release works with a held job lock and corrupt state, preserves evidence, and survives reload", async (t) => {
+test("confirmed release works with a held job lock and corrupt state, preserves evidence, and survives reload", async (t) => {
 	await environment(t);
 	const f = await fixture(t, "printf must-not-start"), h = host(f.root), manager = new CommandManager(f.root, h.admission);
 	await manager.refresh();
 	await writeFile(join(f.dir, "state.json"), "{", { mode: 0o600 });
 	await writeFile(join(f.dir, "cancel.json"), "{", { mode: 0o600 });
 	await writeFile(join(f.dir, "output.log"), "keep evidence", { mode: 0o600 });
-	await assert.rejects(manager.release(f.spec, ` ${f.spec.id}`, () => {}), /exact command ID/);
+	await assert.rejects(manager.release(f.spec, false, () => {}), /Explicit user confirmation/);
 	await assert.rejects(fs.lstat(join(f.dir, "released.json")), { code: "ENOENT" });
 	await withWorktreeLock(f.dir, async () => {
-		await manager.release(f.spec, f.spec.id, () => {});
+		await manager.release(f.spec, true, () => {});
 		const job = await manager.get(f.spec.id);
 		assert.equal(job.released, true); assert.equal(job.state, "unknown"); assert.equal(terminal(job.state), false);
 		assert.equal(await outputTail(job), "keep evidence");
@@ -1174,9 +1174,9 @@ test("typed release works with a held job lock and corrupt state, preserves evid
 
 test("release rejects changed identity and a held start gate without removing evidence or kernel locks", async (t) => {
 	const f = await fixture(t, "true");
-	await assert.rejects(releaseJob(f.dir, { ...f.spec, checkout: "/different" }, f.spec.id, () => {}), /identity or scope changed/);
+	await assert.rejects(releaseJob(f.dir, { ...f.spec, checkout: "/different" }, true, () => {}), /identity or scope changed/);
 	await withWorktreeLock(join(f.dir, "spec.json"), async () => {
-		await assert.rejects(releaseJob(f.dir, f.spec, f.spec.id, () => {}), { code: "ELOCKED" });
+		await assert.rejects(releaseJob(f.dir, f.spec, true, () => {}), { code: "ELOCKED" });
 		await assertLockHeld(join(f.dir, "spec.json"));
 	});
 	await assert.rejects(fs.lstat(join(f.dir, "released.json")), { code: "ENOENT" });
@@ -1190,7 +1190,7 @@ test("release during an in-flight dispatch seals an unclaimed runner and duplica
 		dispatched++;
 		const dir = (params.root as { command: string[] }).command[2]!;
 		const job = await readJob(dir);
-		await manager.release(job.spec, job.spec.id, () => {});
+		await manager.release(job.spec, true, () => {});
 		assert.equal(await start(dir, job.spec).done, 1);
 		return { type: "layout_apply", layout: { workspace_id: "workspace", tab_id: "tab", root: { type: "pane", pane_id: "pane" } } };
 	});
@@ -1207,7 +1207,7 @@ test("release seals a delayed claim and the claimed-before-spawn boundary", asyn
 		const f = await fixture(t, "printf must-not-start");
 		const identity = { id: f.spec.id, token: f.spec.token, runnerId: randomUUID(), workspaceId: f.spec.workspaceId, tabId: "tab", paneId: "pane" };
 		if (claimed) await claimRunner(f.dir, identity);
-		await releaseJob(f.dir, f.spec, f.spec.id, () => {});
+		await releaseJob(f.dir, f.spec, true, () => {});
 		if (!claimed) await assert.rejects(claimRunner(f.dir, identity), /released by user/);
 		const launch = t.mock.fn(() => spawn("/bin/sh", ["-c", f.spec.command], { stdio: "ignore" }));
 		await assert.rejects(startUnreleased(f.dir, f.spec, launch), /sealed by user control/);
@@ -1267,7 +1267,7 @@ async function commandUI(t: TestContext, finished = false, commandText = "true")
 	const answers: Array<string | undefined> = [];
 	let scanDone: Promise<void> | undefined, finishScan: (() => void) | undefined, scanReady = false;
 	let pruneDone: Promise<void> | undefined, finishPrune: (() => void) | undefined;
-	const ctx = { cwd: root, mode: "tui", hasUI: true, sessionManager, isIdle: () => true, hasPendingMessages: () => false, ui: {
+	const ctx = { cwd: root, mode: "rpc", hasUI: true, sessionManager, isIdle: () => true, hasPendingMessages: () => false, ui: {
 		async select(title: string, options: string[]) {
 			titles.push(title); choices.push(options);
 			const answer = answers.shift();
@@ -1362,6 +1362,37 @@ test(`${pruned ? "pruned receipts" : "commands list"} pages to a later command a
 	} });
 	await ui.command.handler(pruned ? "pruned" : "", ui.ctx);
 	assert.equal(selectedId, visibleId);
+});
+
+for (const pruned of [false, true])
+test(`${pruned ? "pruned receipts" : "commands list"} searches command text and opens the matching original identity`, async (t) => {
+	const ui = await batchUI(t);
+	for (let i = 0; i < 24; i++) await ui.add();
+	const target = await ui.add({ command: "printf 'Needle 雪'" });
+	if (pruned) for (const item of await inventoryJobs(ui.manager.root)) await pruneJob(item.job!.dir, item.spec!, () => {}, async () => {});
+	ui.ctx.mode = "tui";
+	let selectedId = "";
+	t.mock.method(ui.ctx.ui, "select", async (title: string) => { selectedId = title.split(":")[0]!; return undefined; });
+	Object.assign(ui.ctx.ui, { custom(factory: Function) {
+		return new Promise<string | undefined>(done => {
+			const component: Component = factory({ terminal: { rows: 10, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+			component.render(100);
+			for (const character of "NEEDLE") component.handleInput!(character);
+			const lines = component.render(100).map(stripTerminalSequences);
+			assert.ok(lines.length <= 10);
+			assert.ok(lines.every(line => visibleWidth(line) <= 100));
+			assert.equal(lines.filter(line => line.startsWith("→ ") || line.startsWith("  ")).length, 1);
+			const selected = lines.find(line => line.startsWith("→ "))!;
+			assert.ok(selected.includes(target.spec.id));
+			assert.doesNotMatch(selected, /printf|Needle/, "Command text must not appear in the list.");
+			component.handleInput!("\r");
+		});
+	} });
+	await ui.command.handler(pruned ? "pruned" : "", ui.ctx);
+	assert.equal(selectedId, target.spec.id);
+	assert.equal((await inventoryJobs(ui.manager.root)).length, 26, "Search must preserve every record.");
+	await assert.rejects(fs.lstat(join(target.dir, "cancel.json")), { code: "ENOENT" });
 });
 
 test("commands completion filters pruning paths without executing them", async (t) => {
@@ -1706,29 +1737,87 @@ test("batch prune rechecks local safety before each deletion and reports partial
 	}
 });
 
-test("native recovery dialogs use safe defaults, exact identity, and preserve locked evidence", async (t) => {
+test("recovery requires explicit Yes with safe No and cancel defaults, and preserves locked evidence", async (t) => {
 	const ui = await commandUI(t);
+	ui.ctx.mode = "rpc";
+	t.mock.method(ui.ctx.ui, "input", async () => { throw new Error("Recovery must not require a typed command ID."); });
+	await writeFile(join(ui.dir, "output.log"), "saved evidence", { mode: 0o600 });
 	await withWorktreeLock(ui.dir, async () => {
-		ui.answers.push("$job", "Cancel and recheck", "Keep protection");
+		ui.answers.push("$job", "Cancel and recheck", "No");
 		await ui.command.handler("", ui.ctx);
-		assert.equal(ui.choices[2]![0], "Keep protection");
+		assert.deepEqual(ui.choices[2], ["No", "Yes"]);
 		assert.deepEqual(JSON.parse(await readFile(join(ui.dir, "cancel.json"), "utf8")), { id: ui.spec.id, token: ui.spec.token });
 		await assert.rejects(fs.lstat(join(ui.dir, "released.json")), { code: "ENOENT" });
-		for (const typed of [undefined, "wrong", ui.spec.id]) {
-			ui.answers.push("$job", "Recheck proof", "Release protection despite this risk", typed);
-			if (typed === "wrong") await assert.rejects(ui.command.handler("", ui.ctx), /exact command ID/);
-			else await ui.command.handler("", ui.ctx);
-			assert.equal((await inventoryJobs(ui.manager.root))[0]!.job?.released, typed === ui.spec.id ? true : undefined);
+		for (const answer of [undefined, "$default", "No", "unexpected", "Yes"]) {
+			ui.answers.push("$job", "Recheck proof", answer);
+			await ui.command.handler("", ui.ctx);
+			assert.deepEqual(ui.choices.at(-1), ["No", "Yes"]);
+			assert.match(ui.titles.at(-1)!, /live command could still write/);
+			assert.ok(ui.titles.at(-1)!.includes(ui.spec.id));
+			assert.ok(ui.titles.at(-1)!.includes(JSON.stringify(ui.spec.checkout)));
+			assert.match(ui.titles.at(-1)!, /Pi writes and checkout removal/);
+			assert.match(ui.titles.at(-1)!, /records and output stay saved/);
+			assert.equal((await inventoryJobs(ui.manager.root))[0]!.job?.released, answer === "Yes" ? true : undefined);
 		}
 		assert.ok(ui.notifications.some(message => message.includes("released by user, termination unproved")));
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved evidence");
+		assert.deepEqual(JSON.parse(await readFile(join(ui.dir, "spec.json"), "utf8")), ui.spec);
 		await assertLockHeld(ui.dir);
 	});
 });
 
-for (const step of [1, 2, 3, 4])
+for (const answer of ["No", "cancel", "Yes"])
+test(`terminal recovery keeps the full warning and requires a visible choice: ${answer}`, async (t) => {
+	const ui = await commandUI(t);
+	ui.ctx.mode = "tui";
+	const terminal = { rows: 18, columns: 80 };
+	let stage = 0;
+	t.mock.method(ui.ctx.ui, "select", async () => "Recheck proof");
+	t.mock.method(ui.ctx.ui, "input", async () => { throw new Error("Release must not require typing."); });
+	Object.assign(ui.ctx.ui, { custom(factory: Function) {
+		return new Promise<string | undefined>(done => {
+			const component: Component = factory({ terminal, requestRender() {} },
+				{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+			const render = () => {
+				const lines = component.render(terminal.columns).map(stripTerminalSequences);
+				assert.ok(lines.length <= terminal.rows);
+				assert.ok(lines.every(line => visibleWidth(line) <= terminal.columns));
+				return lines.join("\n");
+			};
+			const first = render();
+			if (stage === 1) {
+				assert.ok(first.includes(ui.spec.id));
+				assert.match(first.replace(/\s+/g, " "), /A live command could still write/);
+				assert.match(first.replace(/\s+/g, " "), /Pi writes and checkout removal/);
+				assert.ok(first.replace(/\s+/g, "").includes(JSON.stringify(ui.spec.checkout).replace(/\s+/g, "")));
+				assert.doesNotMatch(first, /Search:/, "A risk confirmation cannot filter away its safe default.");
+			}
+			if (stage === 1) {
+				assert.match(first, /→ No/);
+				if (answer === "Yes") {
+					terminal.rows = 2;
+					component.handleInput!("\r"); // A hidden confirmation must not complete the dialog.
+					assert.match(render(), /Enlarge terminal/);
+					terminal.rows = 18;
+					render();
+					component.handleInput!("\x1b[B");
+					assert.match(render(), /→ Yes/);
+				}
+			}
+			const cancel = stage === 1 && answer === "cancel";
+			stage++;
+			component.handleInput!(cancel ? "\x1b" : "\r");
+		});
+	} });
+	await ui.command.handler("", ui.ctx);
+	assert.equal(stage, 2);
+	assert.equal((await ui.manager.get(ui.spec.id)).released, answer === "Yes" ? true : undefined);
+});
+
+for (const step of [1, 2, 3])
 test(`recovery aborts a changed session branch after dialog ${step}`, async (t) => {
 	const ui = await commandUI(t);
-	ui.answers.push("$job", "Recheck proof", "Release protection despite this risk", ui.spec.id);
+	ui.answers.push("$job", "Recheck proof", "Yes");
 	let dialogs = 0;
 	for (const method of ["select", "input"] as const) {
 		const original = ui.ctx.ui[method].bind(ui.ctx.ui) as (...args: any[]) => Promise<string | undefined>;
@@ -1744,7 +1833,7 @@ test(`recovery aborts a changed session branch after dialog ${step}`, async (t) 
 
 test("release rechecks lifecycle at publication, and malformed identity remains report-only", async (t) => {
 	const ui = await commandUI(t);
-	ui.answers.push("$job", "Recheck proof", "Release protection despite this risk", ui.spec.id);
+	ui.answers.push("$job", "Recheck proof", "Yes");
 	const open = fs.open;
 	const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		if (String(args[0]).includes("/released-") && args[1] === "wx") await ui.h.event("session_shutdown", {}, ui.ctx);
@@ -1782,7 +1871,7 @@ test("explicit release asks only the live runner to stop, keeps its log, and nev
 	const execution = start(f.dir, f.spec);
 	t.after(() => execution.child.kill("SIGTERM"));
 	await waitFor(async () => await outputTail(await readJob(f.dir)) === "running" ? true : undefined);
-	await releaseJob(f.dir, f.spec, f.spec.id, () => {});
+	await releaseJob(f.dir, f.spec, true, () => {});
 	assert.equal(await execution.done, 0);
 	const released = await readJob(f.dir);
 	assert.equal(released.state, "cancelled"); assert.equal(released.released, true);
@@ -1857,7 +1946,7 @@ test("released jobs stay inspectable under a held lock and later deliver real ve
 	await waitFor(async () => {
 		try {
 			return await withWorktreeLock(ui.dir, async () => {
-				await ui.manager.release(ui.spec, ui.spec.id, () => {});
+				await ui.manager.release(ui.spec, true, () => {});
 				assert.equal((await ui.manager.get(ui.spec.id)).state, "unknown");
 				assert.equal((await inventoryJobs(ui.manager.root))[0]!.job?.released, true);
 				return true;
@@ -1885,10 +1974,10 @@ test("released jobs stay inspectable under a held lock and later deliver real ve
 	assert.equal(await readFile(join(ui.dir, "released.json"), "utf8"), audit);
 });
 
-test("remote dialogs use native selection and exact input without writing protocol stdout", async (t) => {
+test("remote dialogs use native No/Yes selection without writing protocol stdout", async (t) => {
 	const ui = await commandUI(t);
 	ui.ctx.mode = "rpc";
-	ui.answers.push("$job", "Recheck proof", "Release protection despite this risk", ui.spec.id);
+	ui.answers.push("$job", "Recheck proof", "Yes");
 	const stdout: string[] = [];
 	const write = t.mock.method(process.stdout, "write", (chunk: any) => { stdout.push(String(chunk)); return true; });
 	try { await ui.command.handler("", ui.ctx); }
@@ -1942,7 +2031,7 @@ test("unknown and released-unproved commands never offer or permit pruning", asy
 	const ui = await commandUI(t);
 	await writeFile(join(ui.dir, "output.log"), "keep evidence", { mode: 0o600 });
 	for (const release of [false, true]) {
-		if (release) await ui.manager.release(ui.spec, ui.spec.id, () => {});
+		if (release) await ui.manager.release(ui.spec, true, () => {});
 		ui.answers.push("$job", undefined);
 		await ui.command.handler("", ui.ctx);
 		assert.ok(!ui.choices.at(-1)!.some(choice => choice.includes("Prune")));

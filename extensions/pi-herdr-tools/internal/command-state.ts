@@ -303,8 +303,9 @@ async function checkSpec(dir: string, expected: JobSpec): Promise<JobSpec> {
 	if (JSON.stringify(spec) !== JSON.stringify(expected)) throw new Error("Command identity or scope changed; no action was taken.");
 	return spec;
 }
-export async function releaseJob(dir: string, expected: JobSpec, typedId: string, check: () => void): Promise<void> {
-	if (typedId !== expected.id) throw new Error("Type the exact command ID to release protection.");
+// Only the human recovery handler calls this after explicit warned confirmation.
+export async function releaseJob(dir: string, expected: JobSpec, confirmed: boolean, check: () => void): Promise<void> {
+	if (confirmed !== true) throw new Error("Explicit user confirmation is required to release protection.");
 	await checkSpec(dir, expected);
 	await withWorktreeLock(join(dir, "spec.json"), async () => {
 		const spec = await checkSpec(dir, expected);
