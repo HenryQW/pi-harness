@@ -335,15 +335,16 @@ test("Show output uses an awaited terminal view but keeps RPC notifications and 
 		custom(factory: Function) {
 			customCalls++;
 			return new Promise<void>((done) => {
-				component = factory({ terminal: { rows: 300 }, requestRender() {} },
+				component = factory({ terminal: { rows: 300, columns: 100 }, requestRender() {} },
 					{ fg: (_color: string, text: string) => `\x1b[39m${text}\x1b[39m` },
 					new KeybindingsManager(TUI_KEYBINDINGS), done);
+				if (customCalls === 1) { component.render(100); component.handleInput!("\r"); }
 			});
 		},
 	} };
 	let returned = false;
 	const pending = command.handler("", ctx).then(() => { returned = true; });
-	await waitFor(async () => component);
+	await waitFor(async () => customCalls === 2 ? component : undefined);
 	const lines = component.render(100).map(stripTerminalSequences);
 	assert.ok(lines.some((line) => line.includes(f.spec.id)));
 	assert.ok(!lines.join("").includes("omitted prefix"));
@@ -366,7 +367,7 @@ test("Show output uses an awaited terminal view but keeps RPC notifications and 
 	} finally { write.mock.restore(); }
 	for (const line of stdout.join("").trim().split("\n")) assert.equal(JSON.parse(line)[0].id, f.spec.id);
 	assert.equal(selectCalls, selected + 2);
-	assert.equal(customCalls, 1);
+	assert.equal(customCalls, 2);
 	assert.equal(await outputTail(await manager.get(f.spec.id)), output);
 });
 
@@ -1168,7 +1169,7 @@ test("typed release works with a held job lock and corrupt state, preserves evid
 	assert.equal(await start(f.dir, f.spec).done, 1);
 	await assert.rejects(fs.lstat(join(f.dir, "claim.json")), { code: "ENOENT" });
 	for (const file of ["state.json", "cancel.json"]) assert.equal(await readFile(join(f.dir, file), "utf8"), "{");
-	await assert.rejects(pruneJob(f.dir, f.spec, () => {}), SyntaxError);
+	await assert.rejects(pruneJob(f.dir, f.spec, () => {}, async () => {}), SyntaxError);
 });
 
 test("release rejects changed identity and a held start gate without removing evidence or kernel locks", async (t) => {
@@ -1229,16 +1230,16 @@ test("a contended start gate fails closed in the installed runner before a shell
 test("pruning retains completion and duplicate receipts across reload and frees output capacity", async (t) => {
 	await environment(t);
 	const f = await fixture(t, "printf once");
-	await assert.rejects(pruneJob(f.dir, f.spec, () => {}), /Only verified finished/);
+	await assert.rejects(pruneJob(f.dir, f.spec, () => {}, async () => {}), /Only verified finished/);
 	assert.equal(await start(f.dir, f.spec).done, 0);
 	const job = await readJob(f.dir);
-	await assert.rejects(pruneJob(f.dir, f.spec, () => {}), /delivery is pending/);
+	await assert.rejects(pruneJob(f.dir, f.spec, () => {}, async () => {}), /delivery is pending/);
 	await writePrivate(join(f.dir, "delivered.json"), { id: f.spec.id, runnerId: job.claim!.runnerId });
 	await withWorktreeLock(join(f.dir, "spec.json"), async () => {
-		await assert.rejects(pruneJob(f.dir, f.spec, () => {}), { code: "ELOCKED" });
+		await assert.rejects(pruneJob(f.dir, f.spec, () => {}, async () => {}), { code: "ELOCKED" });
 	});
 	assert.equal(await outputTail(job), "once");
-	await pruneJob(f.dir, f.spec, () => {});
+	await pruneJob(f.dir, f.spec, () => {}, async () => {});
 	assert.equal((await readJob(f.dir)).pruned, true);
 	assert.equal((await readJob(f.dir)).state, "succeeded");
 	assert.match(await outputTail(job), /Output has been pruned/);
@@ -1264,6 +1265,8 @@ async function commandUI(t: TestContext, finished = false, commandText = "true")
 	if (finished) await recordNonDispatch(await readJob(dir), new HerdrRequestError("closed", "private", false));
 	const notifications: string[] = [], choices: string[][] = [], titles: string[] = [];
 	const answers: Array<string | undefined> = [];
+	let scanDone: Promise<void> | undefined, finishScan: (() => void) | undefined, scanReady = false;
+	let pruneDone: Promise<void> | undefined, finishPrune: (() => void) | undefined;
 	const ctx = { cwd: root, mode: "tui", hasUI: true, sessionManager, isIdle: () => true, hasPendingMessages: () => false, ui: {
 		async select(title: string, options: string[]) {
 			titles.push(title); choices.push(options);
@@ -1273,9 +1276,37 @@ async function commandUI(t: TestContext, finished = false, commandText = "true")
 			return answer === "$job" || answer === "$default" ? options[0] : answer;
 		},
 		async input() { return answers.shift(); }, notify(message: string) { notifications.push(message); },
+		setStatus(_key: string, value: string | undefined) {
+			if (value === "Scanning command outputs...") {
+				scanReady = false;
+				scanDone = new Promise<void>(resolve => { finishScan = resolve; });
+			} else if (value?.startsWith("Command prune ready")) {
+				scanReady = true; finishScan?.(); finishScan = undefined;
+			} else if (value === "Pruning command outputs...") pruneDone = new Promise<void>(resolve => { finishPrune = resolve; });
+			else if (!value) { finishScan?.(); finishScan = undefined; finishPrune?.(); finishPrune = undefined; }
+		},
+		custom(factory: Function) {
+			return new Promise<string | undefined>((done, reject) => {
+				const component: Component = factory({ terminal: { rows: 20, columns: 200 }, requestRender() {} },
+					{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+				const lines = component.render(200).map(stripTerminalSequences);
+				const option = lines.find(line => line.startsWith("→ "))!.slice(2).trimEnd();
+				void ctx.ui.select(lines[0]!.trimEnd(), [option]).then(answer => component.handleInput!(answer ? "\r" : "\x1b"), reject);
+			});
+		},
 	} };
+	const startHandler = command.handler.bind(command);
+	command.handler = async (...args: unknown[]) => {
+		const previousScan = scanDone;
+		await startHandler(...args);
+		if (args[0] === "prune" && scanDone !== previousScan) {
+			await scanDone;
+			if (scanReady) await startHandler(...args);
+		}
+		await pruneDone;
+	};
 	t.after(() => h.event("session_shutdown", {}, ctx));
-	return { h, manager, command, ctx, spec: f.spec, dir, answers, choices, titles, notifications, sent };
+	return { h, manager, command, startHandler, ctx, spec: f.spec, dir, answers, choices, titles, notifications, sent };
 }
 
 async function batchUI(t: TestContext) {
@@ -1297,6 +1328,42 @@ async function batchUI(t: TestContext) {
 	return { ...ui, add };
 }
 
+for (const pruned of [false, true])
+test(`${pruned ? "pruned receipts" : "commands list"} pages to a later command and opens its actions`, async (t) => {
+	const ui = await batchUI(t);
+	const jobs = [ui];
+	for (let i = 0; i < 24; i++) jobs.push({ ...ui, ...await ui.add() });
+	if (pruned) for (const job of jobs) await pruneJob(job.dir, job.spec, () => {}, async () => {});
+	ui.ctx.mode = "tui";
+	const keys = new KeybindingsManager(TUI_KEYBINDINGS);
+	let selectedId = "", visibleId = "";
+	const heading = pruned ? "Pruned command receipts" : "Background commands";
+	t.mock.method(ui.ctx.ui, "select", async (title: string) => {
+		assert.notEqual(title, heading, "The command list must use a bounded selector");
+		selectedId = title.split(":")[0]!;
+		return undefined;
+	});
+	Object.assign(ui.ctx.ui, { custom(factory: Function) {
+		return new Promise<string | undefined>(done => {
+			const component: Component = factory({ terminal: { rows: 10, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text }, keys, done);
+			const render = () => {
+				const lines = component.render(100).map(stripTerminalSequences);
+				assert.ok(lines.length <= 10);
+				return lines.join("\n");
+			};
+			assert.ok(render().includes(heading));
+			for (let i = 0; i < 30; i++) component.handleInput!("\x1b[6~");
+			const last = render().split("\n").find(line => line.includes("→"))!;
+			assert.match(last, /25\./);
+			visibleId = last.match(/[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/)![0];
+			component.handleInput!("\r");
+		});
+	} });
+	await ui.command.handler(pruned ? "pruned" : "", ui.ctx);
+	assert.equal(selectedId, visibleId);
+});
+
 test("commands completion filters pruning paths without executing them", async (t) => {
 	const ui = await commandUI(t);
 	assert.deepEqual(ui.command.getArgumentCompletions("pru").map((item: any) => item.value), ["prune", "pruned"]);
@@ -1304,6 +1371,176 @@ test("commands completion filters pruning paths without executing them", async (
 	assert.deepEqual(ui.command.getArgumentCompletions("prune "), []);
 	assert.deepEqual(ui.command.getArgumentCompletions("unknown"), []);
 	assert.equal(ui.choices.length, 0);
+});
+
+test("batch prune can remove delivered output from a finished command whose foreign checkout is gone", async (t) => {
+	const ui = await batchUI(t);
+	const old = await ui.add({ sessionId: "former-session", checkout: join(ui.ctx.cwd, "deleted-worktree") });
+	ui.answers.push(`$toggle:${old.spec.id}`, "$review", "Delete output despite this risk");
+	await ui.command.handler("prune", ui.ctx);
+	assert.equal((await ui.manager.get(old.spec.id)).pruned, true);
+	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+});
+
+test("prune scan returns while inventory input is pending", async (t) => {
+	const ui = await batchUI(t);
+	let resume!: () => void, opened!: () => void;
+	const gate = new Promise<void>(resolve => { resume = resolve; });
+	const waiting = new Promise<void>(resolve => { opened = resolve; });
+	const lstat = fs.lstat;
+	const mock = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+		if (String(args[0]) === ui.manager.root) { opened(); await gate; }
+		return await lstat(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		const running = ui.startHandler("prune", ui.ctx);
+		await waiting;
+		await Promise.race([running, delay(1000).then(() => { throw new Error("Inventory scan blocked the command"); })]);
+		await ui.startHandler("prune", ui.ctx);
+		assert.match(ui.notifications.at(-1)!, /still running/);
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+		resume();
+		await waitFor(async () => ui.notifications.some(message => message.includes("scan ready")) ? true : undefined);
+		assert.equal(ui.choices.length, 0);
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+		await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
+	} finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("shutdown waits for an invalidated prune scan to release its reads", async (t) => {
+	const ui = await batchUI(t);
+	let resume!: () => void, opened!: () => void;
+	const gate = new Promise<void>(resolve => { resume = resolve; });
+	const waiting = new Promise<void>(resolve => { opened = resolve; });
+	const lstat = fs.lstat;
+	const mock = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+		if (String(args[0]) === ui.manager.root) { opened(); await gate; }
+		return await lstat(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		await ui.startHandler("prune", ui.ctx);
+		await waiting;
+		await ui.h.event("session_tree", {}, ui.ctx);
+		let stopped = false;
+		const shutdown = ui.h.event("session_shutdown", {}, ui.ctx).then(() => { stopped = true; });
+		await delay(50);
+		assert.equal(stopped, false);
+		resume();
+		await shutdown;
+		assert.equal(stopped, true);
+	} finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("a branch change invalidates the background prune scan", async (t) => {
+	const ui = await batchUI(t);
+	let resume!: () => void, opened!: () => void;
+	const gate = new Promise<void>(resolve => { resume = resolve; });
+	const waiting = new Promise<void>(resolve => { opened = resolve; });
+	const lstat = fs.lstat;
+	const mock = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+		if (String(args[0]) === ui.manager.root) { opened(); await gate; }
+		return await lstat(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		await ui.startHandler("prune", ui.ctx);
+		await waiting;
+		ui.ctx.sessionManager.appendMessage({ role: "user", content: "new request", timestamp: Date.now() });
+		resume();
+		await waitFor(async () => ui.notifications.some(message => message.includes("scan stopped")) ? true : undefined);
+		assert.equal(ui.choices.length, 0);
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+	} finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("confirmed batch pruning returns while file operations are pending", async (t) => {
+	const ui = await batchUI(t);
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	let resume!: () => void, opened!: () => void;
+	const gate = new Promise<void>(resolve => { resume = resolve; });
+	const waiting = new Promise<void>(resolve => { opened = resolve; });
+	const open = fs.open;
+	const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		if (String(args[0]).includes("/pruned-") && args[1] === "wx") { opened(); await gate; }
+		return await open(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		await ui.startHandler("prune", ui.ctx);
+		await waitFor(async () => ui.notifications.some(message => message.includes("scan ready")) ? true : undefined);
+		await Promise.race([ui.startHandler("prune", ui.ctx), delay(2000).then(() => { throw new Error("Pruning blocked the command"); })]);
+		await waiting;
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+		await ui.startHandler("prune", ui.ctx);
+		assert.match(ui.notifications.at(-1)!, /still running/);
+		resume();
+		await waitFor(async () => (await ui.manager.get(ui.spec.id)).pruned ? true : undefined);
+		await waitFor(async () => ui.notifications.some(message => message.includes("Pruned 1;")) ? true : undefined);
+	} finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("background pruning preserves output when the session becomes busy", async (t) => {
+	const ui = await batchUI(t);
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	let resume!: () => void, opened!: () => void;
+	const gate = new Promise<void>(resolve => { resume = resolve; });
+	const waiting = new Promise<void>(resolve => { opened = resolve; });
+	const open = fs.open;
+	const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		if (String(args[0]).includes("/pruned-") && args[1] === "wx") { opened(); await gate; }
+		return await open(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		await ui.startHandler("prune", ui.ctx);
+		await waitFor(async () => ui.notifications.some(message => message.includes("scan ready")) ? true : undefined);
+		await ui.startHandler("prune", ui.ctx);
+		await waiting;
+		ui.ctx.isIdle = () => false;
+		resume();
+		await waitFor(async () => ui.notifications.some(message => message.includes("failed 1")) ? true : undefined);
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+	} finally { resume(); mock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("foreign output needs a missing checkout and matching delivery receipt", async (t) => {
+	const ui = await batchUI(t);
+	const existing = await ui.add({ sessionId: "other-session", checkout: ui.ctx.cwd });
+	const undelivered = await ui.add({ sessionId: "other-session", checkout: join(ui.ctx.cwd, "gone") });
+	await rm(join(undelivered.dir, "delivered.json"));
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	await ui.command.handler("prune", ui.ctx);
+	assert.equal((await ui.manager.get(ui.spec.id)).pruned, true);
+	for (const job of [existing, undelivered]) assert.equal(await readFile(join(job.dir, "output.log"), "utf8"), "saved output");
+	assert.match(ui.notifications.join("\n"), /existing checkout/);
+	assert.match(ui.notifications.join("\n"), /delivery is pending or unverified/);
+});
+
+test("individual pruning accepts a delivered command from a missing foreign checkout", async (t) => {
+	const ui = await batchUI(t);
+	const old = await ui.add({ sessionId: "former-session", checkout: join(ui.ctx.cwd, "deleted-worktree") });
+	ui.answers.push(`$toggle:${old.spec.id}`, "Prune finished output", "Delete output despite this risk");
+	await ui.command.handler("", ui.ctx);
+	assert.equal((await ui.manager.get(old.spec.id)).pruned, true);
+});
+
+test("pruning preserves foreign output if its checkout returns before deletion", async (t) => {
+	const ui = await batchUI(t);
+	const checkout = join(ui.ctx.cwd, "returning-worktree");
+	const old = await ui.add({ sessionId: "former-session", checkout });
+	ui.answers.push(`$toggle:${old.spec.id}`, "$review", "Delete output despite this risk");
+	const open = fs.open;
+	const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		if (String(args[0]).includes("/pruned-") && args[1] === "wx") await mkdir(checkout);
+		return await open(...args);
+	});
+	syncBuiltinESMExports();
+	try { await ui.command.handler("prune", ui.ctx); }
+	finally { mock.mock.restore(); syncBuiltinESMExports(); }
+	assert.equal(await readFile(join(old.dir, "output.log"), "utf8"), "saved output");
+	assert.match(ui.notifications.at(-1)!, /failed 1/);
 });
 
 test("batch prune reviews an exact multi-selection and confirms once without holding locks", async (t) => {
@@ -1403,7 +1640,7 @@ test("batch prune excludes foreign sessions, absent launches, and unverified del
 	await rm(join(excluded[2]!.dir, "delivered.json"));
 	ui.answers.push("Select all", "$review", "Delete output despite this risk");
 	await ui.command.handler("prune", ui.ctx);
-	assert.match(ui.notifications[0]!, /Skipped 3/);
+	assert.ok(ui.notifications.some(message => /Skipped 3/.test(message)));
 	for (const item of excluded) {
 		assert.ok(!ui.choices.at(-1)!.join("\n").includes(item.spec.id));
 		assert.equal(await readFile(join(item.dir, "output.log"), "utf8"), "saved output");
@@ -1709,7 +1946,7 @@ test("unknown and released-unproved commands never offer or permit pruning", asy
 		ui.answers.push("$job", undefined);
 		await ui.command.handler("", ui.ctx);
 		assert.ok(!ui.choices.at(-1)!.some(choice => choice.includes("Prune")));
-		await assert.rejects(pruneJob(ui.dir, ui.spec, () => {}), /Only verified finished/);
+		await assert.rejects(pruneJob(ui.dir, ui.spec, () => {}, async () => {}), /Only verified finished/);
 		await ui.command.handler("prune", ui.ctx);
 		assert.match(ui.notifications.at(-1)!, /No eligible finished outputs/);
 	}

@@ -64,7 +64,9 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
-In the interactive terminal, run `/commands`, select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
+In the interactive terminal, run `/commands` to inspect commands. Use the arrow keys or Page Up and Page Down to navigate the command list and pruned receipts. The list uses your configured selection keys. If the terminal is too small, enlarge it to select a command.
+
+Select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
 
 RPC, the remote procedure call mode, uses native selection and input dialogs when `ctx.hasUI` is true. Output uses a notification, not the custom terminal view. Without a user interface, `/commands` only reports the inventory and makes no changes. The `background_command` cancellation tool remains available.
 
@@ -105,7 +107,9 @@ flowchart LR
 
 ### Prune finished output
 
-Run `/commands prune` to select several eligible outputs, or use `Select all`. Selection starts empty. Use `Clear selection` to start again, or `Cancel` to leave without deletion.
+Run `/commands prune` to start a background scan. Pi stays available during the scan. When the scan is ready, run `/commands prune` again to review eligible outputs. A session or branch change invalidates the scan.
+
+Select several outputs, or use `Select all`. Selection starts empty. Use `Clear selection` to start again, or `Cancel` to leave without deletion.
 
 Select `Review selection` to open the confirmation list. It contains only the selected outputs. Then make one explicit deletion choice after the irreversible loss warning. The default is `Keep output`.
 
@@ -115,20 +119,27 @@ The terminal must have at least 40 columns and enough rows for the complete warn
 
 ```mermaid
 flowchart LR
-    A[Select eligible outputs] --> B[Review exact selection and loss warning]
+    S[Scan in background] --> A[Select eligible outputs]
+    A --> B[Review exact selection and loss warning]
     B --> C{Confirm deletion?}
     C -->|No| D[Keep all output]
     C -->|Yes| E[Recheck each output under locks]
     E --> F[Report deleted, skipped, and failed items]
 ```
 
-Every selected output gets the same checks as individual pruning. A failed item does not bypass checks for later items. The result names each deleted, skipped, or failed item. An item not selected is never deleted. `/commands prune` requires a user interface; there is no non-interactive deletion option.
+After confirmation, batch pruning runs in the background. A status shows when it is active. You can continue to use Pi while it runs. A final notification names each deleted, skipped, or failed item. A failed item does not bypass checks for later items.
+
+An item not selected is never deleted. `/commands prune` requires a user interface; there is no non-interactive deletion option.
 
 Select a verified finished command in `/commands`, then select `Prune finished output`. The confirmation defaults to `Keep output`. Select `Delete output despite this risk` only if you accept permanent loss of the saved log. Escape and the default selection keep the output.
 
 **Another Pi session may still need this output. Pi cannot prove that all readers have finished. Deletion cannot be undone.** This confirmation accepts possible output loss; it is not proof of exclusive consumption. A delivery receipt or user release does not provide that proof either.
 
-Pruning requires the idle launching session, a branch that contains the launch, and a matching delivery receipt. Local pending delivery, queued messages, or an active follow-up block pruning. Unknown commands and released commands without verified completion cannot be pruned. The extension checks identity, state, delivery, output safety, and the local lifecycle again under the record locks before deletion. No dialog holds a command lock. Autonomous tools cannot prune output, and mode without a user interface only reports status.
+Pruning requires a matching delivery receipt and an idle current session. For the launching session, the current branch must contain the launch. For a different session, the launching checkout must be absent. An absent checkout does not prove that all readers have finished. Local pending delivery, queued messages, or an active follow-up block pruning.
+
+Unknown commands and released commands without verified completion cannot be pruned. The extension checks identity, state, delivery, output safety, and the local lifecycle again under the record locks before deletion. No dialog holds a command lock. Autonomous tools cannot prune output, and mode without a user interface only reports status.
+
+The extension skips items while the session is busy or after the branch changes. The extension checks a missing checkout again before deletion. A checkout can still return after that check.
 
 Pruning deletes only `output.log`. It does not erase the saved command text. The specification, claim, terminal result, delivery record, and any dispatch, cancellation, release, or other audit evidence remain. A small pruning receipt records permission for deletion. Lock files remain unchanged. These retained records prevent another launch after reload.
 
