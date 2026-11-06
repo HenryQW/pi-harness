@@ -167,6 +167,15 @@ export default function advisorExtension(pi: ExtensionAPI): void {
 	};
 
 	pi.registerCommand("advisor", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "on", description: "Turn reviews on for this branch" },
+				{ value: "off", description: "Turn reviews off for this branch" },
+				{ value: "status", description: "Show the review setting" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "Turn the advisor review on or off, or show its status: /advisor on|off|status",
 		handler: async (args, ctx) => {
 			const action = args.trim();

@@ -227,6 +227,11 @@ async function pruneStaleNotes(pi: ExtensionAPI, ctx: ExtensionContext): Promise
 	}
 }
 
+function completeProjectFlag(prefix: string) {
+	return "--project".startsWith(prefix.trimStart())
+		? [{ value: prefix.slice(0, prefix.length - prefix.trimStart().length) + "--project", label: "--project", description: "Select a project or worktree path for this command" }] : [];
+}
+
 export default function notesExtension(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		await pruneStaleNotes(pi, ctx);
@@ -234,6 +239,13 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("note", {
+		getArgumentCompletions: (prefix) => {
+			const separator = /^(\s*--project\s+\S(?:.*?\S)?\s+)(--?)?$/.exec(prefix);
+			if (separator && !/\s--(?:\s|$)/.test(separator[1]!)) {
+				return [{ value: separator[1] + "--", label: "--", description: "End the project path and start the note text" }];
+			}
+			return completeProjectFlag(prefix);
+		},
 		description: `Add a note to this Git worktree (max ${MAX_NOTES})`,
 		handler: async (args, ctx) => {
 			let target: ReturnType<typeof noteTarget>;
@@ -265,6 +277,7 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("note-rm", {
+		getArgumentCompletions: completeProjectFlag,
 		description: "Remove a note from this Git worktree",
 		handler: async (args, ctx) => {
 			let target: ReturnType<typeof noteTarget>;
@@ -297,6 +310,7 @@ export default function notesExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("note-clear", {
+		getArgumentCompletions: completeProjectFlag,
 		description: "Clear notes for this Git worktree",
 		handler: async (args, ctx) => {
 			let target: ReturnType<typeof noteTarget>;

@@ -21,6 +21,7 @@ interface RegisteredTool {
 }
 
 interface RegisteredCommand {
+	getArgumentCompletions?: Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"];
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
 }
 
@@ -99,6 +100,14 @@ function loadExtension(options: {
 	} as unknown as ExtensionAPI, { agentDir: options.agentDir ?? join(tmpdir(), `pi-add-dir-test-${process.pid}`) });
 	return { appendedEntries, commands, handlers, sentMessages, tools };
 }
+
+test("directory scope completion stops before a path and does not add trailing flags", async () => {
+	const h = loadExtension();
+	const complete = h.commands.get("dir-add")!.getArgumentCompletions!;
+	assert.equal((await complete(" --g"))?.[0]?.value, " --global");
+	for (const prefix of ["--global ", "--project /repo", "/repo --", "--unknown"]) assert.deepEqual(await complete(prefix), []);
+	assert.equal(h.appendedEntries.length, 0);
+});
 
 function savedGlobalDirectories(agentDir: string): string[] {
 	const loaded = createAddDirConfigStore(agentDir).loadSync();

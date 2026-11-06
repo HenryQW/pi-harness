@@ -25,6 +25,8 @@ Configure the profiles that your Roles use in `/task-models`. Direct writer term
 
 ## Use
 
+Type `/subagent ` to see described choices for `roles`, `recover`, and `prune`. After `prune`, completion offers `cancel`. Completion keeps the full subcommand prefix.
+
 Ask Main: “Have a scout trace sign-in without editing files.” Main calls `delegate_task` and stays available until progress and results arrive.
 
 If Pi Goal is installed, it waits for live subagent results instead of adding empty continuation turns; see the [pending-result contract](./CONTEXT.md#pending-result-event-contract).

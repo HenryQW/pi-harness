@@ -532,6 +532,19 @@ export function registerSubagentCommand(pi: ExtensionAPI, adapter: SubagentComma
 	pi.on("session_shutdown", invalidatePrune);
 	pi.on("session_tree", invalidatePrune);
 	pi.registerCommand("subagent", {
+		getArgumentCompletions: (prefix) => {
+			const nested = /^(\s*prune )(\S*)$/.exec(prefix);
+			const items = nested ? [
+				{ value: "cancel", description: "Stop the prune scan or cleanup; completed removals stay removed" },
+			] : [
+				{ value: "prune", description: "Scan leftover worktrees, or review a ready plan" },
+				{ value: "recover", description: "Report interrupted isolated work to Main" },
+				{ value: "roles", description: "List Roles, resources, and model routes" },
+			];
+			const partial = nested?.[2] ?? prefix.trimStart();
+			return items.filter(({ value }) => value.startsWith(partial))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - partial.length) + item.value }));
+		},
 		description: "Inspect direct and isolated work, list Roles with /subagent roles, recover with /subagent recover, or scan/review leftovers with /subagent prune (stop with /subagent prune cancel)",
 		handler: async (args, ctx) => {
 			const command = args.trim();

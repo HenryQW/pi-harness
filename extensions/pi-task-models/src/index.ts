@@ -538,6 +538,13 @@ export function createTaskModelsExtension(
 		}
 	});
 	pi.registerCommand("task-models", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "preset", description: "Choose a saved profile setup" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "configure shared task model profiles; choose a saved setup with /task-models preset",
 		handler: async (args, ctx) => {
 			const action = args.trim();

@@ -21,6 +21,8 @@ The advisor uses the `pi-advisor/review` Model Task. Its default Task Profile is
 
 ## Use
 
+Type `/advisor ` to see filtered, described choices for `on`, `off`, and `status`.
+
 Run `/advisor on`. Then send a prompt that makes the agent use tools. When the run settles, the advisor examines it in the background, and Pi shows the result.
 
 | Surface | Type | Purpose |

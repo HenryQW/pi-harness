@@ -6,12 +6,14 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extensionConfigDir, registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrToolsConfigStore } from "./config.ts";
-import { showCommandOutput } from "./command-output.ts";
+import { showCommandOutput, showCommandText } from "./command-output.ts";
+import { selectCommandOutput } from "./command-select.ts";
 import { checkoutAdmission, checkoutKey, HerdrRequestError, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
 import { cancelJob, inventoryJobs, jobId, listJobs, outputTail, privateDirectory, pruneJob, readJob, readPrivate, readPublishedSpec, recordNonDispatch, recoveryDiagnostic, releaseJob, terminal, userReleased, validateSpec, withCommandRemovalGuard, withCommandStoreLock, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
 const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const completionType = "background-command-completion";
+const pruneWarning = "Another Pi session may still need it. Pi cannot prove that all readers have finished. Deletion cannot be undone. Only output.log is deleted; identity, completion, delivery, and audit records remain.";
 export const commandParameters = Type.Object({
 	action: Type.String({ enum: ["launch", "list", "status", "cancel"] }),
 	command: Type.Optional(Type.String({ minLength: 1, maxLength: 16_384 })),
@@ -221,20 +223,95 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	let lifecycle = 0;
 	const pending = new Set<string>();
 	pi.registerCommand("commands", {
-		description: "Inspect commands, cancel, release protection, or confirm output pruning; use pruned to inspect receipts",
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "prune", description: "Select finished outputs for confirmed deletion" },
+				{ value: "pruned", description: "Inspect retained receipts for deleted output" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
+		description: "Inspect commands; use prune to select finished outputs for deletion, or pruned to inspect receipts",
 		async handler(args, ctx) {
-			const showPruned = args.trim() === "pruned";
-			if (args.trim() && !showPruned) throw new Error("Usage: /commands [pruned]");
+			const showPruned = args.trim() === "pruned", batchPrune = args.trim() === "prune";
+			if (args.trim() && !showPruned && !batchPrune) throw new Error("Usage: /commands [prune|pruned]");
+			if (batchPrune && !ctx.hasUI) throw new Error("/commands prune requires a user interface for selection and confirmation.");
 			const generation = lifecycle, sessionId = ctx.sessionManager.getSessionId(), leaf = ctx.sessionManager.getLeafId();
 			const check = () => {
 				if (generation !== lifecycle || sessionId !== ctx.sessionManager.getSessionId() || leaf !== ctx.sessionManager.getLeafId()) {
 					throw new Error("Session, branch, or command lifecycle changed; reopen /commands.");
 				}
 			};
+			const checkPrune = (spec: JobSpec) => {
+				check();
+				if (spec.sessionId !== sessionId || !ctx.isIdle() || ctx.hasPendingMessages() || pending.has(spec.id) ||
+					!ctx.sessionManager.getBranch().some(entry => entry.id === spec.callEntryId)) {
+					throw new Error("Pruning requires the idle launching session and branch, with no local pending delivery or active follow-up.");
+				}
+			};
 			const inventory = (await inventoryJobs(manager.root)).filter(item => showPruned ? item.job?.pruned : !item.job?.pruned);
 			check();
 			if (!ctx.hasUI) {
 				process.stdout.write(JSON.stringify(inventory.map(item => item.job ? summary(item.job) : { id: item.id, category: item.category, diagnostic: item.diagnostic })) + "\n");
+				return;
+			}
+			if (batchPrune) {
+				const eligible: Job[] = [], skipped: string[] = [];
+				for (const item of inventory) {
+					try {
+						if (!item.job || !terminal(item.job.state)) throw new Error("Completion is not verified.");
+						checkPrune(item.job.spec);
+						const delivered = await readPrivate(join(item.job.dir, "delivered.json")) as { id?: unknown; runnerId?: unknown } | undefined;
+						if (delivered?.id !== item.job.spec.id || delivered.runnerId !== (item.job.claim?.runnerId ?? null)) throw new Error("Completion delivery is pending or unverified.");
+						eligible.push(item.job);
+					} catch (error) { skipped.push(`${item.id ?? "Unverified record"}: ${error instanceof Error ? error.message : "Cannot verify output."}`); }
+				}
+				check();
+				if (skipped.length) ctx.ui.notify(`Skipped ${skipped.length} output(s):\n${skipped.join("\n")}`, "warning");
+				if (!eligible.length) { ctx.ui.notify("No eligible finished outputs to prune.", "info"); return; }
+				const selected = new Set<Job>();
+				const label = (job: Job) => `${job.spec.id} (${job.state}) · ${JSON.stringify(job.outputPath)}`;
+				for (;;) {
+					const rows = eligible.map(job => `${selected.has(job) ? "[x]" : "[ ]"} ${label(job)}`);
+					const review = `Review selection (${selected.size})`;
+					const answer = await selectCommandOutput(ctx, `Prune finished outputs · ${selected.size} selected`, ["Cancel", "Select all", "Clear selection", ...rows, review]);
+					check();
+					if (!answer || answer === "Cancel") return;
+					if (answer === review) break;
+					if (answer === "Select all") for (const job of eligible) selected.add(job);
+					else if (answer === "Clear selection") selected.clear();
+					else {
+						const job = eligible[rows.indexOf(answer)];
+						if (job && !selected.delete(job)) selected.add(job);
+					}
+				}
+				if (!selected.size) return;
+				const chosen = eligible.filter(job => selected.has(job));
+				// Keep the exact selection in scrollable rows, not an unbounded dialog title.
+				for (;;) {
+					const answer = await selectCommandOutput(ctx, `Delete these ${chosen.length} saved output(s)? Select an output to inspect its path.\n${pruneWarning}`,
+						["Keep output", ...chosen.map(label), "Delete output despite this risk"]);
+					check();
+					if (!answer || answer === "Keep output") return;
+					if (answer === "Delete output despite this risk") break;
+					const job = chosen.find(job => label(job) === answer);
+					if (job) {
+						if (ctx.mode === "tui") await showCommandText(ctx, "Selected output", label(job));
+						else ctx.ui.notify(`Selected output: ${label(job)}`, "info");
+						check();
+					}
+				}
+				const outcomes: string[] = [];
+				let removed = 0, failed = 0, retained = 0;
+				for (const job of chosen) {
+					try { checkPrune(job.spec); }
+					catch (error) { retained++; outcomes.push(`Skipped ${job.spec.id}: ${(error as Error).message}`); continue; }
+					try {
+						await pruneJob(job.dir, job.spec, () => checkPrune(job.spec));
+						removed++; outcomes.push(`Pruned ${job.spec.id}`);
+					} catch (error) { failed++; outcomes.push(`Failed ${job.spec.id}: ${error instanceof Error ? error.message : "Output removal could not be confirmed."}`); }
+				}
+				ctx.ui.notify(`Pruned ${removed}; skipped ${retained}; failed ${failed}.\n${outcomes.join("\n")}\nUse /commands pruned to inspect retained records.`, failed || retained ? "warning" : "info");
 				return;
 			}
 			if (!inventory.length) { ctx.ui.notify(showPruned ? "No pruned command receipts." : "No unpruned commands. Use /commands pruned to inspect receipts.", "info"); return; }
@@ -257,18 +334,11 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 				else ctx.ui.notify(`${metadata}\n${output}`, "info");
 				check();
 			} else if (action === "Prune finished output") {
-				const checkPrune = () => {
-					check();
-					if (spec.sessionId !== sessionId || !ctx.isIdle() || ctx.hasPendingMessages() || pending.has(spec.id) ||
-						!ctx.sessionManager.getBranch().some(entry => entry.id === spec.callEntryId)) {
-						throw new Error("Pruning requires the idle launching session and branch, with no local pending delivery or active follow-up.");
-					}
-				};
-				checkPrune();
-				const answer = await ctx.ui.select(`Delete saved output for ${spec.id}? Another Pi session may still need it. Pi cannot prove that all readers have finished. Deletion cannot be undone. Only output.log is deleted; identity, completion, delivery, and audit records remain.`, ["Keep output", "Delete output despite this risk"]);
-				checkPrune();
+				checkPrune(spec);
+				const answer = await ctx.ui.select(`Delete saved output for ${spec.id}? ${pruneWarning}`, ["Keep output", "Delete output despite this risk"]);
+				checkPrune(spec);
 				if (answer !== "Delete output despite this risk") return;
-				await pruneJob(dir, spec, checkPrune);
+				await pruneJob(dir, spec, () => checkPrune(spec));
 				ctx.ui.notify("Output has been pruned. The command is hidden from the default list. Use /commands pruned to inspect its retained records.", "info");
 			} else if (action === "Cancel and recheck" || action === "Recheck proof") {
 				await recoverCommand(manager, spec, ctx, check, action === "Cancel and recheck");

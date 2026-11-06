@@ -12,6 +12,8 @@ pi install npm:@henryqw/pi-add-dir
 
 ## Use
 
+Type `/dir-add ` to see described scope flags: `--project` saves a directory for the repository, and `--global` saves it for every workspace. Completion does not suggest paths.
+
 Run `/dir-add`, enter a directory, then run `/dir-ls` to verify it. Humans use commands; agents use tools.
 
 | Surface | Type | Purpose |

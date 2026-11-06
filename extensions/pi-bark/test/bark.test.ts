@@ -47,10 +47,12 @@ function harness(
 	});
 	t.mock.method(globalThis, "fetch", fetchImpl);
 	const commands = new Map<string, Command>();
+	const completions = new Map<string, NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>>();
 	const lifecycleHandlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const pi = {
-		registerCommand(name: string, command: { handler: Command }) {
-			commands.set(name, command.handler);
+		registerCommand(name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			commands.set(name, command.handler as Command);
+			if (command.getArgumentCompletions) completions.set(name, command.getArgumentCompletions);
 		},
 		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
 			const previous = lifecycleHandlers.get(name);
@@ -59,7 +61,7 @@ function harness(
 		getSessionName: () => (typeof sessionName === "function" ? sessionName() : sessionName),
 	} as unknown as ExtensionAPI;
 	barkExtension(pi, { copy });
-	return { agentDir, commands, lifecycleHandlers };
+	return { agentDir, commands, completions, lifecycleHandlers };
 }
 
 function runKeyGenerator(agentDir: string, ...args: string[]) {
@@ -73,6 +75,18 @@ function runKeyGenerator(agentDir: string, ...args: string[]) {
 function waitForImmediate(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
+
+test("Bark completes nested settings without replacing their prefix or suggesting secrets", async (t) => {
+	const h = harness(t, async () => { throw new Error("No request expected"); }, async () => {});
+	const complete = h.completions.get("bark")!;
+	const items = await complete("  default  of");
+	assert.equal(items?.[0]?.value, "  default  off");
+	assert.match(items![0]!.description!, /default/);
+	assert.deepEqual(await complete("default off "), []);
+	assert.deepEqual(await complete("on extra"), []);
+	assert.equal(h.completions.has("set-bark"), false);
+	assert.equal(h.completions.has("copyb"), false);
+});
 
 test("server URLs preserve HTTP(S) paths and reject raw query or fragment delimiters", () => {
 	assert.equal(parseServerUrl("http://push.example.com/bark/"), "http://push.example.com/bark");

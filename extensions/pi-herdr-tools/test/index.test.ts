@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import type { ConfigIssue, ConfigLoad } from "@henryqw/pi-config-store";
 import { createHerdrToolsConfigStore, DEFAULT_CONFIG } from "../internal/config.ts";
 import { isBtwPayload, type BtwPayload } from "../internal/core.ts";
@@ -21,6 +22,7 @@ import { fixturePayload } from "./fixtures.ts";
 import { shellProbe } from "./helper.ts";
 
 type Command = {
+	getArgumentCompletions?: Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"];
 	handler: (args: string, ctx: any) => Promise<void>;
 };
 
@@ -397,6 +399,41 @@ test("parent command captures native context and launches Herdr without leaking 
 		]);
 		// tools inherit (default) passes the exact active parent tool set
 		assert.deepEqual(startArgs.slice(-2), ["--tools", "read,bash"]);
+	});
+});
+
+test("native argument completion preserves the entire nested prefix and follows side-thread grammar", async () => {
+	await withParentEnvironment(async () => {
+		const store = new FakeStore();
+		const h = await createHarness(store, herdrExec());
+		try {
+			const command = h.commands.get("btw")!;
+			const provider = new CombinedAutocompleteProvider([{ name: "btw", ...command }], process.cwd());
+			const line = "/btw config  tools re";
+			const suggestions = await provider.getSuggestions([line], 0, line.length, { signal: new AbortController().signal });
+			assert.ok(suggestions);
+			assert.equal(suggestions.items.length, 1);
+			assert.match(suggestions.items[0]!.description!, /read tools/);
+			const applied = provider.applyCompletion([line], 0, line.length, suggestions.items[0]!, suggestions.prefix);
+			assert.deepEqual(applied.lines, ["/btw config  tools read-only"]);
+			await command.handler(applied.lines[0]!.slice(5), createCommandContext());
+			const loaded = h.configStore.loadSync();
+			assert.ok(loaded.status === "ok");
+			assert.equal(loaded.value.btw.tools, "read-only");
+			for (const prefix of ["ask a question", "merge a prompt", "config tools none ", "config unknown ", "constructor ", "__proto__ "]) {
+				assert.deepEqual(await command.getArgumentCompletions!(prefix), []);
+			}
+			assert.equal((await command.getArgumentCompletions!("config auto-submit o"))?.length, 2);
+		} finally { h.cleanup(); }
+		await withChildEnvironment(store.payloadPath, async () => {
+			const child = await createHarness(store, herdrExec());
+			try {
+				const complete = child.commands.get("btw")!.getArgumentCompletions!;
+				assert.deepEqual((await complete(""))?.map(item => item.value), ["merge", "help"]);
+				assert.deepEqual(await complete("config"), []);
+				assert.deepEqual(await complete("--launch"), []);
+			} finally { child.cleanup(); }
+		});
 	});
 });
 

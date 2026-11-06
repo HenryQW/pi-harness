@@ -31,6 +31,14 @@ export default function herdrDoneExtension(pi: ExtensionAPI,
 	};
 
 	pi.registerCommand("done", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "--force", description: "Remove despite uncommitted work or other users; skip confirmation" },
+				{ value: "-f", description: "Alias for --force; skip confirmation and permit work loss" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "Remove the current Herdr worktree and close its workspace tabs",
 		handler: async (args, ctx) => {
 			const option = args.trim();
