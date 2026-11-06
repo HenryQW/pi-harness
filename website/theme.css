@@ -32,6 +32,49 @@
   }
 }
 
+docs-mermaid {
+  display: block;
+  min-width: 0;
+  margin-block: 1.5rem;
+  color: var(--blume-foreground);
+  font-family: var(--blume-font-body);
+}
+
+docs-mermaid .mermaid-output {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-block: 0.5rem;
+}
+
+docs-mermaid .mermaid-output > svg {
+  display: block;
+  height: auto;
+  margin-inline: auto;
+}
+
+docs-mermaid :is(summary, .mermaid-size) {
+  width: fit-content;
+  min-height: 2.75rem;
+  padding-block: 0.5rem;
+  cursor: pointer;
+  color: var(--blume-muted-foreground);
+}
+
+docs-mermaid pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid var(--blume-border);
+  border-radius: 0.25rem;
+  background: var(--blume-code-background);
+  font-family: var(--blume-font-mono);
+  font-size: 0.875rem;
+}
+
+docs-mermaid :is(summary, .mermaid-size, pre, .mermaid-output):focus-visible {
+  outline: 2px solid var(--blume-accent);
+  outline-offset: 2px;
+}
+
 /* The footer's About Henry link shows Henry's picture, as on rounds.henry.wang. Inline, so the text keeps the
    baseline of the other footer links. */
 footer a[href="https://henry.wang"]::before {
