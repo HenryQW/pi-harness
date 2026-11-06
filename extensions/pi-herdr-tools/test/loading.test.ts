@@ -29,6 +29,8 @@ test("package loading registers all Herdr commands through one extension", async
 
 /** Start and reload the package once per session; return its notifications. */
 async function startupWarnings(t: TestContext, config?: string): Promise<string[]> {
+	// Keep unrelated background scans from racing with temporary-directory cleanup.
+	t.mock.timers.enable({ apis: ["setImmediate", "setInterval"] });
 	const isolated = await mkdtemp(join(tmpdir(), "pi-herdr-tools-task-models-"));
 	const previous = { agentDir: process.env.PI_CODING_AGENT_DIR, tmp: process.env.TMPDIR };
 	process.env.PI_CODING_AGENT_DIR = isolated;
