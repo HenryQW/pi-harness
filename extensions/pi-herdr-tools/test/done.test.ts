@@ -37,13 +37,14 @@ function harness(executor: Executor = () => ok(),
 	nativeMutation?: typeof runLockedGit,
 ) {
 	let command: Command | undefined;
+	let complete!: NonNullable<Parameters<ExtensionAPI["registerCommand"]>[1]["getArgumentCompletions"]>;
 	const calls: ExecCall[] = [];
 	const events = new Map<string, () => void>();
 	const inherited: number[][] = [], lockInodes: Array<Array<number | null>> = [];
 	const api = {
 		on(name: string, handler: () => void) { events.set(name, handler); },
-		registerCommand(name: string, options: { handler: Command }) {
-			if (name === "done") command = options.handler;
+		registerCommand(name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			if (name === "done") { command = options.handler; complete = options.getArgumentCompletions!; }
 		},
 		exec: async (executable: string, args: string[], options: { cwd: string }) => {
 			const call = { command: executable, args, options };
@@ -60,8 +61,19 @@ function harness(executor: Executor = () => ok(),
 		if (result.code !== 0 || result.killed) throw new Error(result.stderr || "killed");
 	});
 	assert.ok(command);
-	return { command, calls, events, inherited, lockInodes };
+	return { command, complete, calls, events, inherited, lockInodes };
 }
+
+test("done completion explains force without executing removal or extending invalid arguments", async () => {
+	const h = harness();
+	const items = await h.complete("--f");
+	assert.equal(items?.[0]?.value, "--force");
+	assert.match(items![0]!.description!, /skip confirmation/);
+	assert.equal((await h.complete("-f"))?.[0]?.value, "-f");
+	assert.deepEqual(await h.complete("--force "), []);
+	assert.deepEqual(await h.complete("path --"), []);
+	assert.equal(h.calls.length, 0);
+});
 
 function snapshotExecutor(options: {
 	toplevel?: string;

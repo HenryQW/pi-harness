@@ -179,6 +179,13 @@ export default function depsExtension(pi: ExtensionAPI): void {
 		});
 	});
 	pi.registerCommand("deps", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "--project", description: "Select a repository path for this command" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "Toggle dependency preparation for future Git worktrees",
 		handler: async (args, ctx) => {
 			const input = args.trim();

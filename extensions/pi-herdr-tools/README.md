@@ -25,10 +25,12 @@ Configure `fast` in `/task-models`.
 
 Run `/clone-tab`; the original session stays active. Commands and prompts are for humans; tools are for agents.
 
+Argument completion shows filtered descriptions for `/commands`, `/btw`, and `/done`. Nested `/btw config` choices keep the preceding arguments. In a side thread, `/btw` offers only `merge` and `help`. Completion does not suggest question text, paths, or secrets. `/done` offers `--force` and its alias `-f`, which skip confirmation and permit work loss; the descriptions state that risk.
+
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `background_command` | tool | Launch, list, inspect, or cancel a managed command. |
-| `/commands` | command | Inspect command status and output, or request cancellation. |
+| `/commands [prune\|pruned]` | command | Inspect commands, select finished outputs for deletion, or inspect retained pruning receipts. |
 | `/clone-tab` | command | Clone into a new tab in the current workspace. |
 | `/clone-worktree [project path]` | command | Clone into a new Git worktree workspace for the selected project. |
 | `/handoff-worktree <issue>` | prompt | Prepare a task for `herdr_handoff`. |
@@ -102,6 +104,25 @@ flowchart LR
 ```
 
 ### Prune finished output
+
+Run `/commands prune` to select several eligible outputs, or use `Select all`. Selection starts empty. Use `Clear selection` to start again, or `Cancel` to leave without deletion.
+
+Select `Review selection` to open the confirmation list. It contains only the selected outputs. Then make one explicit deletion choice after the irreversible loss warning. The default is `Keep output`.
+
+In the terminal, both menus use a bounded list with page navigation. The heading, irreversible warning, and current action stay visible. Rows can shorten long identifiers or paths. Select an output in the confirmation list to inspect its full identifier, state, and path in a scrollable, read-only view. Close that view to return to the confirmation list.
+
+The terminal must have at least 40 columns and enough rows for the complete warning and an action. In smaller terminals, selection is blocked. Enlarge the terminal or cancel. RPC keeps its native selection dialogs and path notifications.
+
+```mermaid
+flowchart LR
+    A[Select eligible outputs] --> B[Review exact selection and loss warning]
+    B --> C{Confirm deletion?}
+    C -->|No| D[Keep all output]
+    C -->|Yes| E[Recheck each output under locks]
+    E --> F[Report deleted, skipped, and failed items]
+```
+
+Every selected output gets the same checks as individual pruning. A failed item does not bypass checks for later items. The result names each deleted, skipped, or failed item. An item not selected is never deleted. `/commands prune` requires a user interface; there is no non-interactive deletion option.
 
 Select a verified finished command in `/commands`, then select `Prune finished output`. The confirmation defaults to `Keep output`. Select `Delete output despite this risk` only if you accept permanent loss of the saved log. Escape and the default selection keep the output.
 

@@ -13,7 +13,7 @@ import { Compile } from "typebox/compile";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { checkoutAdmission, HerdrRequestError, withWorktreeLock } from "@henryqw/pi-herdr";
 import { extensionConfigDir } from "@henryqw/pi-config-store";
-import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, type Component } from "@earendil-works/pi-tui";
+import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
 import { atomicState, cancelJob, claimRunner, inventoryJobs, listJobs, outputTail, pruneJob, readJob, readPrivate, recordNonDispatch, recoveryDiagnostic, releaseJob, startUnreleased, terminal, writePrivate, type Job, type JobSpec } from "../internal/command-state.ts";
 
@@ -1265,12 +1265,209 @@ async function commandUI(t: TestContext, finished = false, commandText = "true")
 	const notifications: string[] = [], choices: string[][] = [], titles: string[] = [];
 	const answers: Array<string | undefined> = [];
 	const ctx = { cwd: root, mode: "tui", hasUI: true, sessionManager, isIdle: () => true, hasPendingMessages: () => false, ui: {
-		async select(title: string, options: string[]) { titles.push(title); choices.push(options); const answer = answers.shift(); return answer === "$job" || answer === "$default" ? options[0] : answer; },
+		async select(title: string, options: string[]) {
+			titles.push(title); choices.push(options);
+			const answer = answers.shift();
+			if (answer === "$review") return options.find(option => option.startsWith("Review selection"));
+			if (answer?.startsWith("$toggle:")) return options.find(option => option.includes(answer.slice(8)));
+			return answer === "$job" || answer === "$default" ? options[0] : answer;
+		},
 		async input() { return answers.shift(); }, notify(message: string) { notifications.push(message); },
 	} };
 	t.after(() => h.event("session_shutdown", {}, ctx));
 	return { h, manager, command, ctx, spec: f.spec, dir, answers, choices, titles, notifications, sent };
 }
+
+async function batchUI(t: TestContext) {
+	const ui = await commandUI(t, true);
+	ui.ctx.mode = "rpc";
+	const save = async (dir: string, spec: JobSpec) => {
+		await writeFile(join(dir, "output.log"), "saved output", { mode: 0o600 });
+		await writePrivate(join(dir, "delivered.json"), { id: spec.id, runnerId: null });
+	};
+	await save(ui.dir, ui.spec);
+	const add = async (overrides: Partial<JobSpec> = {}) => {
+		const f = await fixture(t, "true", { sessionId: ui.spec.sessionId, checkout: ui.spec.checkout, callEntryId: ui.spec.callEntryId, ...overrides });
+		const dir = join(ui.manager.root, f.spec.id);
+		await cp(f.dir, dir, { recursive: true });
+		await recordNonDispatch(await readJob(dir), new HerdrRequestError("closed", "not sent", false));
+		await save(dir, f.spec);
+		return { dir, spec: f.spec };
+	};
+	return { ...ui, add };
+}
+
+test("commands completion filters pruning paths without executing them", async (t) => {
+	const ui = await commandUI(t);
+	assert.deepEqual(ui.command.getArgumentCompletions("pru").map((item: any) => item.value), ["prune", "pruned"]);
+	assert.match(ui.command.getArgumentCompletions("pruned")[0].description, /receipts/);
+	assert.deepEqual(ui.command.getArgumentCompletions("prune "), []);
+	assert.deepEqual(ui.command.getArgumentCompletions("unknown"), []);
+	assert.equal(ui.choices.length, 0);
+});
+
+test("batch prune reviews an exact multi-selection and confirms once without holding locks", async (t) => {
+	const ui = await batchUI(t), second = await ui.add(), third = await ui.add();
+	ui.answers.push(`$toggle:${ui.spec.id}`, "Clear selection", "Select all", `$toggle:${third.spec.id}`, "$review", "Delete output despite this risk");
+	const select = ui.ctx.ui.select.bind(ui.ctx.ui);
+	t.mock.method(ui.ctx.ui, "select", async (...args: Parameters<typeof select>) => {
+		for (const item of [ui, second, third]) {
+			await assertLockReleased(item.dir);
+			await assertLockReleased(join(item.dir, "spec.json"));
+			assert.equal(await readFile(join(item.dir, "output.log"), "utf8"), "saved output");
+		}
+		return select(...args);
+	});
+	await ui.command.handler("prune", ui.ctx);
+	const confirmations = ui.titles.filter(title => title.startsWith("Delete these"));
+	assert.equal(confirmations.length, 1);
+	const warning = confirmations[0]!;
+	const selectedRows = ui.choices.at(-1)!.join("\n");
+	for (const item of [ui, second]) assert.ok(selectedRows.includes(join(item.dir, "output.log")));
+	assert.ok(!selectedRows.includes(third.spec.id));
+	assert.match(warning, /Another Pi session may still need it/);
+	assert.match(warning, /cannot be undone/);
+	assert.equal(ui.choices.at(-1)![0], "Keep output");
+	assert.equal((await ui.manager.get(ui.spec.id)).pruned, true);
+	assert.equal((await ui.manager.get(second.spec.id)).pruned, true);
+	assert.equal(await readFile(join(third.dir, "output.log"), "utf8"), "saved output");
+	assert.match(ui.notifications.at(-1)!, /Pruned 2; skipped 0; failed 0/);
+});
+
+test("terminal batch pruning bounds both menus and opens exact identities before confirmation", async (t) => {
+	const ui = await batchUI(t);
+	const jobs = [ui];
+	for (let i = 0; i < 24; i++) jobs.push({ ...ui, ...await ui.add() });
+	ui.ctx.mode = "tui";
+	let stage = 0;
+	const keys = new KeybindingsManager(TUI_KEYBINDINGS);
+	t.mock.method(ui.ctx.ui, "select", async () => { throw new Error("The unbounded terminal selector must not be used."); });
+	Object.assign(ui.ctx.ui, { custom(factory: Function) {
+		return new Promise<string | undefined>(done => {
+			const component: Component = factory({ terminal: { rows: 18, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text }, keys, done);
+			const render = () => {
+				const lines = component.render(100).map(stripTerminalSequences);
+				assert.ok(lines.length <= 18);
+				assert.ok(lines.every(line => visibleWidth(line) <= 100));
+				return lines.join("\n");
+			};
+			const first = render();
+			if (stage === 0 || stage === 1) {
+				assert.match(first, /→ Cancel/);
+				component.handleInput!(stage === 0 ? "\x1b[B" : "\x1b[A");
+				assert.match(render(), stage === 0 ? /→ Select all/ : /→ Review selection \(25\)/);
+			} else if (stage === 2 || stage === 4) {
+				assert.match(first, /→ Keep output/);
+				component.handleInput!(stage === 2 ? "\x1b[B" : "\x1b[A");
+				const selected = render();
+				assert.match(selected.replace(/\s+/g, " "), /Deletion cannot be undone/);
+				assert.match(selected, /Another Pi session may still need it/);
+				if (stage === 4) assert.match(selected, /→ Delete output despite this risk/);
+			} else {
+				assert.equal(stage, 3);
+				assert.match(first, /Selected output/);
+				assert.ok(jobs.some(job => first.includes(job.spec.id)));
+				assert.ok(jobs.some(job => first.replace(/\s+/g, "").includes(JSON.stringify(join(job.dir, "output.log")).replace(/\s+/g, ""))));
+				assert.doesNotMatch(first, /Last 8192 output bytes/);
+			}
+			stage++;
+			component.handleInput!("\r");
+		});
+	} });
+	await ui.command.handler("prune", ui.ctx);
+	assert.equal(stage, 5);
+	assert.match(ui.notifications.at(-1)!, /Pruned 25; skipped 0; failed 0/);
+	for (const job of jobs) assert.equal((await ui.manager.get(job.spec.id)).pruned, true);
+});
+
+test("batch prune cancellation, empty selection, and non-interactive use never delete", async (t) => {
+	const ui = await batchUI(t);
+	for (const answers of [[undefined], ["Select all", "Cancel"], ["Select all", "$review", "$default"],
+		["Select all", "$review", undefined], ["Select all", "$review", `$toggle:${ui.spec.id}`, "$default"],
+		["Select all", "Clear selection", "$review"]]) {
+		ui.answers.push(...answers);
+		await ui.command.handler("prune", ui.ctx);
+		assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+		await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
+	}
+	ui.ctx.hasUI = false;
+	await assert.rejects(ui.command.handler("prune", ui.ctx), /requires a user interface/);
+	await assert.rejects(ui.command.handler("prune all", ui.ctx), /Usage/);
+	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+});
+
+test("batch prune excludes foreign sessions, absent launches, and unverified delivery", async (t) => {
+	const ui = await batchUI(t);
+	const excluded = [await ui.add({ sessionId: randomUUID() }), await ui.add({ callEntryId: "off-branch" }), await ui.add()];
+	await rm(join(excluded[2]!.dir, "delivered.json"));
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	await ui.command.handler("prune", ui.ctx);
+	assert.match(ui.notifications[0]!, /Skipped 3/);
+	for (const item of excluded) {
+		assert.ok(!ui.choices.at(-1)!.join("\n").includes(item.spec.id));
+		assert.equal(await readFile(join(item.dir, "output.log"), "utf8"), "saved output");
+	}
+	assert.equal((await ui.manager.get(ui.spec.id)).pruned, true);
+});
+
+for (const change of ["working", "queued", "session", "branch", "shutdown"])
+test(`batch prune rechecks ${change} after confirmation`, async (t) => {
+	const ui = await batchUI(t);
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	const select = ui.ctx.ui.select.bind(ui.ctx.ui);
+	t.mock.method(ui.ctx.ui, "select", async (...args: Parameters<typeof select>) => {
+		const answer = await select(...args);
+		if (answer === "Delete output despite this risk") {
+			if (change === "working") ui.ctx.isIdle = () => false;
+			else if (change === "queued") ui.ctx.hasPendingMessages = () => true;
+			else if (change === "session") t.mock.method(ui.ctx.sessionManager, "getSessionId", () => "another-session");
+			else if (change === "branch") ui.ctx.sessionManager.resetLeaf();
+			else await ui.h.event("session_shutdown", {}, ui.ctx);
+		}
+		return answer;
+	});
+	if (["working", "queued"].includes(change)) {
+		await ui.command.handler("prune", ui.ctx);
+		assert.match(ui.notifications.at(-1)!, /Pruned 0; skipped 1; failed 0/);
+	} else await assert.rejects(ui.command.handler("prune", ui.ctx), /lifecycle changed/);
+	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+	await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
+});
+
+test("batch prune reports a locked item and continues with other confirmed outputs", async (t) => {
+	const ui = await batchUI(t), second = await ui.add();
+	ui.ctx.mode = "rpc";
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	await withWorktreeLock(join(ui.dir, "spec.json"), async () => {
+		await ui.command.handler("prune", ui.ctx);
+		await assertLockHeld(join(ui.dir, "spec.json"));
+	});
+	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "saved output");
+	assert.equal((await ui.manager.get(second.spec.id)).pruned, true);
+	assert.match(ui.notifications.at(-1)!, /Pruned 1; skipped 0; failed 1/);
+	assert.ok(ui.notifications.at(-1)!.includes(`Failed ${ui.spec.id}`));
+});
+
+test("batch prune rechecks local safety before each deletion and reports partial completion", async (t) => {
+	const ui = await batchUI(t), second = await ui.add();
+	ui.answers.push("Select all", "$review", "Delete output despite this risk");
+	const unlink = fs.unlink;
+	let removed: string | undefined;
+	const mock = t.mock.method(fs, "unlink", async (...args: Parameters<typeof fs.unlink>) => {
+		const result = await unlink(...args);
+		if (String(args[0]).endsWith("/output.log")) { removed = String(args[0]); ui.ctx.hasPendingMessages = () => true; }
+		return result;
+	});
+	syncBuiltinESMExports();
+	try { await ui.command.handler("prune", ui.ctx); }
+	finally { mock.mock.restore(); syncBuiltinESMExports(); }
+	assert.match(ui.notifications.at(-1)!, /Pruned 1; skipped 1; failed 0/);
+	for (const item of [ui, second]) {
+		if (join(item.dir, "output.log") === removed) assert.equal((await ui.manager.get(item.spec.id)).pruned, true);
+		else assert.equal(await readFile(join(item.dir, "output.log"), "utf8"), "saved output");
+	}
+});
 
 test("native recovery dialogs use safe defaults, exact identity, and preserve locked evidence", async (t) => {
 	const ui = await commandUI(t);
@@ -1513,6 +1710,8 @@ test("unknown and released-unproved commands never offer or permit pruning", asy
 		await ui.command.handler("", ui.ctx);
 		assert.ok(!ui.choices.at(-1)!.some(choice => choice.includes("Prune")));
 		await assert.rejects(pruneJob(ui.dir, ui.spec, () => {}), /Only verified finished/);
+		await ui.command.handler("prune", ui.ctx);
+		assert.match(ui.notifications.at(-1)!, /No eligible finished outputs/);
 	}
 	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "keep evidence");
 	await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
@@ -1541,6 +1740,9 @@ test("pending completion requires local history even when a shared delivery rece
 	await scanOnce();
 	ui.answers.push("$job", "Prune finished output");
 	await assert.rejects(ui.command.handler("", ui.ctx), /local pending delivery/);
+	await ui.command.handler("prune", ui.ctx);
+	assert.match(ui.notifications.at(-2)!, /local pending delivery/);
+	assert.match(ui.notifications.at(-1)!, /No eligible finished outputs/);
 	assert.equal(await readFile(join(ui.dir, "output.log"), "utf8"), "keep pending output");
 	await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
 	const message = ui.sent[0];
@@ -1576,15 +1778,17 @@ test(`pruning rechecks ${change} after human confirmation`, async (t) => {
 	await assert.rejects(fs.lstat(join(ui.dir, "pruned.json")), { code: "ENOENT" });
 });
 
+for (const batch of [false, true])
 for (const change of ["spec", "state", "delivery", "release", "output", "lifecycle"])
-test(`pruning rechecks ${change} after receipt preparation and before deletion`, async (t) => {
+test(`${batch ? "batch" : "individual"} pruning rechecks ${change} after receipt preparation and before deletion`, async (t) => {
 	const ui = await commandUI(t, false, "printf keep");
+	if (batch) ui.ctx.mode = "rpc";
 	assert.equal(await start(ui.dir, ui.spec).done, 0);
 	const job = await readJob(ui.dir);
 	await writePrivate(join(ui.dir, "delivered.json"), { id: ui.spec.id, runnerId: job.claim!.runnerId });
 	const target = join(ui.ctx.cwd, "unrelated-output");
 	await writeFile(target, "unrelated", { mode: 0o600 });
-	ui.answers.push("$job", "Prune finished output", "Delete output despite this risk");
+	ui.answers.push(...batch ? ["Select all", "$review", "Delete output despite this risk"] : ["$job", "Prune finished output", "Delete output despite this risk"]);
 	const open = fs.open;
 	const mock = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		if (String(args[0]).includes("/pruned-") && args[1] === "wx") {
@@ -1598,8 +1802,13 @@ test(`pruning rechecks ${change} after receipt preparation and before deletion`,
 		return await open(...args);
 	});
 	syncBuiltinESMExports();
-	try { await assert.rejects(ui.command.handler("", ui.ctx), /identity|verified completion|Foreign completion|Invalid command state|ELOOP|local pending/); }
-	finally { mock.mock.restore(); syncBuiltinESMExports(); }
+	try {
+		if (batch) {
+			await ui.command.handler("prune", ui.ctx);
+			assert.match(ui.notifications.at(-1)!, /Pruned 0; skipped 0; failed 1/);
+			assert.match(ui.notifications.at(-1)!, /identity|verified completion|Foreign completion|Invalid command state|ELOOP|local pending/);
+		} else await assert.rejects(ui.command.handler("", ui.ctx), /identity|verified completion|Foreign completion|Invalid command state|ELOOP|local pending/);
+	} finally { mock.mock.restore(); syncBuiltinESMExports(); }
 	assert.equal(await readFile(target, "utf8"), "unrelated");
 	assert.equal(await readFile(job.outputPath, "utf8"), change === "output" ? "unrelated" : "keep");
 });

@@ -532,6 +532,14 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 	});
 
 	pi.registerCommand("dir-add", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "--project", description: "Save the directory for this repository and its worktrees" },
+				{ value: "--global", description: "Save the directory for every workspace" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "Add an external directory to this session, project, or global scope",
 		handler: async (args, ctx) => {
 			const parsed = parseAddArgs(args);

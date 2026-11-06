@@ -23,6 +23,8 @@ Configure the job profiles in `/task-models`. Add a job to the config file below
 
 ## Use
 
+Type `/cron ` to see `run`. After `run`, completion shows current valid job names, not prompts or environment values. Extra arguments after the job name are rejected.
+
 Keep Pi open for the job's next slot, or use `/cron run <job-id>` for an immediate run.
 
 | Surface | Type | Purpose |

@@ -25,12 +25,15 @@ function literalLines(text: string, width: number): string {
 }
 
 export async function showCommandOutput(ctx: ExtensionContext, metadata: string, output: string): Promise<void> {
+	await showCommandText(ctx, "Command output", `${metadata}\n\nLast 8192 output bytes (snapshot):\n${output === "" ? "(No output.)" : output}`);
+}
+
+export async function showCommandText(ctx: ExtensionContext, heading: string, content: string): Promise<void> {
 	await ctx.ui.custom<void>((tui, theme, keys, done) => {
 		const body = new Text("", 0, 0);
 		const scroll = new ScrollView(body);
 		const title = new Text("", 0, 0);
 		const footer = new Text("", 0, 0);
-		const content = `${metadata}\n\nLast 8192 output bytes (snapshot):\n${output === "" ? "(No output.)" : output}`;
 		let cachedWidth: number | undefined;
 		const hint = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action).join("/");
 		const help = `${hint("tui.select.cancel")} close · ${hint("tui.select.up")}/${hint("tui.select.down")} scroll · ${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} page`;
@@ -54,7 +57,7 @@ export async function showCommandOutput(ctx: ExtensionContext, metadata: string,
 			render(width: number): string[] {
 				layout.clear();
 				if (tui.terminal.rows >= 3) {
-					title.setText(theme.fg("accent", truncateToWidth("Command output", width)));
+					title.setText(theme.fg("accent", truncateToWidth(heading, width)));
 					layout.addChild(title);
 				}
 				layout.addChild(viewport);

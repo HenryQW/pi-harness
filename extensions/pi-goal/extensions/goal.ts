@@ -207,6 +207,13 @@ export default function goalExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("goal", {
+		getArgumentCompletions: (prefix) => {
+			const items = [
+				{ value: "drop", description: "Drop the active goal and stop continuation" },
+			];
+			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
+		},
 		description: "Show the goal, or drop it with /goal drop",
 		handler: async (args, ctx) => {
 			const state = branchGoal(ctx.sessionManager.getBranch());

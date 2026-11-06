@@ -25,6 +25,8 @@ Requires Pi 1.5.0 or later in the 1.x series.
 
 ## Use
 
+Type `/task-models ` to see `preset`, which opens the saved setup selector. The command without arguments still opens profile and task settings.
+
 Run `/task-models`, select `fast`, then choose a primary model and thinking level. Choose a different fallback model and thinking level, or `None`. Reopen `/task-models`: `fast` shows the saved route instead of `not configured`.
 
 | Surface | Type | Purpose |

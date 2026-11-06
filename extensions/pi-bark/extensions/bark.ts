@@ -125,6 +125,21 @@ export default function barkExtension(pi: ExtensionAPI, options: BarkExtensionOp
 	});
 
 	pi.registerCommand("bark", {
+		getArgumentCompletions: (prefix) => {
+			const nested = /^(\s*default\s+)(\S*)$/.exec(prefix);
+			const items = nested ? [
+				{ value: "on", description: "Enable notifications by default" },
+				{ value: "off", description: "Disable notifications by default" },
+			] : [
+				{ value: "on", description: "Enable notifications for this directory" },
+				{ value: "off", description: "Disable notifications for this directory" },
+				{ value: "inherit", description: "Use the default for this directory" },
+				{ value: "default", description: "Set the default with on or off" },
+			];
+			const partial = nested?.[2] ?? prefix.trimStart();
+			return items.filter(({ value }) => value.startsWith(partial))
+				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - partial.length) + item.value }));
+		},
 		description: "Configure automatic Bark status notifications",
 		handler: async (args, ctx) => {
 			const [first, second, extra] = args.trim().split(/\s+/);
