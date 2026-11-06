@@ -184,8 +184,8 @@ test("finish accepts only a verified user release, even when the released record
 	assert.match(refused.output, /protection stays held/);
 	assert.equal(refused.events.some(removed), false);
 	await rm(join(dir, "released.json"));
-	await assert.rejects(releaseJob(dir, spec, "wrong", () => {}), /Type the exact command ID/);
-	await releaseJob(dir, spec, spec.id, () => {});
+	await assert.rejects(releaseJob(dir, spec, false, () => {}), /Explicit user confirmation is required/);
+	await releaseJob(dir, spec, true, () => {});
 	await withPathLock(dir, async () => {
 		const accepted = await f.run();
 		assert.equal(accepted.code, 0, accepted.output);
