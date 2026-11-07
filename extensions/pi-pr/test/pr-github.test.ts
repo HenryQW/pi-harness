@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { formatPrFooter, projectPrDisplay } from "../extensions/pr-ui.ts";
 import {
+	GitHubHostKeyError,
 	GitHubRateLimitError,
 	GitHubRepositoryLookupError,
 	linkInferredPullRequest,
@@ -1943,6 +1944,11 @@ test("fails visibly when remote push-ref authority errors or is malformed", asyn
 		const { pi, context } = harness({ remoteHeadResult: candidate.result });
 		await assert.rejects(loadCurrentPullRequest(pi, context), candidate.error);
 	}
+});
+
+test("reports an unverified SSH host key during remote ref discovery", async () => {
+	const { pi, context } = harness({ remoteHeadResult: result("", 128, "Host key verification failed.\n") });
+	await assert.rejects(discoverCurrentPullRequest(pi, context), GitHubHostKeyError);
 });
 
 test("returns null only when no current-branch PR matches", async () => {
