@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConfigIssue } from "@henryqw/pi-config-store";
@@ -33,7 +34,7 @@ import {
 	type NamedPullRequest,
 	type PullRequestLoadContext,
 } from "../extensions/pr-github.ts";
-import pullRequestExtension from "../extensions/pr.ts";
+import pullRequestExtension, { discoveryExec } from "../extensions/pr.ts";
 import { canonicalWorktree } from "../extensions/pr-execution.ts";
 
 type Loader = (
@@ -188,6 +189,7 @@ function harness(options: {
 	load: Loader;
 	commandHandler?: PrCommandHandler;
 	useDefaultCommandHandler?: boolean;
+	useDefaultDiscovery?: boolean;
 	theme?: (color: string, text: string) => string;
 	exec?: Exec;
 	sessionEntries?: unknown[];
@@ -255,6 +257,7 @@ function harness(options: {
 		loadPrPolicy: () => ({ status: "ok", source: "missing", value: { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }, issues: options.policyIssues ?? [] }),
 		needsFeedbackAttention: async () => false,
 	};
+	if (options.useDefaultDiscovery) delete extensionDependencies.loadCurrentPullRequest;
 	if (!options.useDefaultCommandHandler) {
 		extensionDependencies.createPrCommandHandler = () => options.commandHandler ?? (async () => "none");
 	}
@@ -2334,6 +2337,122 @@ test("shows the create widget only after preflight reports an ahead commit", asy
 		ahead = 1;
 		await app.tool({ toolName: "bash", input: { command: "git commit -m change" }, isError: false }, ctx);
 		assert.deepEqual(app.widgets.at(-1), widgetLine("● Run /pr to create pull request"));
+	} finally {
+		await app.shutdown(ctx);
+	}
+});
+
+test("background Git cannot prompt on the controlling terminal", { skip: process.platform === "win32" }, () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-ssh-"));
+	try {
+		const ssh = join(directory, "ssh");
+		writeFileSync(ssh, '#!/bin/sh\nprintf "PROMPT_LEAK" > /dev/tty\nprintf "Host key verification failed.\\n" >&2\nexit 255\n', { mode: 0o755 });
+		const module = fileURLToPath(new URL("../extensions/pr.ts", import.meta.url));
+		const program = `import { discoveryExec } from ${JSON.stringify(module)};
+const result = await discoveryExec("git", ["ls-remote", "git@github.com:acme/project.git", "HEAD"], { cwd: process.cwd(), timeoutMs: 5000 });
+console.log("RESULT", JSON.stringify(result));`;
+		const python = `import os, pty, select, sys, time, signal
+pid, fd = pty.fork()
+if pid == 0:
+ os.environ['GIT_SSH_COMMAND'] = sys.argv[1]
+ os.execv(sys.argv[2], [sys.argv[2], '--input-type=module', '-e', sys.argv[3]])
+out = b''
+end = time.monotonic() + 8
+while time.monotonic() < end:
+ ready, _, _ = select.select([fd], [], [], 0.2)
+ if ready:
+  try: out += os.read(fd, 65536)
+  except OSError: pass
+ done, status = os.waitpid(pid, os.WNOHANG)
+ if done: break
+else:
+ os.kill(pid, signal.SIGKILL)
+ os.waitpid(pid, 0)
+ sys.exit('child timed out')
+sys.stdout.buffer.write(out)
+sys.exit(os.waitstatus_to_exitcode(status))`;
+		const output = execFileSync("python3", ["-c", python, ssh, process.execPath, program], { encoding: "utf8", timeout: 10_000 });
+		assert.doesNotMatch(output, /PROMPT_LEAK/);
+		assert.match(output, /Host key verification failed/);
+		assert.match(output, /"code":128/);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("background Git does not run configured credential prompts", { skip: process.platform === "win32" }, async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-askpass-"));
+	const askpass = join(directory, "askpass"), marker = join(directory, "ran");
+	writeFileSync(askpass, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+	const previous = process.env.GIT_ASKPASS;
+	process.env.GIT_ASKPASS = askpass;
+	const server = createServer((_request, response) => { response.writeHead(401, { "WWW-Authenticate": 'Basic realm="test"' }); response.end(); });
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	try {
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("missing test server address");
+		const result = await discoveryExec("git", ["ls-remote", `http://127.0.0.1:${address.port}/repo`], { cwd: directory, timeoutMs: 5_000 });
+		assert.notEqual(result.code, 0);
+		assert.match(result.stderr, /terminal prompts disabled/);
+		assert.equal(existsSync(marker), false);
+	} finally {
+		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		if (previous === undefined) delete process.env.GIT_ASKPASS;
+		else process.env.GIT_ASKPASS = previous;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("default status discovery reports a Git host key failure", { skip: process.platform === "win32" }, async () => {
+	const directory = mkdtempSync(join(tmpdir(), "pi-pr-discovery-"));
+	const previousPath = process.env.PATH, previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	writeFileSync(join(directory, "git"), '#!/bin/sh\nif [ "$1" = rev-parse ]; then pwd; exit 0; fi\nprintf "Host key verification failed.\\n" >&2\nexit 128\n', { mode: 0o755 });
+	process.env.PATH = `${directory}:${previousPath}`;
+	process.env.PI_CODING_AGENT_DIR = directory;
+	const exec: Exec = async (command, args) => {
+			const key = `${command} ${args.join(" ")}`;
+			if (key === "git rev-parse --is-inside-work-tree") return execResult("true\n");
+			if (key === "git remote -v") return execResult("origin\tgit@github.com:acme/project.git (fetch)\n");
+			if (key === "git branch --show-current") return execResult("feature\n");
+			if (key === "git for-each-ref --format=%(push:short) refs/heads/feature") return execResult("origin/feature\n");
+			if (key === "git remote") return execResult("origin\n");
+			if (key === "git check-ref-format --branch feature") return execResult("feature\n");
+			if (key.startsWith("git remote get-url ")) return execResult("git@github.com:acme/project.git\n");
+			if (key.startsWith("gh repo view ")) return execResult(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
+			throw new Error(`Unexpected command: ${key}`);
+	};
+	const app = harness({ useDefaultDiscovery: true, async load() { throw new Error("unexpected discovery override"); }, exec });
+	const ctx = { ...app.context(), cwd: directory };
+	try {
+		await app.start(ctx);
+		for (let i = 0; i < 100 && app.notifications.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.match(app.notifications[0]?.message ?? "", /SSH host key verification failed/);
+		assert.equal(app.execCalls.some(({ args }) => args[0] === "ls-remote"), false);
+		const link = harness({ useDefaultCommandHandler: true, canonicalWorktree: async (cwd) => cwd,
+			async load() { return currentPullRequest({ provenance: "inferred" }); }, exec });
+		const linkCtx = { ...link.context(), cwd: directory };
+		try {
+			await link.start(linkCtx);
+			await assert.rejects(link.command().handler("", linkCtx as ExtensionCommandContext), /SSH host key verification failed/);
+			assert.equal(link.execCalls.some(({ args }) => args[0] === "ls-remote"), false);
+		} finally { await link.shutdown(linkCtx); }
+	} finally {
+		await app.shutdown(ctx);
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("reports SSH host key failures with trust guidance", async () => {
+	const app = harness({ async load() { throw new Error("git fetch failed: Host key verification failed."); } });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		assert.match(app.notifications[0]?.message ?? "", /SSH host key verification failed.*Verify the host key/);
+		assert.equal(app.notifications[0]?.type, "error");
 	} finally {
 		await app.shutdown(ctx);
 	}

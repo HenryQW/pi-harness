@@ -220,6 +220,8 @@ While Pi is idle and an open PR shows running CI, running Codex review, or pendi
 
 The UI stays silent outside Git until you select a worktree, or without a supported GitHub remote. A repository with no remotes has no pull-request footer item, even before its first commit. Lookup failures show `PR · status unavailable` or retain the last footer, without an action hint. A failed GitHub repository lookup retries while Pi is idle, starting after 30 seconds and doubling to a maximum of 5 minutes. Invalid remote configuration stays blocked and is not retried on this timer. API quota failures report `GitHub API rate limit exhausted; retry after GitHub resets it`, without retrying on the timer.
 
+Background Git network commands cannot prompt in the terminal. If Secure Shell (SSH) host key verification fails, Pi reports an error. Verify the host key with your Git provider, then connect to that host in a terminal to update `known_hosts`. Pi does not add the key itself. Git uses your SSH configuration.
+
 After creation, `HERDR_ENV=1` with non-empty `HERDR_WORKSPACE_ID` enables the workspace prefix `#<number> • `. The branch name stays unchanged. Failure shows `Herdr workspace rename failed: <error>`; the PR and UI remain usable.
 
 ### CI evidence

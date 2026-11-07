@@ -14,6 +14,7 @@ import {
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { type ConfigLoad, registerConfigReporting } from "@henryqw/pi-config-store";
 import { createHerdrClient } from "@henryqw/pi-herdr";
+import { spawnBounded, type Exec } from "@henryqw/pi-process";
 import { Type, type Static, type TObject, type TSchema, type TUnion } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { PullRequestCiFixer, StaleCiCollect, type PullRequestCiFixOptions } from "./pr-ci.ts";
@@ -36,10 +37,12 @@ import { PullRequestWorkPublisher } from "./pr-publish-work.ts";
 import { applyRulesetBypass, deriveNamedPullRequestVerdict, isRulesetBypassCandidate, type NamedPullRequestVerdict } from "./pr-routing.ts";
 import { createPrPolicyStore, DEFAULT_PR_POLICY, PrRun, type PrPolicy } from "./pr-run.ts";
 import {
+	GitHubHostKeyError,
 	GitHubRateLimitError,
 	GitHubRepositoryLookupError,
 	loadCurrentPullRequest,
 	loadNamedPullRequest,
+	linkInferredPullRequest,
 	readRulesetBypass,
 	type NamedPullRequest,
 	parsePullRequestObservation,
@@ -49,7 +52,7 @@ import {
 	samePullRequestObservation,
 	type PullRequestObservation,
 } from "./pr-github.ts";
-import { canonicalWorktree, isRecord, UndeclaredConflictEdits } from "./pr-execution.ts";
+import { canonicalWorktree, extensionExecApi, isRecord, UndeclaredConflictEdits } from "./pr-execution.ts";
 import {
 	discoveryIssueDetails,
 	formatPrFooter,
@@ -69,6 +72,9 @@ const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
 const HERDR_TIMEOUT_MS = 10_000;
+export const discoveryExec: Exec = (command, args, options) => command === "git" && ["fetch", "ls-remote"].includes(args[0] ?? "")
+	? spawnBounded("env", ["SSH_ASKPASS_REQUIRE=never", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", command, ...args], options)
+	: spawnBounded(command, args, options);
 const UI_KEY = "pi-pr";
 const OBSERVATION_ENTRY = "pi-pr-observation";
 const GH_PR_CREATE = /(?:^|[;&|]\s*|\n\s*)gh\s+pr\s+create(?=\s|$|[;&|])/;
@@ -339,7 +345,17 @@ export default function pullRequestExtension(
 		signal.throwIfAborted();
 	};
 
-	const discover = dependencies.loadCurrentPullRequest ?? loadCurrentPullRequest;
+	const safeDiscoveryApi = (api: Pick<ExtensionAPI, "exec">, cwd: string, signal?: AbortSignal): Pick<ExtensionAPI, "exec"> => {
+		const detached = extensionExecApi(discoveryExec, cwd, signal);
+		return { exec: (command, args, options) =>
+			command === "git" && ["fetch", "ls-remote"].includes(args[0] ?? "")
+				? detached.exec(command, args, options) : api.exec(command, args, options),
+		};
+	};
+	const discover: typeof loadCurrentPullRequest = dependencies.loadCurrentPullRequest ??
+		((api, loadContext, inspectedLocal, observed) => loadCurrentPullRequest(
+			safeDiscoveryApi(api, loadContext.cwd, loadContext.signal), loadContext, inspectedLocal, observed,
+		));
 	const createCommandHandler = dependencies.createPrCommandHandler ?? createPrCommandHandler;
 	const createBranchUpdater = dependencies.createBranchUpdater ?? ((options) => new PullRequestBranchUpdater(options));
 	const createPullRequestCreator = dependencies.createPullRequestCreator ?? ((options) => new PullRequestCreator(options));
@@ -383,6 +399,7 @@ export default function pullRequestExtension(
 		} catch (error) {
 			// Never retry exhausted quota from any discovery path.
 			if (error instanceof GitHubRateLimitError && generation === sessionGeneration) stopPolling();
+			if (error instanceof Error && error.message.includes("Host key verification failed")) throw new GitHubHostKeyError();
 			throw error;
 		} finally {
 			// Failed checks also delay the next stale refresh.
@@ -394,7 +411,7 @@ export default function pullRequestExtension(
 	let sessionGeneration = 0;
 	let active: AbortController | undefined;
 	let queued = false;
-	let reportedRefreshFailure: "generic" | "quota" | undefined;
+	let reportedRefreshFailure: "generic" | "quota" | "host-key" | undefined;
 	let displayEstablished = false;
 	let lastDiscovery: "configured" | "inferred" | "absent" | "blocked" | "inactive" | undefined;
 	let lastDiscoveryOpen = false;
@@ -963,12 +980,12 @@ export default function pullRequestExtension(
 
 	const reportRefreshFailure = (error: unknown): void => {
 		const ctx = context;
-		const category = error instanceof GitHubRateLimitError ? "quota" : "generic";
+		const category = error instanceof GitHubRateLimitError ? "quota" : error instanceof GitHubHostKeyError ? "host-key" : "generic";
 		if (category === "quota") stopPolling();
 		if (!ctx || reportedRefreshFailure === category || reportedRefreshFailure === "quota") return;
 		reportedRefreshFailure = category;
 		ctx.ui.notify(
-			error instanceof GitHubRateLimitError ? error.message : "PR status refresh failed: status unavailable",
+			error instanceof GitHubRateLimitError || error instanceof GitHubHostKeyError ? error.message : "PR status refresh failed: status unavailable",
 			"error",
 		);
 	};
@@ -1206,6 +1223,8 @@ export default function pullRequestExtension(
 				!loadContext.signal?.aborted && discovery.kind === "current") render(context, discovery);
 			return discovery;
 		},
+		linkInferredPullRequest: (api, ctx, inferred, options) =>
+			linkInferredPullRequest(safeDiscoveryApi(api, ctx.cwd, ctx.signal), ctx, inferred, options),
 		needsFeedbackAttention: dependencies.needsFeedbackAttention,
 		syncLocalHead: dependencies.syncLocalHead,
 		inspectBranchRecovery: dependencies.inspectBranchRecovery ?? (async (pullRequest, ctx) => {

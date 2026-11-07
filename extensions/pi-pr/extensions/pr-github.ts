@@ -96,6 +96,13 @@ export class GitHubRepositoryLookupError extends PullRequestLoadError {
 	}
 }
 
+export class GitHubHostKeyError extends PullRequestLoadError {
+	constructor() {
+		super("SSH host key verification failed. Verify the host key with your Git provider, then connect to the host in a terminal to update known_hosts.");
+		this.name = "GitHubHostKeyError";
+	}
+}
+
 export class GitHubRateLimitError extends PullRequestLoadError {
 	constructor() {
 		super("GitHub API rate limit exhausted; retry after GitHub resets it");
@@ -409,6 +416,7 @@ async function invoke(
 }
 
 function commandFailure(action: string, result: CommandOutput, command?: string): never {
+	if (result.stderr.includes("Host key verification failed")) throw new GitHubHostKeyError();
 	if (
 		command === "gh" && result.code !== 0 &&
 		result.stderr.includes("GraphQL: API rate limit exceeded")
