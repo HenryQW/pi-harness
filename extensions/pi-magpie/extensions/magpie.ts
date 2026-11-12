@@ -69,8 +69,7 @@ function routeDetails(route?: Route): string {
 		: "route unknown · account unknown";
 }
 
-export function footer(cards: Card[], failed: boolean, now = Date.now(), provider?: string, route?: Route): string {
-	if (!cards.length) return `Magpie: ${failed ? "quota unavailable" : "no quota"} · ${routeDetails(route)}`;
+export function footer(cards: Card[], failed: boolean, now = Date.now(), provider?: string, route?: Route): { quota: string; model: string } {
 	const indexed = cards.map((card, index) => ({ card, index }));
 	const routedProvider = route?.model.split("/")[0] || provider;
 	const matches = route?.account ? indexed.filter(({ card }) => card.user === route.account && !card.from && card.kind === "subscription" && card.provider === routedProvider) : [];
@@ -89,7 +88,7 @@ export function footer(cards: Card[], failed: boolean, now = Date.now(), provide
 	});
 	const model = route?.served ? (route.served.startsWith(`${routedProvider}/`) ? route.served : `${routedProvider}/${route.served}`) : route?.model;
 	const routed = route ? `${model || "unknown"}${route.tries.length > 1 ? ` fallback(${route.tries.length - 1})` : ""}${route.done && route.status >= 400 ? " failed" : ""} ${matched ? `#${matched.index + 1}` : "account?"}` : "route?";
-	return `Magpie ${parts.join(" · ")} · ${routed}`;
+	return { quota: cards.length ? `Magpie ${parts.join(" · ")}` : `Magpie: ${failed ? "quota unavailable" : "no quota"}`, model: route ? `magpie/${routed}` : "route?" };
 }
 
 async function readRoute(url: string, session: string, signal: AbortSignal): Promise<Route | undefined> {
@@ -149,7 +148,9 @@ export default function (pi: ExtensionAPI) {
 		if (!active || !ctx.hasUI) return;
 		const now = Date.now();
 		if (ctx.model?.provider !== "magpie") return;
-		ctx.ui.setStatus("magpie-quota", footer(cards, failed, now, provider, route));
+		const status = footer(cards, failed, now, provider, route);
+		ctx.ui.setStatus("magpie-quota", status.quota);
+		ctx.ui.setStatus("magpie-model", status.model);
 		const nextStale = cards.flatMap((card) => [Date.parse(card.readAt || "") + STALE_AFTER, ...card.windows.map((window) => Date.parse(window.resetsAt || ""))]).filter((time) => time > now && time <= now + STALE_AFTER);
 		if (nextStale.length) { staleTimer = setTimeout(() => paint(ctx), Math.min(...nextStale) - now); staleTimer.unref(); }
 	}
@@ -243,7 +244,10 @@ export default function (pi: ExtensionAPI) {
 		if (routeTimer) clearTimeout(routeTimer);
 		routeController?.abort();
 		++routeVersion;
-		if (event.model.provider !== "magpie") ctx.ui.setStatus("magpie-quota", undefined);
+		if (event.model.provider !== "magpie") {
+			ctx.ui.setStatus("magpie-quota", undefined);
+			ctx.ui.setStatus("magpie-model", undefined);
+		}
 		else { paint(ctx); void updateRoute(ctx); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -258,7 +262,10 @@ export default function (pi: ExtensionAPI) {
 		controller?.abort();
 		controller = undefined;
 		running = undefined;
-		if (ctx.hasUI) ctx.ui.setStatus("magpie-quota", undefined);
+		if (ctx.hasUI) {
+			ctx.ui.setStatus("magpie-quota", undefined);
+			ctx.ui.setStatus("magpie-model", undefined);
+		}
 	});
 	pi.registerCommand("magpie-quota", {
 		description: "Show Magpie quota details or refresh them",

@@ -374,7 +374,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					const quotaStatus = QUOTA_STATUS_KEYS.map((key) => sanitizeStatus(extensionStatuses.get(key) ?? "")).filter(Boolean).join(" · ");
 					const externalStatuses: string[] = [];
 					for (const [key, value] of [...extensionStatuses].sort(([a], [b]) => a.localeCompare(b))) {
-						if (key === "pi-pr" || key === "pi-codegraph" || QUOTA_STATUS_KEYS.some((quotaKey) => quotaKey === key)) continue;
+						if (key === "pi-pr" || key === "pi-codegraph" || key === "magpie-model" || QUOTA_STATUS_KEYS.some((quotaKey) => quotaKey === key)) continue;
 						const text = sanitizeStatus(value);
 						if (text) externalStatuses.push(text);
 					}
@@ -395,7 +395,9 @@ export default function footerExtension(pi: ExtensionAPI): void {
 						const thinkingColor = THINKING_COLORS[level as keyof typeof THINKING_COLORS];
 						return level === "ultra" ? rainbow(level) : thinkingColor === undefined ? theme.fg("dim", level) : color(level, thinkingColor);
 					};
-					const selected = paintFooter(theme, footerColors.model, "dim", `${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model"}`) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
+					const magpieModel = ctx.model?.provider === "magpie" ? sanitizeStatus(extensionStatuses.get("magpie-model") ?? "") : "";
+					const selectedModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
+					const selected = paintFooter(theme, footerColors.model, "dim", magpieModel === "route?" ? `${selectedModel} · route?` : magpieModel || selectedModel) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
 					// Under a virtual selection, show where the latest request went, as Pi's own footer does.
 					const model = ctx.model?.api === VIRTUAL_MODEL_API && routed
 						? selected + sep(" → ") + paintFooter(theme, footerColors.model, "dim", routed.model) + (routed.thinkingLevel ? sep(" • ") + thinkingText(routed.thinkingLevel) : "")
