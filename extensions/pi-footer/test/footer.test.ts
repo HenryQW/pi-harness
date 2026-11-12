@@ -159,6 +159,22 @@ test("renders family status on the first line and external statuses beside runti
 	assert.match(stripTerminalSequences(footer.render(100)[0]!), /#3 5h 12% 60m.*codex\/gpt/);
 	branchName = "worktree/clear-field-f8d2";
 
+	ctx.model = { provider: "magpie", id: "auto/main" };
+	extensionStatuses = new Map([
+		["magpie-quota", "Magpie #3 5h 12% ~60m stale"],
+		["magpie-model", "magpie/codex/gpt-6.1-terra #3"],
+		["pi-codegraph", "CG ready"],
+		["other", "other status"],
+	]);
+	const magpieLines = footer.render(120).map(stripTerminalSequences);
+	assert.match(magpieLines[0]!, /Magpie #3 5h 12% ~60m stale$/);
+	assert.match(magpieLines[1]!, /magpie\/codex\/gpt-6\.1-terra #3 • high$/);
+	assert.match(magpieLines[2]!, /^CG ready · other status +◷ 0s$/);
+	extensionStatuses.set("magpie-model", "route?");
+	assert.match(stripTerminalSequences(footer.render(120)[1]!), /magpie\/auto\/main · route\? • high$/);
+	ctx.model = { provider: "openai-codex", id: "gpt-5.6-luna" };
+	assert.match(stripTerminalSequences(footer.render(120)[1]!), /openai-codex\/gpt-5\.6-luna • high$/);
+
 	extensionStatuses = new Map([
 		["pi-rewind", "↩ rewind"],
 		["pi-multi-codex", "  \r\n  "],

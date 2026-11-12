@@ -16,16 +16,16 @@ const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 function harness(exec?: (...args: any[]) => any) {
 	const events = new Map<string, Function>();
 	let command!: (args: string, ctx: ExtensionContext) => Promise<void>;
-	const statuses: (string | undefined)[] = [], notices: string[] = [];
-	const ctx = { hasUI: true, model: { provider: "magpie", id: "auto/main", baseUrl: "http://127.0.0.1:3425/v1" }, sessionManager: { getSessionId: () => "pi-session" }, ui: { setStatus: (key: string, value?: string) => { assert.equal(key, "magpie-quota"); statuses.push(value); }, notify: (value: string) => notices.push(value) } } as unknown as ExtensionContext;
+	const statuses: (string | undefined)[] = [], models: (string | undefined)[] = [], notices: string[] = [];
+	const ctx = { hasUI: true, model: { provider: "magpie", id: "auto/main", baseUrl: "http://127.0.0.1:3425/v1" }, sessionManager: { getSessionId: () => "pi-session" }, ui: { setStatus: (key: string, value?: string) => { assert.ok(key === "magpie-quota" || key === "magpie-model"); (key === "magpie-quota" ? statuses : models).push(value); }, notify: (value: string) => notices.push(value) } } as unknown as ExtensionContext;
 	extension({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (_: string, options: { handler: typeof command }) => { command = options.handler; }, exec: exec ?? (async () => ({ code: 0, stdout: JSON.stringify({ running: true, url: "http://127.0.0.1:3425" }) })) } as unknown as ExtensionAPI);
-	return { events, command: (args: string) => command(args, ctx), ctx, statuses, notices };
+	return { events, command: (args: string) => command(args, ctx), ctx, statuses, models, notices };
 }
 const route = { id: 123, asked: "auto/main", model: "codex/gpt", served: "gpt-v2", tries: [{ model: "other/model", fail: "secret" }, { model: "codex/gpt" }], done: true, status: 200 };
 
 test("shows each quota window, resets, low and stale accounts without errors", () => {
 	const cards = parseCards(JSON.stringify(payload));
-	const line = footer(cards, false, now);
+	const line = footer(cards, false, now).quota;
 	assert.match(line, /#1 5h 12% ~60m/);
 	assert.match(line, /#2 week 0% \? stale unavailable/);
 	assert.match(details(cards, false, now), /week: 42% remaining \(stale\)/);
@@ -38,7 +38,9 @@ test("shows each quota window, resets, low and stale accounts without errors", (
 test("does not associate an ambiguous account with a quota card", () => {
 	const cards = parseCards(JSON.stringify([payload[0], { ...payload[0], name: "another" }]));
 	const current = { id: 1, asked: "codex/gpt", model: "codex/gpt", served: "", tries: [], done: true, status: 200, account: "one" };
-	assert.match(footer(cards, false, now, "codex", current), /account\?/);
+	assert.match(footer(cards, false, now, "codex", current).model, /account\?/);
+	assert.deepEqual(footer([], true, now), { quota: "Magpie: quota unavailable", model: "route?" });
+	assert.equal(footer([], false, now, "codex", current).model, "magpie/codex/gpt account?");
 });
 
 test("correlates fallback and served account across usage pages", async (t) => {
@@ -53,7 +55,7 @@ test("correlates fallback and served account across usage pages", async (t) => {
 	const h = harness(); h.events.get("session_start")!({}, h.ctx);
 	await h.command(""); await tick(); await tick();
 	const text = h.statuses.at(-1)!;
-	assert.match(text, /gpt-v2 fallback\(1\) #2/);
+	assert.equal(h.models.at(-1), "magpie/codex/gpt-v2 fallback(1) #2");
 	assert.ok(text.indexOf("#2") < text.indexOf("#1"));
 	await h.command("");
 	assert.match(h.notices.at(-1)!, /auto\/main → codex\/gpt \(served gpt-v2\).*tried other\/model → codex\/gpt.*account two/);
@@ -76,10 +78,10 @@ test("does not attribute unrelated, unavailable, or failed usage to a session", 
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx);
 	await h.command(""); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /gpt-v2.*account\?/);
+	assert.match(h.models.at(-1)!, /gpt-v2.*account\?/);
 	usage = new Response("denied", { status: 403 });
 	h.events.get("turn_end")!({}, h.ctx); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /gpt-v2.*account\?/);
+	assert.match(h.models.at(-1)!, /gpt-v2.*account\?/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -102,6 +104,7 @@ test("scopes headers and clears old routes on model switch and shutdown", async 
 	assert.deepEqual(otherHeaders, { existing: "keep" });
 	resolveRoute(Response.json({ session: sessionKey("pi-session"), route })); await tick();
 	assert.equal(h.statuses.at(-1), undefined);
+	assert.equal(h.models.at(-1), undefined);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -119,7 +122,7 @@ test("ignores routes from another selected model and aborts manual refresh", asy
 		signal = opts.signal; return new Promise((resolve) => { finish = resolve; });
 	});
 	h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route\?/);
 	const pending = h.command("refresh");
 	h.events.get("session_shutdown")!({}, h.ctx); assert.equal(signal.aborted, true);
 	finish({ code: 0, stdout: JSON.stringify(payload) }); await pending;
@@ -137,8 +140,8 @@ test("does not substitute an older account when the latest matching record has n
 		] });
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /account\?/);
-	assert.doesNotMatch(h.statuses.at(-1)!, /account old/);
+	assert.match(h.models.at(-1)!, /account\?/);
+	assert.doesNotMatch(h.models.at(-1)!, /account old/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -197,12 +200,12 @@ test("retries the account lookup after the route completes", async (t) => {
 		return Response.json({ total: rows.length, rows });
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route\?/);
 	visible = true; t.mock.timers.tick(2_000); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /account\?/);
+	assert.match(h.models.at(-1)!, /account\?/);
 	rows = [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: "two" }];
 	t.mock.timers.tick(2_000); await tick(); await tick();
-	assert.match(h.statuses.at(-1)!, /fallback\(1\) #2/);
+	assert.match(h.models.at(-1)!, /fallback\(1\) #2/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -220,6 +223,6 @@ test("does not restore a previous route during a new request", async (t) => {
 	const before = routeReads;
 	t.mock.timers.tick(5 * 60_000); await tick(); await tick();
 	assert.equal(routeReads, before);
-	assert.match(h.statuses.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route\?/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
