@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { registerBiliModels } from "./bili-sync.js";
 import { Container, Key, matchesKey, SelectList, Text } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, getSelectListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -525,17 +526,25 @@ async function selectTaskModels(ctx: ExtensionContext, options: string[]): Promi
 
 export function createTaskModelsExtension(
 	pi: ExtensionAPI,
-	options?: { agentDir?: string },
+	options?: { agentDir?: string; delegateConfigPath?: string },
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
+	const syncDelegates = registerBiliModels(pi, agentDir, options?.delegateConfigPath);
 	const configStore = taskModelsConfigStore(agentDir);
 	const repairStore = taskModelsConfigStore(agentDir, true);
 	const presetsStore = taskModelPresetsStore(agentDir);
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
+	let syncedSession = false;
 	pi.on("session_start", (_event, ctx) => {
+		syncedSession = false;
 		if (configStore.loadSync().source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
 		}
+	});
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (syncedSession) return;
+		syncedSession = true;
+		await syncDelegates(ctx);
 	});
 	pi.registerCommand("task-models", {
 		getArgumentCompletions: (prefix) => {
@@ -556,8 +565,11 @@ export function createTaskModelsExtension(
 			// The repair store never disables, so a disabled config still shows and keeps the settings that loaded.
 			const snapshot = repairStore.loadSync();
 			const config: TaskModelsConfig = snapshot.status === "ok" ? snapshot.value : { profiles: {}, tasks: {} };
-			const save = (mutator: (current: TaskModelsConfig) => TaskModelsConfig) =>
-				saveTaskModelsConfig(ctx, configStore, snapshot, config, mutator);
+			const save = async (mutator: (current: TaskModelsConfig) => TaskModelsConfig) => {
+				const saved = await saveTaskModelsConfig(ctx, configStore, snapshot, config, mutator);
+				if (saved) await syncDelegates(ctx);
+				return saved;
+			};
 
 			if (action === "preset") {
 				const presets = presetsStore.loadSync();

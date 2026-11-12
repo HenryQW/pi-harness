@@ -38,6 +38,24 @@ Run `/task-models`, select `fast`, then choose a primary model and thinking leve
 
 Configure each profile your consumers require. `fav` has no fallback. Select an active task to override its declared profile; choosing its declared default removes the override.
 
+### Delegate routes
+
+`/task-models` lists the billion-context `acp_delegate` roles. Researcher defaults to `fast`; reviewer, worker, planner, and oracle default to `balanced`. Assign a profile to each role as needed. The first available route supplies the model and thinking level.
+
+The sync runs only when the registered `acp_delegate` comes from `npm:billion-context`. It runs before the first agent run in each session, after all session-start handlers register their tools. It also runs after a task model save. Other delegate providers are skipped.
+
+When `pi.subagents` is an object or `true` in the billion-context config, the sync updates its role settings. When it is `false` or has `enabled: false`, the sync stays inactive. When it is absent, billion-context uses the legacy `acp.json` files.
+
+The sync updates the project file when it has a `delegate` setting; otherwise, it updates the global file. It creates the global file only when a route is available. The sync preserves other settings and does not change a disabled legacy delegate. Project `delegate` settings replace the global `delegate` object.
+
+The config path is `BILI_CONFIG_FILE` when set, otherwise `billion-context/billion-context.json` under `XDG_CONFIG_HOME`, or `~/.config` when that variable is unset. The legacy paths are `~/.pi/acp.json` and `.pi/acp.json` in the session working directory; the directory name follows Pi.
+
+Sync requires strict JSON in these files, even if the billion-context loader accepts comments or trailing commas. If a file is not strict JSON, sync shows a warning and leaves it unchanged. Remove comments and trailing commas, and use quoted keys and strings to repair it.
+
+Sync also leaves files unchanged if delegate role settings are invalid, if they are symbolic or hard links, or if permissions or metadata are unsupported. Files with numbers that would change during JSON serialization are also left unchanged. Route or write problems show a warning and do not block Pi. Explicit delegate call settings still take priority.
+
+Billion-context loads delegate config at session initialization. The first agent run syncs after that load, so its changes apply to a new session. Changes saved during a session also apply to a new session.
+
 ### Presets
 
 Run `/task-models preset` and choose a name. Included profiles replace complete routes, thinking levels, and fallbacks in one atomic update. Omitted profiles and task assignments stay unchanged. Applying can create missing active config.
