@@ -20,7 +20,7 @@ Cumulative time spent in agent runs, including automatic retries and auto-compac
 _Avoid_: Session age, response duration, session time
 
 **Family status**:
-The active Codex account's quota status, reserved for the right side of the first footer line.
+The Codex or Magpie route and quota status, reserved for the right side of the first footer line.
 _Avoid_: External extension status, plugin summary
 
 **External status line**:

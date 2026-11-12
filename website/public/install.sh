@@ -28,6 +28,7 @@ EXTENSIONS='
 @henryqw/pi-footer
 @henryqw/pi-goal
 @henryqw/pi-herdr-tools
+@henryqw/pi-magpie
 @henryqw/pi-memory
 @henryqw/pi-notes
 @henryqw/pi-pr

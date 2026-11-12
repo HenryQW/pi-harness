@@ -19,6 +19,7 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | `pi-goal` | [Pi Goal](extensions/pi-goal/CONTEXT.md) | Branch-derived Goals, Evidence-based completion, Continuation limits, and Budget |
 | `pi-herdr` | [Pi Herdr](packages/pi-herdr/CONTEXT.md) | Herdr panes, Pi-agent launches, and shell readiness |
 | `pi-herdr-tools` | [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md) | Conversation clones, handoffs, side questions, titles, and worktree completion |
+| `pi-magpie` | [Pi Magpie](extensions/pi-magpie/CONTEXT.md) | Magpie provider quota and refresh status |
 | `pi-memory` | [Pi Memory](extensions/pi-memory/CONTEXT.md) | Durable cross-session facts, candidate review, and approved rule promotion |
 | `pi-multi-codex` | [Pi Multi Codex](extensions/pi-multi-codex/CONTEXT.md) | Codex account slots, quota ranking, and failover |
 | `pi-notes` | [Pi Notes](extensions/pi-notes/CONTEXT.md) | User reminders owned by one Git worktree instance |
