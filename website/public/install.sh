@@ -29,7 +29,6 @@ EXTENSIONS='
 @henryqw/pi-goal
 @henryqw/pi-herdr-tools
 @henryqw/pi-memory
-@henryqw/pi-multi-codex
 @henryqw/pi-notes
 @henryqw/pi-pr
 @henryqw/pi-rtk-test

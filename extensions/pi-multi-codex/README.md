@@ -1,15 +1,9 @@
 # `@henryqw/pi-multi-codex`
 
-Use multiple ChatGPT Codex OAuth accounts with quota-based selection and HTTP 429 failover.
+This package is deprecated. Do not install it for new use. Existing users can use the reference below for account slots, quota selection, and failover.
 
 ![Pi showing Codex account quotas and the active footer slot](./example.png)
 ![Flowchart separating fresh-quota startup ranking from broader HTTP 429 failover](./docs/codex-routing-flow.svg)
-
-## Install
-
-```bash
-pi install npm:@henryqw/pi-multi-codex
-```
 
 ## Works with
 

@@ -1,6 +1,7 @@
 {
   "name": "@henryqw/pi-multi-codex",
   "version": "3.2.7",
+  "private": true,
   "description": "Use multiple ChatGPT Codex OAuth accounts in Pi.",
   "keywords": [
     "pi-package",
