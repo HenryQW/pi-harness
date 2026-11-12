@@ -39,25 +39,29 @@ unavailable, unless an explicit safe non-UI policy authorizes it. Do not use
   matching and key lookup; imported `rawKeyHint()` can format a literal key.
   Extend `CustomEditor`, forward unowned input, and compose with prior factories.
 - Markdown transformers receive optional persisted `messageId` and `timestamp`
-  fields; both are undefined during live rendering. Keep transformers synchronous
-  and inexpensive. They change display only, not stored messages or model context.
+  fields; both are undefined during live rendering. In Pi 1.5.1 and later, the
+  optional `messageTypes` selects surfaces: defaults are user, assistant, and
+  thinking; opt in to `custom`, `summary`, or `changelog` as needed. Keep
+  transformers synchronous and inexpensive. They change display only, not stored
+  messages or model context.
 - Clear timers and UI state on completion/shutdown. Keep business logic separate
   so non-interactive modes remain functional.
 - Test the affected mode: RPC startup does not verify TUI layout, keyboard input,
   overlays, or non-UI confirmation policy. Report untested behavior explicitly.
 
-## Inline blocked status
+## Blocked status
 
-For an inline component that waits for an answer, use
+For a component that waits for an answer, use
 `ctx.ui.custom(factory, { blocked: { kind: "question", message: "Pick a color" } })`.
 The allowed kinds are `question`, `permission`, and `auth` (authentication).
-Pi reports blocked status only while that dialog is visible, and only terminals
-with program-status support can show it. Overlays ignore this option. Do not mark
-loaders or other non-blocking components as blocked.
+Inline components report blocked status while visible. In Pi 1.5.1 and later,
+blocked overlays report it until `done()`, even when hidden; older Pi versions
+ignore this option for overlays. Only terminals with program-status support show
+it. Do not mark loaders or other non-blocking components as blocked.
 
 ```mermaid
 flowchart LR
-  A[Inline dialog waits for an answer] --> B[Pi tracks the visible dialog]
+  A[Dialog waits for an answer] --> B[Pi tracks blocked status]
   B --> C[Supported terminal shows blocked status]
 ```
 

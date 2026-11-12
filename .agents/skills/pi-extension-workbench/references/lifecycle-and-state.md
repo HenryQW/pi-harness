@@ -29,6 +29,11 @@ Example paths below are relative to `examples/extensions/`.
   `details`, non-model data with `appendEntry`, and model content with
   `sendMessage`. Rebuild from `getBranch()`, not all file entries; abandoned
   branches are alternative histories. Verify affected fork/tree/switch paths.
+  In Pi 1.5.2, a missing-directory session can switch to a full-history fork
+  with a new session identity; this emits switch, not fork, events.
+- Pi 1.5.1 and later reject reload during a response or compaction. Command
+  handlers can await `ctx.waitForIdle()` before reload; do not wait from a tool
+  that must finish before the agent can become idle.
 - Event return contracts differ: explicit cancellation, blocking, transformation,
   and notification are not interchangeable. Input transformation must account
   for steering (`streamingBehavior`) without slow preprocessing.

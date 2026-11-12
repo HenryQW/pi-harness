@@ -527,6 +527,7 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 	pi.registerCommand("dir-reload", {
 		description: "Reload external directory resources",
 		handler: async (_args, ctx) => {
+			await ctx.waitForIdle();
 			await ctx.reload();
 		},
 	});
@@ -556,7 +557,10 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 			const result = await addDir(parsed.path, parsed.source, ctx);
 			const message = result.ok && result.resourcesChanged ? `${result.message} Reloading external skills...` : result.message;
 			ctx.ui.notify(message, result.ok ? "info" : "error");
-			if (result.ok && result.resourcesChanged) await ctx.reload();
+			if (result.ok && result.resourcesChanged) {
+				await ctx.waitForIdle();
+				await ctx.reload();
+			}
 		},
 	});
 
@@ -578,7 +582,10 @@ export default function addDirExtension(pi: ExtensionAPI, options: ExtensionOpti
 
 			const result = await removeDir(dir, ctx);
 			ctx.ui.notify(result.message, result.ok ? "info" : "error");
-			if (result.ok) await ctx.reload();
+			if (result.ok) {
+				await ctx.waitForIdle();
+				await ctx.reload();
+			}
 		},
 	});
 

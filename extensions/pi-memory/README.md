@@ -64,7 +64,7 @@ For a single add with one same-store conflict, the command shows the complete cu
 
 Evidence that also matches a retained entry blocks the write. A conflict with another source also blocks it. The error names the conflicting store and its evidence. A queued candidate stays in the review inbox, and an immediate `/remember` reports that nothing was saved. Other non-SYSTEM conflicts can use **Save complete mutation**. SYSTEM conflicts offer only discard or deferral; candidate review never edits `SYSTEM.md`.
 
-**Review later** is selected by default. Press Esc to stop and retain the candidate. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
+**Review later** is selected by default. Press Esc to stop and retain the candidate. On Pi 1.5.1 and later, the approval overlay reports permission status to terminals that support it. Use Page Up, Page Down, Home, and End to read long mutations; approval controls stay visible.
 
 Discard removes the candidate without a memory write. Approval removes it only after the memory write succeeds. Changed sources, cancellation, invalid review output, and write failures retain the candidate. A saved mutation with a failed inbox removal is reported separately; inspect live memory before another review.
 

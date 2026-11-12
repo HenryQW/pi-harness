@@ -197,8 +197,10 @@ async function summarize(
 	signal: AbortSignal | undefined,
 ) {
 	// The registry owns request-time authentication, provider overrides, and virtual model routing.
-	return compact(preparation, model, undefined, undefined, COMPACTION_INSTRUCTIONS,
+	const result = await compact(preparation, model, undefined, undefined, COMPACTION_INSTRUCTIONS,
 		signal, thinking, (model, context, options) => ctx.modelRegistry.streamSimple(model, context, options));
+	signal?.throwIfAborted();
+	return result;
 }
 
 /** Index unchanged, successful read results with their first matching earlier assistant call. */

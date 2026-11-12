@@ -206,16 +206,18 @@ test("Bun virtual entrypoints reuse the active executable instead of PATH", asyn
 	simulateActivePi(t);
 	const cwd = await mkdtemp(join(tmpdir(), "pi-subagent-bun-invocation-"));
 	const previous = process.argv[1];
-	process.argv[1] = "/$bunfs/root/pi";
 	t.after(async () => {
 		process.argv[1] = previous;
 		await rm(cwd, { recursive: true, force: true });
 	});
-	const result = await executor().run({
-		prepare: async () => prepared(cwd, "work", { env: { PATH: "" }, args: [] }),
-	});
-	assert.equal(result.outcome, "failure");
-	assert.match(result.stderr, /(?:bad|unknown|illegal) option/i);
+	for (const entry of ["/$bunfs/root/pi", "B:/~BUN/root/pi", "B:\\~BUN\\root\\pi"]) {
+		process.argv[1] = entry;
+		const result = await executor().run({
+			prepare: async () => prepared(cwd, "work", { env: { PATH: "" }, args: [] }),
+		});
+		assert.equal(result.outcome, "failure");
+		assert.match(result.stderr, /(?:bad|unknown|illegal) option/i);
+	}
 });
 
 test("executor frames split UTF-8 JSON and bounds streamed and final output", async (t) => {

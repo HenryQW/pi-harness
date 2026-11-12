@@ -39,7 +39,7 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 | Second: usage line | Input and output token totals, latest cache-hit rate, response throughput, estimated cost, and context use. | Active model and thinking level. |
 | Third | CodeGraph first, then other extension statuses sorted by key, including Ponytail and `pi-rewind`. | Cumulative agent-work time. |
 
-Token and cost totals include reported tool usage and completed `pi-subagent` background workflows. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
+Token and cost totals include native usage entries, reported tool usage, and completed `pi-subagent` background workflows. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
 
 The model name includes its provider, so one model ID that several providers serve stays distinguishable: `opencode-go/deepseek-v4.1-flash • high`. A missing model shows `no-model`.
 

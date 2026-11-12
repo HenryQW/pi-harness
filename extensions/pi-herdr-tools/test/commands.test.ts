@@ -878,7 +878,7 @@ test("launch fails fast on a foreign job lock and never bypasses global capacity
 
 for (const cause of ["timeout", "cancelled", "output_limit"] as const)
 test(`${cause} stops the live child while its record lock stays held`, { timeout: 12_000 }, async (t) => {
-	const script = `console.log(process.pid); ${cause === "output_limit" ? 'setTimeout(()=>setInterval(()=>process.stdout.write("x".repeat(1024)),10),500)' : 'setInterval(()=>{},1000)'}`;
+	const script = `console.log(process.pid); ${cause === "output_limit" ? 'setInterval(()=>{if(require("node:fs").existsSync("emit-output"))process.stdout.write("x".repeat(1024))},10)' : 'setInterval(()=>{},1000)'}`;
 	const f = await fixture(t, `exec '${process.execPath}' -e '${script}'`, { runtimeMs: cause === "timeout" ? 1800 : 8000, outputBytes: 1024 });
 	const job = await readJob(f.dir), execution = start(f.dir, f.spec);
 	const pid = await waitFor(async () => { const text = await outputTail(job); return /^\d+\n/.test(text) ? Number(text.split("\n")[0]) : undefined; });
@@ -887,14 +887,16 @@ test(`${cause} stops the live child while its record lock stays held`, { timeout
 		try {
 			return await withWorktreeLock(f.dir, async () => {
 				if (cause === "cancelled") await cancelJob(job);
+				if (cause === "output_limit") await writeFile(join(f.root, "emit-output"), "");
 				await waitFor(async () => { try { process.kill(pid, 0); return undefined; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } }, 3500);
 				await assertLockHeld(f.dir);
 				return true;
 			});
 		} catch (error) { if ((error as NodeJS.ErrnoException).code === "ELOCKED") return undefined; throw error; }
 	});
-	await execution.done;
-	assert.equal((await readJob(f.dir)).state, cause);
+	const runnerExit = await execution.done;
+	const settled = await readJob(f.dir);
+	assert.equal(settled.state, cause, JSON.stringify({ runnerExit, failure: settled.result?.failure, signal: settled.result?.signal }));
 });
 
 test("the cancel tool publishes control before waiting for locked status", { timeout: 12_000 }, async (t) => {

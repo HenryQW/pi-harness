@@ -330,7 +330,7 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					add(entry.message.usage);
 				} else if (entry.type === "custom_message" && entry.customType === SUBAGENT_BACKGROUND_RESULT) {
 					add(subagentBackgroundUsage(entry.details));
-				} else if (entry.type === "branch_summary" || entry.type === "compaction") {
+				} else if (entry.type === "branch_summary" || entry.type === "compaction" || entry.type === "usage") {
 					add(entry.usage);
 				}
 			}

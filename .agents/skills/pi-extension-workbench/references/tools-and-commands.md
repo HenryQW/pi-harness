@@ -34,9 +34,13 @@ schema builder, remains supported within that contract.
   wraps single values as arrays, and drops optional nulls when null is not allowed.
   Errors use messages such as `- path: missing`. TypeBox schemas still work,
   but `Type.Refine()` and `Format.Set()` checks do not run; codecs do not decode.
-  `Type.BigInt()`, `Type.Undefined()`, and `Type.Void()` reject arguments.
+  Pi 1.5.1 and later convert `Type.BigInt()` and `Type.Undefined()` arguments;
+  `Type.Void()` rejects every argument. Earlier Pi 1.5 releases reject all three.
   Put required semantic checks in `execute()`; keep domain and authorization
   validation. See installed `Tool parameter schemas and TypeBox`.
+- In Pi 1.5.1 and later, `GrepOperations.readFile` is ignored; remote grep
+  requires an `execute()` override. Custom `ReadOperations.createReadStream`
+  enables bounded-memory text reads; without it, `readFile` loads the file.
 - Nested calls use normal validation/interception but do not add transcript
   entries. Surface needed results in the parent result. Pi aggregates nested
   tool usage; do not count it twice. Report usage for the tool's own model calls.

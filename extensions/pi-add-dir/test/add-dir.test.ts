@@ -122,6 +122,7 @@ function extensionContext(cwd: string, getBranch: () => unknown[], reload = asyn
 		sessionManager: { getBranch },
 		ui: { addAutocompleteProvider() {}, setWidget() {} },
 		reload,
+		waitForIdle: async () => {},
 	} as unknown as ExtensionContext;
 }
 
@@ -150,6 +151,7 @@ function interactiveContext(
 			select: options.select ?? (async () => undefined),
 		},
 		reload: options.reload ?? (async () => {}),
+		waitForIdle: async () => {},
 	} as unknown as ExtensionContext;
 }
 
@@ -527,6 +529,37 @@ test("queues a resource reload when tree navigation changes added directories", 
 		assert.equal(reloads, 1);
 	} finally {
 		await rm(external, { recursive: true, force: true });
+	}
+});
+
+test("directory commands wait for idle before reloading skills", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pi-add-dir-idle-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const cwd = join(root, "cwd"), external = join(root, "external");
+	await mkdir(cwd);
+	await mkdir(join(external, ".pi/skills/demo"), { recursive: true });
+	await writeFile(join(external, ".pi/skills/demo/SKILL.md"), "---\ndescription: Demo\n---\n");
+	const { commands, handlers } = loadExtension({ agentDir: join(root, "agent") });
+	let reloads = 0, release!: () => void, waiting!: () => void;
+	let reached = Promise.resolve();
+	const ctx = interactiveContext(cwd, () => [], {
+		reload: async () => { reloads++; },
+		select: async (_title, choices) => choices[0],
+	});
+	ctx.waitForIdle = () => {
+		waiting();
+		return new Promise<void>(resolve => { release = resolve; });
+	};
+	await handlers.get("session_start")!({}, ctx);
+	for (const [name, args] of [["dir-reload", ""], ["dir-add", external], ["dir-ls", ""]]) {
+		reached = new Promise<void>(resolve => { waiting = resolve; });
+		const before = reloads;
+		const pending = commands.get(name!)!.handler(args!, ctx as ExtensionCommandContext);
+		await reached;
+		assert.equal(reloads, before);
+		release();
+		await pending;
+		assert.equal(reloads, before + 1);
 	}
 });
 

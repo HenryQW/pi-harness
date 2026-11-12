@@ -175,7 +175,7 @@ for (const [route, bounded] of [["create", false], ["publish-work", false], ["sw
 		assert.deepEqual(session.getSteeringMessages(), []);
 		const pendingUI: unknown[] = [];
 		const mode = Object.assign(Object.create(InteractiveMode.prototype), {
-			runtimeHost: { session }, compactionQueuedMessages: [],
+			runtimeHost: { session }, compactionQueuedMessages: [], pendingBashComponents: [],
 			pendingMessagesContainer: { clear: () => { pendingUI.length = 0; }, addChild: (child: unknown) => pendingUI.push(child) },
 		});
 		mode.updatePendingMessagesDisplay();
