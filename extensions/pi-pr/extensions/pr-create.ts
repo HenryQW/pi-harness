@@ -8,7 +8,6 @@ import {
 	loadCurrentPullRequest,
 	loadPullRequestPublication,
 	preflightPullRequestCreation,
-	readPullRequestBaseRefOid,
 	readTrackingOid,
 	readValidatedRemoteAuthority,
 	setBranchUpstream,
@@ -197,11 +196,6 @@ export class PullRequestCreator {
 		return discovery;
 	}
 
-	private async liveBase(): Promise<string> {
-		if (!this.state.base) throw new Error("PR creation base is unavailable");
-		return await readPullRequestBaseRefOid(this.pi(), this.context(), this.state.base);
-	}
-
 	private async preflightCrossRepositoryCreation(): Promise<void> {
 		if (!this.state.base || this.state.base.repository.toLowerCase() === this.target.repository.toLowerCase()) return;
 		const [baseOwner, baseName] = this.state.base.repository.split("/");
@@ -253,15 +247,10 @@ export class PullRequestCreator {
 				fetchSource: base.fetchSource,
 			};
 			this.state.phase = "blocked";
-			await runChecked(this.exec, "git", [
-				"fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", base.fetchSource, base.oid,
-			], this.options());
-			await runChecked(this.exec, "git", ["cat-file", "-e", `${base.oid}^{commit}`], this.options());
 			const fresh = await this.freshNone();
 			if (await readHead(this.exec, this.options()) !== preflight.head) {
 				throw new Error("PR creation cancelled: local HEAD changed during prepare");
 			}
-			if (await this.liveBase() !== base.oid) throw new Error("PR creation cancelled: base ref moved during prepare");
 			if (!isPullRequestCreationEligible(fresh.branch)) {
 				throw new Error("PR creation cancelled: branch no longer has a committed change or pending work");
 			}
@@ -307,7 +296,6 @@ export class PullRequestCreator {
 			throw new Error("PR creation is not prepared for verification");
 		}
 		return await withWorktreeLock(this.cwd, async () => {
-			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			const head = await this.requireCleanHead();
 			if (!isPullRequestCreationEligible((await this.freshNone()).branch) || await readHead(this.exec, this.options()) !== head) {
 				throw new Error("PR creation changed during verification or no longer has a committed change");
@@ -347,7 +335,6 @@ export class PullRequestCreator {
 			}
 			await this.preflightCrossRepositoryCreation();
 			await this.freshNone();
-			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			if (await this.requireCleanHead() !== head) throw new Error("PR creation cancelled: local HEAD changed before push");
 			this.run.beforePush(original, head);
 			this.state.publicationHead = head;
@@ -417,7 +404,6 @@ export class PullRequestCreator {
 		}
 		return await withWorktreeLock(this.cwd, async () => {
 			await this.publishedAuthority();
-			if (await this.liveBase() !== this.state.base!.oid) throw new Error("PR creation cancelled: frozen base moved");
 			const before = await this.exactCandidate();
 			if (before && (before.base.repository.toLowerCase() !== this.state.base!.repository.toLowerCase() || before.base.ref !== this.state.base!.ref)) {
 				throw new Error("Exact-head pull request targets a different base");
