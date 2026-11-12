@@ -150,7 +150,6 @@ test("successful no-target upstream setup revalidates a changed configured push 
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "gh" && args[0] === "api") return result(baseOutput());
 		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
@@ -219,7 +218,6 @@ test("a successful push remains publishable when no-target upstream setup fails"
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
-			return result(baseOutput());
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
@@ -248,7 +246,6 @@ test("configured-target pushes never read or change upstream", async (t) => {
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "gh" && args[0] === "api") return result(baseOutput());
 		if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 		if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 		if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
@@ -290,7 +287,6 @@ test("creates an organization-owned same-repository PR with an unqualified head"
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
-			return result(baseOutput());
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
@@ -336,12 +332,6 @@ test("preflights and creates an organization-owned cross-repository PR through e
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("target{oid}")) {
-				return result(JSON.stringify({ data: { repository: {
-					nameWithOwner: baseRepository,
-					ref: { name: "main", target: { oid: base } },
-				} } }));
-			}
 			if (query.includes("createInput:__type")) {
 				return result(createAuthorityOutput(baseRepository, headRepository, "Organization"));
 			}
@@ -413,12 +403,6 @@ test("rejects an unsupported organization cross-repository API before pushing", 
 		calls.push([command, [...args]]);
 		const text = args.join(" ");
 		if (command === "git" && text === "branch --show-current") return result("feature\n");
-		if (command === "gh" && args.some((arg) => arg.includes("target{oid}"))) {
-			return result(JSON.stringify({ data: { repository: {
-				nameWithOwner: "acme/upstream",
-				ref: { name: "main", target: { oid: base } },
-			} } }));
-		}
 		if (command === "gh" && args.some((arg) => arg.includes("createInput:__type"))) {
 			return result(createAuthorityOutput("acme/upstream", "acme/head", "Organization", ["repositoryId"]));
 		}
@@ -458,12 +442,6 @@ test("keeps user-owned fork creation on gh pr create with a qualified head", asy
 		if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			if (query.includes("target{oid}")) {
-				return result(JSON.stringify({ data: { repository: {
-					nameWithOwner: baseRepository,
-					ref: { name: "main", target: { oid: base } },
-				} } }));
-			}
 			if (query.includes("createInput:__type")) {
 				return result(createAuthorityOutput(baseRepository, headRepository, "User"));
 			}
@@ -551,8 +529,6 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 			if (command === "git" && args[0] === "merge-base") return result(`${mergeBase}\n`);
 			if (command === "git" && args[0] === "rev-list" && args[1] === "--count") return result("1\n");
-			if (command === "git" && args[0] === "cat-file") return result();
-			if (command === "gh" && args[0] === "api" && args[1] === "graphql") return result(baseOutput(candidate.selected));
 			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
 		};
@@ -596,6 +572,55 @@ test("prepare uses configured or default preflight base with captured OIDs", asy
 	}
 });
 
+test("creation continues when the base ref moves after preflight", async (t) => {
+	const creationTarget = target(false);
+	const movedBase = "e".repeat(40);
+	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-moved-base-"));
+	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
+	let baseMoved = false;
+	let pushed = false;
+	let searches = 0;
+	const body = "Base moved during creation.";
+	const workflow = new PullRequestCreator({ run: new PrRun(), cwd, target: creationTarget, agentDir,
+		loadCurrentPullRequest: async () => none({ ...creationTarget, remoteOid: pushed ? head : creationTarget.remoteOid },
+			{ ahead: 1, worktree: "clean", relation: "distinct-ref" }),
+		exec: async (command, args) => {
+			const text = args.join(" ");
+			if (command === "git" && args[0] === "fetch" && baseMoved) throw new Error("Old base commit is unavailable");
+			if (command === "git" && text === "branch --show-current") return result("feature\n");
+			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
+			if (command === "git" && ["remote get-url --push --all origin", "remote get-url --all origin"].includes(text)) return result("git@github.com:acme/project.git\n");
+			if (command === "git" && args[0] === "config") return result("", 1);
+			if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") return result(JSON.stringify({ defaultBranchRef: { name: "main" } }));
+			if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
+			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
+			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
+			if (command === "git" && args[0] === "fetch") return result();
+			if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
+			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
+			if (command === "git" && args[0] === "merge-base") return args[1] === "--is-ancestor" ? result() : result(`${base}\n`);
+			if (command === "git" && args[0] === "rev-list") { baseMoved = true; return result("1\n"); }
+			if (command === "git" && args[0] === "push") { pushed = true; return result(); }
+			if (command === "git" && args[0] === "update-ref") return result();
+			if (command === "git" && args[0] === "ls-remote") return result(`${head}\trefs/heads/feature\n`);
+			if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
+				const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+				if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
+				if (query.includes("target{oid}")) return result(baseOutput().replace(base, baseMoved ? movedBase : base));
+			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "create") return result(`${url}\n`);
+			if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(publication(body));
+			unexpectedCommands.push(`Unexpected ${command} ${text}`);
+			throw new Error(`Unexpected ${command} ${text}`);
+		},
+	});
+	assert.equal((await workflow.prepare()).kind, "prepared");
+	assert.equal(baseMoved, true);
+	assert.deepEqual(await workflow.verify(), { kind: "verified", head });
+	assert.deepEqual(await workflow.push(), { kind: "pushed", head });
+	assert.deepEqual(await workflow.publish("feat: publish", body), { kind: "published", url });
+});
+
 test("prepare accepts dirty-only work and rejects it if eligibility disappears", async (t) => {
 	for (const disappears of [false, true]) {
 		const creationTarget = target(true);
@@ -616,9 +641,7 @@ test("prepare accepts dirty-only work and rejects it if eligibility disappears",
 				if (command === "git" && args[0] === "config") return result("", 1);
 				if (command === "gh" && args[0] === "repo" && args[4] === "defaultBranchRef") return result(JSON.stringify({ defaultBranchRef: { name: "main" } }));
 				if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
-				if (command === "gh" && args[0] === "api") return result(baseOutput());
 				if (command === "git" && args[0] === "fetch") return result();
-				if (command === "git" && args[0] === "cat-file") return result();
 				if (command === "git" && args[0] === "rev-parse" && args[2]?.startsWith("refs/remotes/origin/")) return result(`${base}\n`);
 				if (command === "git" && text === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
 				if (command === "git" && args[0] === "merge-base") return result(`${base}\n`);
@@ -648,14 +671,12 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 	const creationTarget = target(true);
 	const agentDir = mkdtempSync(join(tmpdir(), "pi-pr-create-agent-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	const calls: Array<[string, string[]]> = [];
 	const workflow = new PullRequestCreator({
 		run: new PrRun(),
 		cwd,
 		target: creationTarget,
 		agentDir,
 		exec: async (command, args) => {
-			calls.push([command, [...args]]);
 			const text = args.join(" ");
 			if (command === "git" && text === "branch --show-current") return result("feature\n");
 			if (command === "git" && args[0] === "check-ref-format") return result(`${args[2]}\n`);
@@ -679,7 +700,6 @@ test("prepare rejects a shared preflight with no commits ahead", async (t) => {
 
 	await assert.rejects(workflow.prepare(), /at least one commit ahead/);
 	assert.equal(workflow.state.phase, "unprepared");
-	assert.equal(calls.some(([command, args]) => command === "git" && args[0] === "cat-file"), false);
 });
 
 for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as const) test(`${scenario} metadata when an exact PR appears after push`, async (t) => {
@@ -706,7 +726,7 @@ for (const scenario of ["bounded", "full", "base-mismatch", "head-mismatch"] as 
 		if (command === "gh" && args[0] === "repo") return result(repositoryOutput());
 		if (command === "gh" && args[0] === "api") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
-			return result(query.includes("associatedPullRequests(") ? searchOutput(appeared) : baseOutput());
+			if (query.includes("associatedPullRequests(")) return result(searchOutput(appeared));
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "view") return result(JSON.stringify({
 			...JSON.parse(publication(metadata.body)), title: metadata.title,
@@ -750,7 +770,6 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 		if (command === "gh" && args[0] === "api" && args[1] === "graphql") {
 			const query = args.find((arg) => arg.startsWith("query=")) ?? "";
 			if (query.includes("associatedPullRequests(")) return result(searchOutput(searches++ > 0));
-			return result(baseOutput());
 		}
 		if (command === "gh" && args[0] === "pr" && args[1] === "create") {
 			mutations += 1;
@@ -770,24 +789,20 @@ test("a title/body race after PR mutation is terminal unknown and is never repla
 	assert.equal(app.workflow.state.phase, "blocked");
 });
 
-test("does not push when HEAD or target authority changes after final base checks", async (t) => {
+test("does not push when HEAD or target authority changes before push", async (t) => {
 	for (const race of ["HEAD", "authority"] as const) {
-		let localHead = head;
+		let localHeadReads = 0;
 		let latestTarget = target(true);
 		const calls: Array<[string, string[]]> = [];
 		const exec: Exec = async (command, args) => {
 			calls.push([command, [...args]]);
 			const text = args.join(" ");
 			if (command === "git" && text === "branch --show-current") return result("feature\n");
-			if (command === "gh" && args[0] === "api") {
-				if (race === "HEAD") localHead = "d".repeat(40);
-				return result(baseOutput());
-			}
 			if (command === "git" && text === "status --porcelain=v1 --untracked-files=all") return result();
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 			if (command === "git" && text === "rev-parse --verify HEAD^{commit}") {
 				if (race === "authority") latestTarget = { ...latestTarget, fetchSource: "git@github.com:acme/moved.git", remoteOid: "e".repeat(40) };
-				return result(`${localHead}\n`);
+				return result(`${race === "HEAD" && ++localHeadReads > 1 ? "d".repeat(40) : head}\n`);
 			}
 			unexpectedCommands.push(`Unexpected ${command} ${text}`);
 			throw new Error(`Unexpected ${command} ${text}`);
@@ -809,7 +824,6 @@ test("creation verifies a divergent committed branch without merging or rebasing
 		exec: async (command, args) => {
 			calls.push(`${command} ${args.join(" ")}`);
 			if (command === "git" && args.join(" ") === "branch --show-current") return result("feature\n");
-			if (command === "gh" && args[0] === "api") return result(baseOutput());
 			if (command === "git" && args.join(" ") === "status --porcelain=v1 --untracked-files=all") return result();
 			if (command === "git" && args[0] === "rev-parse" && args.includes("--git-path")) return result(OPERATION_PATHS);
 			if (command === "git" && args.join(" ") === "rev-parse --verify HEAD^{commit}") return result(`${head}\n`);
@@ -840,7 +854,7 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	writeFileSync(join(root, "file.txt"), "second\n");
 	const creationTarget = target(false);
 	const workflow = new PullRequestCreator({ run: new PrRun(), cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
-		exec: async (command, args, options) => command === "gh" ? result(baseOutput()) : await spawnBounded(command, args, options),
+		exec: spawnBounded,
 		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "dirty", relation: "distinct-ref" }),
 	});
 	workflow.state.phase = "prepared";
@@ -860,7 +874,7 @@ test("creation commits only inspected paths and pins the clean verified head", a
 	await assert.rejects(workflow.push(), /verified HEAD changed/);
 	git("mv", "file.txt", "renamed.txt");
 	const renamed = new PullRequestCreator({ run: new PrRun(), cwd: root, target: creationTarget, agentDir: join(directory, "agent"),
-		exec: async (command, args, options) => command === "gh" ? result(baseOutput()) : await spawnBounded(command, args, options),
+		exec: spawnBounded,
 		loadCurrentPullRequest: async () => none(creationTarget, { ahead: 1, worktree: "dirty", relation: "distinct-ref" }),
 	});
 	renamed.state.phase = "prepared";

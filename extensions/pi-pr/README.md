@@ -184,7 +184,7 @@ Required checks are read for the exact head. If a required check sets an integra
 | Configured draft, closed, merged, or required human review | Report without changes. Human-review waits never poll. |
 | Merge-ready | Ask for confirmation with PR number, URL, short head OID, base ref, and `mergeMethod`. Declining or no UI leaves the PR unchanged. |
 
-Creation permits fork heads on the same GitHub host and source. Other fork relationships, published refs without PRs, multiple candidate remotes/PRs, and unsafe push configuration block creation. Creation does not merge, rebase, or change the base branch. Configured PR targets retain their upstream settings.
+Creation permits fork heads on the same GitHub host and source. Other fork relationships, published refs without PRs, multiple candidate remotes/PRs, and unsafe push configuration block creation. The base ref can move during creation. Creation does not merge, rebase, or change the base branch. Configured PR targets retain their upstream settings.
 
 ### Feedback sweeps
 
