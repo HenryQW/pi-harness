@@ -1,7 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, getSelectPageIndex, Input, matchesKey, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
-/** Pi's string selector has no terminal window; keep the warning outside a bounded native list. */
+/** Keep the warning visible and bound the list to the terminal height. */
 export async function selectCommandOutput(ctx: ExtensionContext, title: string, options: string[], { searchable = false, searchText }: { searchable?: boolean; searchText?: string[] } = {}): Promise<string | undefined> {
 	if (ctx.mode !== "tui") return ctx.ui.select(title, options);
 	return ctx.ui.custom<string | undefined>((tui, theme, keys, done) => {
@@ -91,5 +91,5 @@ export async function selectCommandOutput(ctx: ExtensionContext, title: string, 
 			},
 			invalidate() { header.invalidate(); input.invalidate(); list?.invalidate(); },
 		};
-	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 }, blocked: { kind: "question", message: title.split("\n")[0]! } });
 }

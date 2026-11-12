@@ -10,7 +10,8 @@ test(`bounded native list keeps its heading and action visible: ${title.split("\
 	let component!: Component, resolved = false;
 	const terminal = { rows: 12, columns: 80 };
 	const keys = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.select.up": "k", "tui.select.down": "j", "tui.select.pageDown": "n", "tui.select.cancel": "q" });
-	const ctx = { mode: "tui", ui: { custom(factory: Function) {
+	const ctx = { mode: "tui", ui: { custom(factory: Function, options: { blocked: { kind: string; message: string } }) {
+		assert.deepEqual(options.blocked, { kind: "question", message: title.split("\n")[0] });
 		return new Promise<string | undefined>(done => {
 			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, keys,
 				(value: string | undefined) => { resolved = true; done(value); });

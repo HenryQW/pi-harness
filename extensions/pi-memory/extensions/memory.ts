@@ -495,7 +495,7 @@ async function chooseApproval(ctx: ExtensionContext, build: (theme: ExtensionCon
 					tui.requestRender();
 				},
 			};
-		}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+		}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 }, blocked: { kind: "permission", message: "Review memory changes" } });
 	} finally {
 		if (onAbort) signal?.removeEventListener("abort", onAbort);
 	}

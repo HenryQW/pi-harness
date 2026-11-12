@@ -28,7 +28,7 @@ Run `/dir-add`, enter a directory, then run `/dir-ls` to verify it. Humans use c
 
 Pi adds root `AGENTS.md`, `CLAUDE.md`, `.pi/AGENTS.md`, and `.pi/CLAUDE.md` to later prompts. External skills come from `.pi/skills`, `.agents/skills`, and `.claude/skills`.
 
-`/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. If `add_directory` asks for `/reload`, run it to update skills.
+`/dir-add` reloads only when discovered external skill paths change, not merely because skills exist. Directory commands wait until the agent is idle before they reload. If `add_directory` asks for `/reload`, run it to update skills.
 
 ### Child repository context
 

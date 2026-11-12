@@ -230,7 +230,8 @@ async function withReviewFixture(
 					return options.select?.(choices);
 				},
 				input: async () => options.input,
-				custom: (factory: CustomFactory) => new Promise((resolve, reject) => {
+				custom: (factory: CustomFactory, customOptions: { blocked: { kind: string; message: string } }) => new Promise((resolve, reject) => {
+					assert.deepEqual(customOptions.blocked, { kind: "permission", message: "Review memory changes" });
 					const component = factory(tui, plainTheme, undefined, resolve);
 					const lines = () => component.render(160).map((line) => stripVTControlCharacters(line).trimEnd());
 					questions.push(lines().join("\n"));
