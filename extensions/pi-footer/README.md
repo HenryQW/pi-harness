@@ -17,6 +17,7 @@ Both entry points load by default. To load only one, keep `extensions/footer.ts`
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-codegraph`](https://pi.henry.wang/extensions/pi-codegraph) | Improves | Shows CodeGraph index status, quiet setup progress, and direct tool activity when loaded. |
+| [`@henryqw/pi-magpie`](https://pi.henry.wang/extensions/pi-magpie) | Improves | Adds Magpie route and quota status. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
 | [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves | Adds completed background workflow usage to the token and cost totals. |
@@ -35,7 +36,7 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 
 | Line | Left | Right |
 | --- | --- | --- |
-| First | Repository, branch, Git state, and `pi-pr` pull-request status. Linked-worktree branches omit the generated `worktree/` prefix. | Non-empty `pi-multi-codex` family status. |
+| First | Repository, branch, Git state, and `pi-pr` pull-request status. Linked-worktree branches omit the generated `worktree/` prefix. | Non-empty `pi-multi-codex` and `pi-magpie` status. |
 | Second: usage line | Input and output token totals, latest cache-hit rate, response throughput, estimated cost, and context use. | Active model and thinking level. |
 | Third | CodeGraph first, then other extension statuses sorted by key, including Ponytail and `pi-rewind`. | Cumulative agent-work time. |
 

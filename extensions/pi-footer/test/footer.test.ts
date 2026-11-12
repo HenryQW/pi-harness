@@ -122,11 +122,12 @@ test("renders family status on the first line and external statuses beside runti
 		["pi-rewind", "↩ rewind"],
 		["hidden", ""],
 	]);
+	let branchName = "worktree/clear-field-f8d2";
 	const footer = footerFactory(
 		{ requestRender() {} },
 		{ fg: (color, text) => { colors.push([color, text]); return text; } },
 		{
-			getGitBranch: () => "worktree/clear-field-f8d2",
+			getGitBranch: () => branchName,
 			getExtensionStatuses: () => extensionStatuses,
 			onBranchChange: () => () => { disposed = true; },
 		},
@@ -146,6 +147,16 @@ test("renders family status on the first line and external statuses beside runti
 	// Narrow width: external status truncates first so the runtime stays visible.
 	const narrow = stripTerminalSequences(footer.render(30)[2]!);
 	assert.match(narrow, /◷ 0s$/);
+
+	extensionStatuses.set("magpie-quota", "Magpie: codex #1: 40%");
+	const withMagpie = footer.render(140).map(stripTerminalSequences);
+	assert.match(withMagpie[0]!, /Codex #1 · 50% · 7d 1d 1h 22m · Magpie: codex #1: 40%$/);
+	assert.doesNotMatch(withMagpie[2]!, /Magpie/);
+	extensionStatuses = new Map([["magpie-quota", "Magpie #3 5h 12% 60m · #4 5h 85% 120m · codex/gpt fallback(1) #3"]]);
+	assert.match(stripTerminalSequences(footer.render(100)[0]!), /#3 5h 12% 60m/);
+	branchName = "very-long-branch-name-that-would-hide-quota-without-reserving-space";
+	assert.match(stripTerminalSequences(footer.render(100)[0]!), /#3 5h 12% 60m.*codex\/gpt/);
+	branchName = "worktree/clear-field-f8d2";
 
 	extensionStatuses = new Map([
 		["pi-rewind", "↩ rewind"],
