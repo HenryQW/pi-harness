@@ -534,42 +534,37 @@ export function createTaskModelsExtension(
 	const repairStore = taskModelsConfigStore(agentDir, true);
 	const presetsStore = taskModelPresetsStore(agentDir);
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
-	let syncedSession = false;
 	pi.on("session_start", (_event, ctx) => {
-		syncedSession = false;
 		if (configStore.loadSync().source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
 		}
-	});
-	pi.on("before_agent_start", async (_event, ctx) => {
-		if (syncedSession) return;
-		syncedSession = true;
-		await syncDelegates(ctx);
 	});
 	pi.registerCommand("task-models", {
 		getArgumentCompletions: (prefix) => {
 			const items = [
 				{ value: "preset", description: "Choose a saved profile setup" },
+				{ value: "sync-delegates", description: "Overwrite delegate role models and thinking levels from task routes" },
 			];
 			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
 				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
 		},
-		description: "configure shared task model profiles; choose a saved setup with /task-models preset",
+		description: "configure task models, apply a preset, or sync delegate role settings",
 		handler: async (args, ctx) => {
 			const action = args.trim();
+			if (action === "sync-delegates") {
+				await syncDelegates(ctx);
+				return;
+			}
 			if (action && action !== "preset") {
-				ctx.ui.notify("Usage: /task-models [preset]", "error");
+				ctx.ui.notify("Usage: /task-models [preset|sync-delegates]", "error");
 				return;
 			}
 			reporter.report(ctx, configStore, configStore.loadSync());
 			// The repair store never disables, so a disabled config still shows and keeps the settings that loaded.
 			const snapshot = repairStore.loadSync();
 			const config: TaskModelsConfig = snapshot.status === "ok" ? snapshot.value : { profiles: {}, tasks: {} };
-			const save = async (mutator: (current: TaskModelsConfig) => TaskModelsConfig) => {
-				const saved = await saveTaskModelsConfig(ctx, configStore, snapshot, config, mutator);
-				if (saved) await syncDelegates(ctx);
-				return saved;
-			};
+			const save = (mutator: (current: TaskModelsConfig) => TaskModelsConfig) =>
+				saveTaskModelsConfig(ctx, configStore, snapshot, config, mutator);
 
 			if (action === "preset") {
 				const presets = presetsStore.loadSync();

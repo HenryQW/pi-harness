@@ -167,7 +167,7 @@ test("sync refuses symlinks and rechecks the section under the lock", async () =
 	} finally { f.close(); }
 });
 
-test("delegate ownership gates startup and assignment sync after delayed registration", async () => {
+test("delegate sync runs only on explicit command and checks tool ownership", async () => {
 	const f = fixture();
 	try {
 		const { createTaskModelsExtension } = await import("../dist/index.js");
@@ -214,34 +214,34 @@ test("delegate ownership gates startup and assignment sync after delayed registr
 			fast: { primary: { model: "test/second", thinkingLevel: "high" } },
 			balanced: { primary: { model: "test/first", thinkingLevel: "low" } },
 		} }));
+		const original = '{"pi":{"subagents":{"agents":{"worker":{"model":"old/model"}}}}}';
+		writeFileSync(f.path, original);
 		const homeFile = join(f.dir, CONFIG_DIR_NAME, "acp.json");
 		await emit("session_start", context);
 		await emit("before_agent_start", context);
 		await assign("fast");
+		assert.equal(readFileSync(f.path, "utf8"), original);
 		assert.throws(() => readFileSync(homeFile), { code: "ENOENT" });
 
-		writeFileSync(f.path, '{"pi":{"subagents":{}}}');
 		tools = [{ name: "acp_delegate", sourceInfo: { origin: "package", source: "npm:standalone-integration" } }];
+		await command.handler("sync-delegates", context);
+		assert.equal(readFileSync(f.path, "utf8"), original);
+		assert.ok(warnings.some((warning) => warning.includes("requires acp_delegate")));
+
+		tools = [{ name: "acp_delegate", sourceInfo: { origin: "package", source: "npm:billion-context" } }];
 		await emit("session_start", context);
 		await emit("before_agent_start", context);
 		await assign("balanced");
-		assert.equal(readFileSync(f.path, "utf8"), '{"pi":{"subagents":{}}}');
-		assert.throws(() => readFileSync(homeFile), { code: "ENOENT" });
-
-		tools = [];
-		await emit("session_start", context);
-		tools = [{ name: "acp_delegate", sourceInfo: { origin: "package", source: "npm:billion-context" } }];
-		assert.equal(readFileSync(f.path, "utf8"), '{"pi":{"subagents":{}}}');
-		await emit("before_agent_start", context);
-		assert.equal(JSON.parse(readFileSync(f.path, "utf8")).pi.subagents.agents.worker.model, "test/first");
-		writeFileSync(f.path, '{"pi":{"subagents":{}}}');
-		await emit("before_agent_start", context);
-		assert.equal(readFileSync(f.path, "utf8"), '{"pi":{"subagents":{}}}');
+		assert.equal(readFileSync(f.path, "utf8"), original);
+		await command.handler("sync-delegates", context);
+		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")).pi.subagents.agents.worker, { model: "test/first", thinkingLevel: "low" });
 		await assign("fast");
+		assert.equal(JSON.parse(readFileSync(f.path, "utf8")).pi.subagents.agents.worker.model, "test/first");
+		await command.handler("sync-delegates", context);
 		assert.deepEqual(JSON.parse(readFileSync(f.path, "utf8")).pi.subagents.agents.worker, { model: "test/second", thinkingLevel: "high" });
 		const nonStrict = '{"secret":"private-value", /* comment */ "pi":{"subagents":{}}}';
 		writeFileSync(f.path, nonStrict);
-		await assign("balanced");
+		await command.handler("sync-delegates", context);
 		assert.equal(readFileSync(f.path, "utf8"), nonStrict);
 		assert.ok(warnings.some((warning) => warning.includes("invalid JSON")));
 		assert.ok(warnings.every((warning) => !warning.includes("private-value")));

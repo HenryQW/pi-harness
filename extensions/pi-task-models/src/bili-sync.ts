@@ -128,10 +128,12 @@ export async function syncBiliModels(ctx: ExtensionContext, path: string, agentD
 
 export function registerBiliModels(pi: ExtensionAPI, agentDir: string, path = biliConfigPath()): (ctx: ExtensionContext) => Promise<void> {
 	for (const task of tasks) registerModelTask(pi, task);
-	let notice = "";
 	return async (ctx) => {
 		if (!pi.getAllTools().some(({ name, sourceInfo }) => name === "acp_delegate"
-			&& sourceInfo.origin === "package" && /^npm:billion-context(?:@[^/]+)?$/.test(sourceInfo.source))) return;
+			&& sourceInfo.origin === "package" && /^npm:billion-context(?:@[^/]+)?$/.test(sourceInfo.source))) {
+			ctx.ui.notify("Delegate sync requires acp_delegate from npm:billion-context.", "warning");
+			return;
+		}
 		let message = "";
 		try {
 			const errors = await syncBiliModels(ctx, path, agentDir);
@@ -139,10 +141,11 @@ export function registerBiliModels(pi: ExtensionAPI, agentDir: string, path = bi
 		} catch (error) {
 			message = `Delegate model sync failed: ${error instanceof Error ? error.message : String(error)}`;
 		}
-		if (message && message !== notice) {
+		if (message) {
 			if (ctx.hasUI) ctx.ui.notify(message, "warning");
 			else process.stderr.write(`${message}\n`);
+		} else {
+			ctx.ui.notify("Delegate sync finished. Start a new session to use any changes.", "info");
 		}
-		notice = message;
 	};
 }
