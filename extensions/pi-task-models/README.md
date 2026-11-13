@@ -25,7 +25,7 @@ Requires Pi 1.5.0 or later in the 1.x series.
 
 ## Use
 
-Type `/task-models ` to see `preset`, which opens the saved setup selector. The command without arguments still opens profile and task settings.
+Type `/task-models ` to see the available actions. The command without arguments opens profile and task settings.
 
 Run `/task-models`, select `fast`, then choose a primary model and thinking level. Choose a different fallback model and thinking level, or `None`. Reopen `/task-models`: `fast` shows the saved route instead of `not configured`.
 
@@ -33,10 +33,29 @@ Run `/task-models`, select `fast`, then choose a primary model and thinking leve
 | --- | --- | --- |
 | `/task-models` | command | Configure profiles and assign them to active tasks. |
 | `/task-models preset` | command | Apply a saved profile setup. |
+| `/task-models sync-delegates` | command | Overwrite delegate role models and thinking levels from task routes. |
 | Option+S / Alt+S in `/task-models` | shortcut | Save configured profiles as a named preset in the interactive terminal. |
 | Session start | ui | Warn about missing config and config or preset problems. Show an error when routing is disabled. |
 
 Configure each profile your consumers require. `fav` has no fallback. Select an active task to override its declared profile; choosing its declared default removes the override.
+
+### Delegate routes
+
+`/task-models` lists the billion-context `acp_delegate` roles. Researcher defaults to `fast`; reviewer, worker, planner, and oracle default to `balanced`. Assign a profile to each role as needed. The first available route supplies the model and thinking level.
+
+Run `/task-models sync-delegates` to write the available routes to the external delegate role settings. This overwrites the model and thinking level for each role with an available route. Startup, prompts, and other task model saves do not sync delegate settings. The command runs only when the registered `acp_delegate` comes from `npm:billion-context`. Other delegate providers are skipped.
+
+When `pi.subagents` is an object or `true` in the billion-context config, the sync updates its role settings. When it is `false` or has `enabled: false`, the sync stays inactive. When it is absent, billion-context uses the legacy `acp.json` files.
+
+The sync updates the project file when it has a `delegate` setting; otherwise, it updates the global file. It creates the global file only when a route is available. The sync preserves other settings and does not change a disabled legacy delegate. Project `delegate` settings replace the global `delegate` object.
+
+The config path is `BILI_CONFIG_FILE` when set, otherwise `billion-context/billion-context.json` under `XDG_CONFIG_HOME`, or `~/.config` when that variable is unset. The legacy paths are `~/.pi/acp.json` and `.pi/acp.json` in the session working directory; the directory name follows Pi.
+
+Sync requires strict JSON in these files, even if the billion-context loader accepts comments or trailing commas. If a file is not strict JSON, sync shows a warning and leaves it unchanged. Remove comments and trailing commas, and use quoted keys and strings to repair it.
+
+Sync also leaves files unchanged if delegate role settings are invalid, if they are symbolic or hard links, or if permissions or metadata are unsupported. Files with numbers that would change during JSON serialization are also left unchanged. Route or write problems show a warning and do not block Pi. Explicit delegate call settings still take priority.
+
+Billion-context loads delegate config at session initialization. Start a new session after sync to use the changes.
 
 ### Presets
 

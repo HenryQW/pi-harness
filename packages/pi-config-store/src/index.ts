@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { chmod, mkdir, open, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -112,16 +113,16 @@ function serialize(value: unknown): string {
 	return contents;
 }
 
-async function ensurePrivateDirectory(directory: string, signal?: AbortSignal): Promise<void> {
+async function ensurePrivateDirectory(directory: string, signal?: AbortSignal, preserveDirectoryMode = false): Promise<void> {
 	signal?.throwIfAborted();
 	await mkdir(directory, { recursive: true, mode: 0o700 });
 	signal?.throwIfAborted();
-	if (process.platform !== "win32") await chmod(directory, 0o700);
+	if (!preserveDirectoryMode && process.platform !== "win32") await chmod(directory, 0o700);
 	signal?.throwIfAborted();
 }
 
-async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-	await ensurePrivateDirectory(dirname(path));
+async function withLock<T>(path: string, operation: () => Promise<T>, preserveDirectoryMode = false): Promise<T> {
+	await ensurePrivateDirectory(dirname(path), undefined, preserveDirectoryMode);
 
 	const release = await lock(path, {
 		lockfilePath: `${path}.lock`,
@@ -141,9 +142,9 @@ async function withLock<T>(path: string, operation: () => Promise<T>): Promise<T
 export async function writePrivateTextFileAtomically(
 	path: string,
 	contents: string,
-	options: { signal?: AbortSignal } = {},
+	options: { signal?: AbortSignal; preserveDirectoryMode?: boolean; copyFrom?: string; beforeRename?: (temporaryPath: string) => void } = {},
 ): Promise<void> {
-	await ensurePrivateDirectory(dirname(path), options.signal);
+	await ensurePrivateDirectory(dirname(path), options.signal, options.preserveDirectoryMode);
 	const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
 	let file: import("node:fs/promises").FileHandle | undefined;
 	let created = false;
@@ -151,13 +152,31 @@ export async function writePrivateTextFileAtomically(
 		file = await open(temporaryPath, "wx", 0o600);
 		created = true;
 		options.signal?.throwIfAborted();
+		if (options.copyFrom && process.platform === "darwin") execFileSync("/bin/cp", ["-p", options.copyFrom, temporaryPath]);
+		else if (options.copyFrom && process.platform !== "linux") throw new Error("Cannot preserve external config metadata on this platform");
 		await file.writeFile(contents, { encoding: "utf8", signal: options.signal });
+		await file.truncate(Buffer.byteLength(contents));
+		if (options.copyFrom && process.platform === "linux") {
+			try {
+				execFileSync("cp", ["--attributes-only", "--preserve=mode,ownership,xattr", "--", options.copyFrom, temporaryPath], { stdio: "ignore" });
+			} catch {
+				throw new Error("Cannot preserve external config metadata");
+			}
+		}
 		options.signal?.throwIfAborted();
 		await file.sync();
 		options.signal?.throwIfAborted();
 		await file.close();
 		file = undefined;
 		options.signal?.throwIfAborted();
+		options.beforeRename?.(temporaryPath);
+		if (options.copyFrom && process.platform === "linux") {
+			try {
+				execFileSync("python3", ["-c", "import os, sys\ndef attrs(p): return {n: os.getxattr(p, n) for n in os.listxattr(p)}\nsys.exit(attrs(sys.argv[1]) != attrs(sys.argv[2]))", options.copyFrom, temporaryPath], { stdio: "ignore" });
+			} catch {
+				throw new Error("Cannot verify external config extended attributes; Python 3 and xattr access are required");
+			}
+		}
 		await rename(temporaryPath, path);
 	} catch (error) {
 		try {
@@ -489,15 +508,37 @@ function sameRevision(left: Revision, right: Revision): boolean {
 	return Buffer.isBuffer(left) && Buffer.isBuffer(right) ? left.equals(right) : left === null && right === null;
 }
 
+function decimalIdentity(text: string): string {
+	const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(text)!;
+	let digits = (match[2] + (match[3] ?? "")).replace(/^0+/, "");
+	if (!digits) return match[1] + "0";
+	const trailing = /0*$/.exec(digits)![0].length;
+	digits = digits.slice(0, digits.length - trailing);
+	return `${match[1]}${digits}e${BigInt(match[4] ?? "0") - BigInt((match[3] ?? "").length) + BigInt(trailing)}`;
+}
+
+class UnrepresentableNumberError extends Error {}
+
+function parseExternalJson(contents: string): unknown {
+	return JSON.parse(contents, ((_key: string, value: unknown, context: { source?: string }) => {
+		if (typeof value === "number" && (!Number.isFinite(value) || decimalIdentity(context.source!) !== decimalIdentity(JSON.stringify(value)))) {
+			throw new UnrepresentableNumberError("number cannot be preserved by JSON serialization");
+		}
+		return value;
+	}) as (key: string, value: unknown) => unknown);
+}
+
 class ConfigStore<T> {
 	readonly extensionId: string;
 	readonly path: string;
 	private readonly schema: RootSchema<T>;
+	private readonly externalPath: boolean;
 
-	constructor(extensionId: string, path: string, schema: RootSchema<T>) {
+	constructor(extensionId: string, path: string, schema: RootSchema<T>, externalPath = false) {
 		this.extensionId = extensionId;
 		this.path = path;
 		this.schema = schema;
+		this.externalPath = externalPath;
 	}
 
 	/** Read and validate the file. Never throws for file content or I/O problems, and never writes. */
@@ -511,6 +552,7 @@ class ConfigStore<T> {
 	/** The file's revision, `null` when it is missing, or the read error message. */
 	private readRevision(): Revision {
 		try {
+			if (this.externalPath) this.externalMode();
 			return readRevisionSync(this.path, MAX_CONFIG_BYTES);
 		} catch (error) {
 			return isMissing(error) ? null : readIssue(error).message;
@@ -528,19 +570,61 @@ class ConfigStore<T> {
 		}
 		let raw: unknown;
 		try {
-			raw = JSON.parse(contents);
+			raw = this.externalPath ? parseExternalJson(contents) : JSON.parse(contents);
 		} catch (error) {
+			if (error instanceof UnrepresentableNumberError) return this.fallback("file", [{ kind: "invalid-value", key: "", message: error.message }]);
 			return this.fallback("file", [{ kind: "invalid-json", key: "", message: `invalid JSON: ${errorMessage(error)}` }]);
 		}
 		return this.validate(raw, "file");
+	}
+
+	/** Refuse links and special permission bits on files owned by another application. */
+	private externalMode(): import("node:fs").Stats | undefined {
+		try {
+			const stat = lstatSync(this.path);
+			if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o7000)) throw new Error("external config must be a regular file without hard links or special permission bits");
+			return stat;
+		} catch (error) {
+			if (isMissing(error)) return undefined;
+			throw error;
+		}
+	}
+
+	private async write(contents: string, expected?: Revision): Promise<void> {
+		if (!this.externalPath) return writePrivateTextFileAtomically(this.path, contents);
+		const original = this.externalMode();
+		const revision = expected === undefined ? this.readRevision() : expected;
+		if (incompleteRevision(revision) !== undefined) throw new Error(`Cannot safely read config at ${this.path}.`);
+		await writePrivateTextFileAtomically(this.path, contents, {
+			preserveDirectoryMode: true,
+			copyFrom: original ? this.path : undefined,
+			beforeRename: (temporaryPath) => {
+				const current = this.externalMode();
+				const copy = lstatSync(temporaryPath);
+				if (original && (copy.uid !== original.uid || copy.gid !== original.gid || copy.mode !== original.mode)) {
+					throw new Error(`Cannot preserve config ownership or permissions at ${this.path}.`);
+				}
+				if (original && process.platform === "darwin") {
+					const metadata = (path: string) => [
+						execFileSync("/usr/bin/xattr", ["-l", path], { encoding: "utf8" }),
+						execFileSync("/bin/ls", ["-led", path], { encoding: "utf8" }).split("\n").slice(1).join("\n"),
+					];
+					if (JSON.stringify(metadata(this.path)) !== JSON.stringify(metadata(temporaryPath))) throw new Error(`Cannot preserve config metadata at ${this.path}.`);
+				}
+				if ((original && (!current || original.dev !== current.dev || original.ino !== current.ino || original.ctimeMs !== current.ctimeMs))
+					|| (!original && current) || !sameRevision(this.readRevision(), revision)) {
+					throw new Error(`Config at ${this.path} changed since it was read; nothing was written.`);
+				}
+			},
+		});
 	}
 
 	/** Validate `value` strictly and replace the whole file, even a malformed one. */
 	async save(value: T): Promise<void> {
 		const { contents } = this.strict(value);
 		await withLock(this.path, async () => {
-			await writePrivateTextFileAtomically(this.path, contents);
-		});
+			await this.write(contents);
+		}, this.externalPath);
 	}
 
 	/**
@@ -560,8 +644,8 @@ class ConfigStore<T> {
 			if (!sameRevision(this.readRevision(), expected.revision)) {
 				throw new Error(`Config at ${this.path} changed since it was read; nothing was written. Read it again and retry.`);
 			}
-			await writePrivateTextFileAtomically(this.path, contents);
-		});
+			await this.write(contents, expected.revision);
+		}, this.externalPath);
 	}
 
 	/** Locked read-modify-write. Refuses when the current file has any issue or the config is disabled. */
@@ -572,15 +656,18 @@ class ConfigStore<T> {
 				throw new Error(`Config at ${this.path} has issues; fix or replace it before updating: ${formatConfigIssues(current.issues)}`);
 			}
 			const next = this.strict(mutator(current.value));
-			await writePrivateTextFileAtomically(this.path, next.contents);
+			if (this.externalPath && !sameRevision(this.readRevision(), revisions.get(current)!.revision)) {
+				throw new Error(`Config at ${this.path} changed since it was read; nothing was written.`);
+			}
+			await this.write(next.contents, revisions.get(current)!.revision);
 			return next.value;
-		});
+		}, this.externalPath);
 	}
 
 	async remove(): Promise<void> {
 		await withLock(this.path, async () => {
 			await rm(this.path, { force: true });
-		});
+		}, this.externalPath);
 	}
 
 	/** Validate a value to write with the read rules; any issue rejects it. */
@@ -707,9 +794,16 @@ type StoreLocation = {
 	agentDir?: string;
 	/** A JSON file name in the extension's config home. Defaults to `config.json`. */
 	fileName?: string;
+	/** An absolute path for a config owned by another application. */
+	path?: string;
 };
 
-function storePath({ extensionId, agentDir, fileName = "config.json" }: StoreLocation): string {
+function storePath({ extensionId, agentDir, fileName = "config.json", path }: StoreLocation): string {
+	if (path !== undefined) {
+		assertExtensionId(extensionId);
+		if (!isAbsolute(path)) throw new TypeError("path must be absolute");
+		return path;
+	}
 	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/.test(fileName)) throw new TypeError("fileName must be one JSON file name");
 	return join(extensionConfigDir(extensionId, agentDir), fileName);
 }
@@ -733,5 +827,5 @@ export function createConfigStore(options: StoreLocation & {
 	const schema: RootSchema<Record<string, unknown>> = options.entries
 		? { kind: "entries", entries: options.entries, check: options.check }
 		: { kind: "fields", fields: options.fields ?? {}, check: options.check };
-	return new ConfigStore(options.extensionId, storePath(options), schema);
+	return new ConfigStore(options.extensionId, storePath(options), schema, options.path !== undefined);
 }

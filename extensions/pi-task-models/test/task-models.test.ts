@@ -19,6 +19,17 @@ import {
 } from "@henryqw/pi-task-models";
 import registerTaskModelsExtension from "../extensions/task-models.ts";
 
+const testHome = mkdtempSync(join(tmpdir(), "task-models-home-"));
+const previousHome = process.env.HOME;
+const previousCwd = process.cwd();
+process.env.HOME = testHome;
+process.chdir(testHome);
+test.after(() => {
+	process.chdir(previousCwd);
+	if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+	rmSync(testHome, { recursive: true, force: true });
+});
+
 const EXAMPLE_TASK = {
 	id: "pi-example/review",
 	label: "Example review",
@@ -65,14 +76,14 @@ function controlPlane(events: ReturnType<typeof eventBus>, agentDir: string) {
 	const pi = {
 		events,
 		on(name: string, listener: (event: unknown, ctx: any) => void) {
-			assert.equal(name, "session_start");
-			listeners.push(listener);
+			if (name === "session_start") listeners.push(listener);
 		},
+		getAllTools: () => [],
 		registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
 			handler = command.handler;
 		},
 	};
-	registerTaskModelsExtension(pi as never, { agentDir });
+	registerTaskModelsExtension(pi as never, { agentDir, delegateConfigPath: join(agentDir, "billion-context.json") });
 	assert.ok(handler);
 	return { pi, handler: handler!, sessionStart };
 }
@@ -843,16 +854,17 @@ test("registers model tasks idempotently and discovers them in either load order
 			const pi = {
 				events,
 				on() {},
+				getAllTools: () => [],
 				registerCommand(_name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
 					handler = command.handler;
 				},
 			};
 			const register = () => registerModelTask(pi as never, EXAMPLE_TASK);
 			if (consumerFirst) register();
-			registerTaskModelsExtension(pi as never, { agentDir: dir });
+			registerTaskModelsExtension(pi as never, { agentDir: dir, delegateConfigPath: join(dir, "billion-context.json") });
 			if (!consumerFirst) register();
 			register();
-			assert.equal(events.listenerCount(MODEL_TASK_REQUEST_EVENT), 1, "registration is idempotent");
+			assert.equal(events.listenerCount(MODEL_TASK_REQUEST_EVENT), 6, "registration is idempotent");
 
 			const responses: unknown[] = [];
 			const offResponses = events.on(MODEL_TASK_RESPONSE_EVENT, (payload) => responses.push(payload));
@@ -881,6 +893,11 @@ test("registers model tasks idempotently and discovers them in either load order
 							"balanced · not configured",
 							"frontier · not configured",
 							"fav · not configured",
+							"Delegate oracle · billion-context/acp-oracle · balanced",
+							"Delegate planner · billion-context/acp-planner · balanced",
+							"Delegate researcher · billion-context/acp-researcher · fast",
+							"Delegate reviewer · billion-context/acp-reviewer · balanced",
+							"Delegate worker · billion-context/acp-worker · balanced",
 							"Example review · pi-example/review · fast",
 						]);
 						return undefined;

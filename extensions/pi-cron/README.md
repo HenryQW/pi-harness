@@ -4,6 +4,8 @@ Run scheduled prompts in fresh Pi sessions while any Pi session with this extens
 
 ## Install
 
+**Deprecated:** Scheduled jobs have no direct replacement. Migrate or stop your jobs before you remove this extension and restart Pi.
+
 Requires Pi 1.5.0 or later in the 1.x series.
 
 ```bash

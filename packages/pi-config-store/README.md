@@ -81,8 +81,8 @@ All reporters in the Pi process share this record, including reporters of other 
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
-| `createConfigStore({ extensionId, agentDir?, fileName?, fields, check? })` | function | Creates a store for a JSON object with a field table. |
-| `createConfigStore({ extensionId, agentDir?, fileName?, entries, check? })` | function | Creates a store for a JSON object whose keys are entry names. `entries` is normally `parsers.record(...)`. A missing file gives `{}`. |
+| `createConfigStore({ extensionId, agentDir?, fileName?, path?, fields, check? })` | function | Creates a store for a JSON object with a field table. |
+| `createConfigStore({ extensionId, agentDir?, fileName?, path?, entries, check? })` | function | Creates a store for a JSON object whose keys are entry names. `entries` is normally `parsers.record(...)`. A missing file gives `{}`. |
 | `field(parse, fallback, { onInvalid? })` | function | Declares an optional field. `onInvalid: "disable"` disables the config instead of using `fallback` for an invalid value. |
 | `required(parse)` | function | Declares a required field. |
 | `parsers` | object | Gives reusable field parsers. Refer to [Field parsers](#field-parsers). |
@@ -131,7 +131,10 @@ For custom files other than hand-edited JSON, use `extensionConfigDir` and the b
 
 - The config home is `getAgentDir()/config/<extension-id>/`.
 - The default JSON file is `getAgentDir()/config/<extension-id>/config.json`. Use `fileName` for another hand-edited JSON file in the same home, such as `presets.json`.
+- Use an absolute `path` for a config file owned by another application. The store preserves the parent directory permissions and copies file ownership, permissions, access control lists, and extended attributes on macOS and Linux. It refuses symbolic links, hard links, non-regular files, and files with special permission bits. Updates fail when metadata cannot be preserved, when a number would change during JSON serialization, or when the platform cannot preserve metadata. `path` takes precedence over `agentDir` and `fileName`.
 - A missing file without required fields gives `{ status: "ok", source: "missing", value, issues: [] }` with the defaults.
+
+Existing external files require the system `cp` command. On Linux, they also require GNU `cp` and Python 3 with `os.listxattr` and `os.getxattr` to compare all accessible extended attributes, including access control lists. If the comparison fails or is unavailable, the write fails.
 
 `save`, `update`, and `remove` are asynchronous. Every change uses a lock. Writes use a temporary file in the same directory and an atomic rename.
 
@@ -141,7 +144,7 @@ An extension ID must be one lowercase path component. A `fileName` must be one J
 
 JSON reads and writes have a 64 KiB limit. UTF-8 decoding is strict.
 
-Reads never change a file. A malformed or invalid file stays unchanged until the user edits it or an explicit write replaces it.
+Reads never change a file. A malformed or invalid file stays unchanged until the user edits it or an explicit write replaces it. For an external file, a number that cannot retain its value during JSON serialization gives an `invalid-value` issue.
 
 `store.update(mutator)` refuses a file with any issue or a disabled config. It throws an error with the path and issues. It does not change the file.
 

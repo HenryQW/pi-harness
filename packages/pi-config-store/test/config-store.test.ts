@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -497,5 +497,147 @@ test("remove preserves sibling files", async () => {
 		await store.remove();
 		await assert.rejects(readFile(store.path), { code: "ENOENT" });
 		assert.equal(await readFile(sibling, "utf8"), "keep");
+	});
+});
+
+test("external paths preserve permissions and refuse links, special modes, and changed revisions", async () => {
+	await withAgentDir(async (dir) => {
+		const path = join(dir, "external.json");
+		const store = createConfigStore({ extensionId: "pi-test-store", path, fields: { count: field(parsers.integer(), 0) } });
+		assert.throws(() => createConfigStore({ extensionId: "pi-test-store", path: "relative.json", fields: {} }), /absolute/);
+		await writeFile(path, '{"count":1}');
+		await chmod(path, 0o640);
+		await chmod(dir, 0o755);
+		if (process.platform !== "darwin" && process.platform !== "linux") {
+			await assert.rejects(store.update((value) => value), /Cannot preserve external config metadata/);
+			return;
+		}
+		await store.update((value) => ({ count: value.count + 1 }));
+		assert.equal((await stat(path)).mode & 0o777, 0o640);
+		assert.equal((await stat(dir)).mode & 0o777, 0o755);
+		await chmod(path, 0o2640);
+		await assert.rejects(store.update((value) => value), /issues/);
+		await chmod(path, 0o640);
+		await assert.rejects(store.update((value) => {
+			// A non-cooperating writer changes the file during the locked update.
+			execFileSync(process.execPath, ["-e", "require('fs').writeFileSync(process.argv[1], '{\"count\":9}')", path]);
+			return { count: value.count + 1 };
+		}), /changed since it was read/);
+		assert.equal(await readFile(path, "utf8"), '{"count":9}');
+		const target = join(dir, "target.json");
+		await writeFile(target, '{"count":3}');
+		await rm(path);
+		await symlink(target, path);
+		await assert.rejects(store.update((value) => value), /issues/);
+		assert.equal(await readFile(target, "utf8"), '{"count":3}');
+	});
+});
+
+test("external updates preserve metadata and reject hard links", async () => {
+	await withAgentDir(async (dir) => {
+		const path = join(dir, "external.json");
+		const store = createConfigStore({ extensionId: "pi-test-store", path, fields: { count: field(parsers.integer(), 0) } });
+		await writeFile(path, '{"count":1}');
+		if (process.platform !== "darwin" && process.platform !== "linux") {
+			await assert.rejects(store.update(() => ({ count: 2 })), /Cannot preserve external config metadata/);
+			return;
+		}
+		let provenance: string | undefined;
+		if (process.platform === "darwin") {
+			execFileSync("/usr/bin/xattr", ["-w", "com.test.config-store", "keep", path]);
+			execFileSync("/usr/bin/xattr", ["-w", "com.apple.provenance", "value", path]);
+			provenance = execFileSync("/usr/bin/xattr", ["-px", "com.apple.provenance", path], { encoding: "utf8" });
+			execFileSync("/bin/chmod", ["+a", `${process.env.USER} allow read`, path]);
+		}
+		const before = await stat(path);
+		await store.update(() => ({ count: 2 }));
+		const after = await stat(path);
+		assert.equal(after.uid, before.uid);
+		assert.equal(after.gid, before.gid);
+		if (process.platform === "darwin") {
+			assert.equal(execFileSync("/usr/bin/xattr", ["-p", "com.test.config-store", path], { encoding: "utf8" }).trim(), "keep");
+			assert.equal(execFileSync("/usr/bin/xattr", ["-px", "com.apple.provenance", path], { encoding: "utf8" }), provenance);
+			assert.match(execFileSync("/bin/ls", ["-le", path], { encoding: "utf8" }), /allow read/);
+		}
+		const linked = join(dir, "linked.json");
+		await link(path, linked);
+		await assert.rejects(store.update(() => ({ count: 3 })), /hard links/);
+		assert.equal(await readFile(linked, "utf8"), await readFile(path, "utf8"));
+	});
+});
+
+test("external updates refuse numbers that JSON would change", async () => {
+	await withAgentDir(async (dir) => {
+		const path = join(dir, "external.json");
+		const store = createConfigStore({ extensionId: "pi-test-store", path, entries: (raw) => raw as Record<string, unknown> });
+		for (const number of ["9007199254740993", "1.0000000000000001", "1e400", "1e-400", "-0"]) {
+			const original = `{"nested":[${number}],"text":"9007199254740993"}`;
+			await writeFile(path, original);
+			assert.deepEqual(store.loadSync().issues, [{ kind: "invalid-value", key: "", message: "number cannot be preserved by JSON serialization" }]);
+			await assert.rejects(store.update((value) => ({ ...value, changed: true })), /number cannot be preserved/);
+			assert.equal(await readFile(path, "utf8"), original);
+		}
+		await writeFile(path, '{"nested":[1e400],');
+		assert.equal(store.loadSync().issues[0].kind, "invalid-json");
+		assert.match(store.loadSync().issues[0].message, /^invalid JSON:/);
+		if (process.platform !== "darwin" && process.platform !== "linux") return;
+		await writeFile(path, '{"nested":[0.1,1e3],"text":"9007199254740993"}');
+		await store.update((value) => ({ ...value, changed: true }));
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), { nested: [0.1, 1000], text: "9007199254740993", changed: true });
+	});
+});
+
+test("Linux external writes preserve and verify binary attributes and access control lists", { skip: process.platform !== "linux" }, async (t) => {
+	await withAgentDir(async (dir) => {
+		const path = join(dir, "external.json");
+		await writeFile(path, '{"count":1}');
+		const setup = `import os, struct, sys
+p = sys.argv[1]
+os.setxattr(p, 'user.config-store', bytes([0, 255]) + b'secret')
+entries = [(1, 6, -1), (2, 4, 12345), (4, 4, -1), (16, 4, -1), (32, 0, -1)]
+acl = struct.pack('<I', 2) + b''.join(struct.pack('<HHi', *entry) for entry in entries)
+os.setxattr(p, 'system.posix_acl_access', acl)`;
+		try {
+			execFileSync("python3", ["-c", setup, path], { stdio: "ignore" });
+		} catch {
+			t.skip("filesystem does not support test extended attributes or access control lists");
+			return;
+		}
+		const attributes = (file: string) => execFileSync("python3", ["-c", "import os,sys; p=sys.argv[1]; print(sorted((n, os.getxattr(p,n).hex()) for n in os.listxattr(p)))", file]);
+		const before = attributes(path);
+		const store = createConfigStore({ extensionId: "pi-test-store", path, fields: { count: field(parsers.integer(), 0) } });
+		await store.update(() => ({ count: 2 }));
+		assert.deepEqual(attributes(path), before);
+		await assert.rejects(writePrivateTextFileAtomically(path, '{"count":3}', {
+			copyFrom: path,
+			preserveDirectoryMode: true,
+			beforeRename: (temp) => execFileSync("python3", ["-c", "import os,sys; os.removexattr(sys.argv[1], 'system.posix_acl_access')", temp]),
+		}), /Cannot verify external config extended attributes/);
+		assert.equal(JSON.parse(await readFile(path, "utf8")).count, 2);
+		assert.deepEqual(attributes(path), before);
+	});
+});
+
+test("Linux external writes fail closed when attribute verification is unavailable", { skip: process.platform !== "linux" }, async () => {
+	await withAgentDir(async (dir) => {
+		const path = join(dir, "external.json");
+		await writeFile(path, '{"count":1}');
+		const bin = join(dir, "bin");
+		await mkdir(bin);
+		const cp = execFileSync("sh", ["-c", "command -v cp"], { encoding: "utf8" }).trim();
+		await symlink(cp, join(bin, "cp"));
+		await writeFile(join(bin, "python3"), "#!/bin/sh\necho secret >&2\nexit 1\n", { mode: 0o755 });
+		const previousPath = process.env.PATH;
+		process.env.PATH = bin;
+		try {
+			await assert.rejects(writePrivateTextFileAtomically(path, '{"count":2}', { copyFrom: path, preserveDirectoryMode: true }), (error: Error) => {
+				assert.match(error.message, /Cannot verify external config extended attributes/);
+				assert.doesNotMatch(error.message, /secret/);
+				return true;
+			});
+		} finally {
+			process.env.PATH = previousPath;
+		}
+		assert.equal(await readFile(path, "utf8"), '{"count":1}');
 	});
 });

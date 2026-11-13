@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { registerBiliModels } from "./bili-sync.js";
 import { Container, Key, matchesKey, SelectList, Text } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getAgentDir, getSelectListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -525,9 +526,10 @@ async function selectTaskModels(ctx: ExtensionContext, options: string[]): Promi
 
 export function createTaskModelsExtension(
 	pi: ExtensionAPI,
-	options?: { agentDir?: string },
+	options?: { agentDir?: string; delegateConfigPath?: string },
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
+	const syncDelegates = registerBiliModels(pi, agentDir, options?.delegateConfigPath);
 	const configStore = taskModelsConfigStore(agentDir);
 	const repairStore = taskModelsConfigStore(agentDir, true);
 	const presetsStore = taskModelPresetsStore(agentDir);
@@ -541,15 +543,20 @@ export function createTaskModelsExtension(
 		getArgumentCompletions: (prefix) => {
 			const items = [
 				{ value: "preset", description: "Choose a saved profile setup" },
+				{ value: "sync-delegates", description: "Overwrite delegate role models and thinking levels from task routes" },
 			];
 			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
 				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
 		},
-		description: "configure shared task model profiles; choose a saved setup with /task-models preset",
+		description: "configure task models, apply a preset, or sync delegate role settings",
 		handler: async (args, ctx) => {
 			const action = args.trim();
+			if (action === "sync-delegates") {
+				await syncDelegates(ctx);
+				return;
+			}
 			if (action && action !== "preset") {
-				ctx.ui.notify("Usage: /task-models [preset]", "error");
+				ctx.ui.notify("Usage: /task-models [preset|sync-delegates]", "error");
 				return;
 			}
 			reporter.report(ctx, configStore, configStore.loadSync());
