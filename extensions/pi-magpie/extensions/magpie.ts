@@ -7,7 +7,7 @@ export const sessionKey = (session: string) => `${session}-${instanceId}`;
 const INTERVAL = 5 * 60_000;
 const STALE_AFTER = 10 * 60_000;
 
-type Window = { name: string; remaining?: number; display?: string; text?: boolean; unlimited?: boolean; balance?: number; unit?: string; resetsAt?: string };
+type Window = { name: string; remaining?: number; display?: string; text?: boolean; unlimited?: boolean; balance?: number; amount?: number; limit?: number; unit?: string; resetsAt?: string };
 type Card = { provider: string; name: string; kind: string; user?: string; alias?: string; from?: string; plan?: string; windows: Window[]; balance?: string; readAt?: string; error?: string };
 
 // External text can contain terminal control characters; errors are never displayed.
@@ -29,7 +29,9 @@ export function parseCards(output: string): Card[] {
 				const w = window as Record<string, unknown>;
 				return { name: safe(w.name), remaining: typeof w.remaining === "number" && Number.isFinite(w.remaining) && w.remaining >= 0 && w.remaining <= 100 ? w.remaining : undefined,
 					display: safe(w.display), text: w.text === true, unlimited: w.unlimited === true,
-					balance: typeof w.balance === "number" && Number.isFinite(w.balance) ? w.balance : undefined, unit: safe(w.unit), resetsAt: safe(w.resetsAt) };
+					balance: typeof w.balance === "number" && Number.isFinite(w.balance) ? w.balance : undefined,
+					amount: typeof w.amount === "number" && Number.isFinite(w.amount) && w.amount >= 0 ? w.amount : undefined,
+					limit: typeof w.limit === "number" && Number.isFinite(w.limit) && w.limit >= 0 ? w.limit : undefined, unit: safe(w.unit), resetsAt: safe(w.resetsAt) };
 			}),
 		};
 	});
@@ -42,7 +44,11 @@ function stale(card: Card, now: number): boolean {
 	const time = Date.parse(card.readAt || "");
 	return !Number.isFinite(time) || time > now || now - time >= STALE_AFTER;
 }
-function windowValue(w: Window): string {
+function extraUsage(card: Card, w: Window): boolean {
+	return card.provider === "claude" && w.name === "Usage credits";
+}
+function windowValue(card: Card, w: Window): string {
+	if (extraUsage(card, w)) return w.amount !== undefined && w.limit !== undefined ? `${w.amount} / ${w.limit}${w.unit ? ` ${w.unit}` : ""} used` : "unknown";
 	if (w.unlimited) return "unlimited";
 	if (w.balance !== undefined) return `${w.balance}${w.unit ? ` ${w.unit}` : ""} balance`;
 	if (w.text) return w.display || "unknown";
@@ -54,7 +60,7 @@ export function details(cards: Card[], failed: boolean, now = Date.now()): strin
 		const state = [failed || stale(card, now) ? "stale" : "", card.error ? "unavailable" : ""].filter(Boolean).join(", ");
 		const windows = card.windows.map((w) => {
 			const reset = Date.parse(w.resetsAt || "");
-			return `  ${w.name}: ${windowValue(w)}${Number.isFinite(reset) && reset <= now ? " (stale)" : ""}${w.resetsAt ? `; resets ${w.resetsAt}` : ""}`;
+			return `  ${w.name}: ${windowValue(card, w)}${Number.isFinite(reset) && reset <= now ? " (stale)" : ""}${w.resetsAt ? `; resets ${w.resetsAt}` : ""}`;
 		});
 		if (card.balance) windows.push(`  Balance: ${card.balance}`);
 		if (!windows.length) windows.push("  Quota unavailable");
@@ -69,6 +75,13 @@ function routeDetails(route?: Route): string {
 		: "route unknown · account unknown";
 }
 
+function resetTime(reset: number, now: number): string {
+	if (!Number.isFinite(reset) || reset <= now) return "?";
+	const minutes = Math.ceil((reset - now) / 60_000);
+	const days = Math.floor(minutes / 1440), hours = Math.floor(minutes % 1440 / 60), remainder = minutes % 60;
+	return `~${[days && `${days}d`, hours && `${hours}h`, remainder && `${remainder}m`].filter(Boolean).join(" ")}`;
+}
+
 export function footer(cards: Card[], failed: boolean, now = Date.now(), provider?: string, route?: Route): { quota: string; model: string } {
 	const indexed = cards.map((card, index) => ({ card, index }));
 	const routedProvider = route?.model.split("/")[0] || provider;
@@ -79,10 +92,10 @@ export function footer(cards: Card[], failed: boolean, now = Date.now(), provide
 		return rank(a) - rank(b);
 	});
 	const parts = ordered.slice(0, 2).map(({ card, index }) => {
-		const windows = card.windows.filter((w) => !w.text && !w.unlimited && w.balance === undefined && w.remaining !== undefined);
+		const windows = card.windows.filter((w) => !extraUsage(card, w) && !w.text && !w.unlimited && w.balance === undefined && w.remaining !== undefined);
 		const w = windows.reduce<Window | undefined>((lowest, value) => !lowest || value.remaining! < lowest.remaining! ? value : lowest, undefined);
 		const reset = Date.parse(w?.resetsAt || "");
-		const time = Number.isFinite(reset) && reset > now ? `~${Math.ceil((reset - now) / 60_000)}m` : "?";
+		const time = resetTime(reset, now);
 		const old = failed || stale(card, now) || (Number.isFinite(reset) && reset <= now);
 		return `#${index + 1} ${w ? `${w.name} ${w.remaining}% ${time}` : "unknown"}${old ? " stale" : ""}${card.error ? " unavailable" : ""}`;
 	});
@@ -132,15 +145,17 @@ export default function (pi: ExtensionAPI) {
 		const now = Date.now();
 		for (const card of next) {
 			if (card.error || stale(card, now)) continue;
+			const warnings: string[] = [];
 			for (const w of card.windows) {
 				const reset = Date.parse(w.resetsAt || "");
-				if (w.text || w.unlimited || w.balance !== undefined || w.remaining === undefined || (Number.isFinite(reset) && reset <= now)) continue;
+				if (extraUsage(card, w) || w.text || w.unlimited || w.balance !== undefined || w.remaining === undefined || (Number.isFinite(reset) && reset <= now)) continue;
 				const key = JSON.stringify([card.provider, card.user, card.alias, card.from, card.name, w.name]);
 				if (w.remaining < 25) {
-					if (!lowWindows.has(key)) ctx.ui.notify(`Magpie ${label(card)}: ${w.name} has ${w.remaining}% remaining.`, "warning");
+					if (!lowWindows.has(key)) warnings.push(`${w.name} has ${w.remaining}% remaining`);
 					lowWindows.add(key);
 				} else lowWindows.delete(key);
 			}
+			if (warnings.length) ctx.ui.notify(`Magpie ${label(card)}: ${warnings.join("; ")}.`, "warning");
 		}
 	}
 	function paint(ctx: ExtensionContext) {
