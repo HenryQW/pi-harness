@@ -55,7 +55,7 @@
     "@henryqw/pi-config-store": "^4.1.3"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.5.0",
+    "@earendil-works/pi-ai": "1.5.2",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-tui": "1.5.0"
   }
