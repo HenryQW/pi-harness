@@ -12,6 +12,9 @@ const payload = [
 	{ provider: "codex", name: "Codex", kind: "subscription", user: "two", readAt: "2026-01-01T11:00:00Z", error: "secret-token", windows: [{ name: "week", remaining: 0 }] },
 ];
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+const claude = { provider: "claude", name: "Claude", kind: "subscription", user: "one", readAt: "2026-01-01T11:59:00Z", windows: [
+	{ name: "7 days", remaining: 15 }, { name: "Usage credits", used: 100, remaining: 0, amount: 50.05, limit: 50, unit: "SGD" },
+] };
 
 function harness(exec?: (...args: any[]) => any) {
 	const events = new Map<string, Function>();
@@ -26,13 +29,53 @@ const route = { id: 123, asked: "auto/main", model: "codex/gpt", served: "gpt-v2
 test("shows each quota window, resets, low and stale accounts without errors", () => {
 	const cards = parseCards(JSON.stringify(payload));
 	const line = footer(cards, false, now).quota;
-	assert.match(line, /#1 5h 12% ~60m/);
+	assert.match(line, /#1 5h 12% ~1h/);
 	assert.match(line, /#2 week 0% \? stale unavailable/);
 	assert.match(details(cards, false, now), /week: 42% remaining \(stale\)/);
 	assert.match(details(cards, false, now), /images: Unknown/);
 	assert.match(details(cards, false, now), /wallet: 5 USD balance/);
 	assert.doesNotMatch(details(cards, false, now), /secret-token/);
 	assert.throws(() => parseCards('{"provider":"codex"}'));
+});
+
+test("formats reset times in days, hours, and minutes", () => {
+	for (const [offset, expected] of [[8487, "~5d 21h 27m"], [7759, "~5d 9h 19m"], [1440, "~1d"], [61, "~1h 1m"], [1 / 60, "~1m"], [0, "?"]] as const) {
+		const card = { ...payload[0], windows: [{ name: "week", remaining: 20, resetsAt: new Date(now + offset * 60_000).toISOString() }] };
+		assert.ok(footer(parseCards(JSON.stringify([card])), false, now).quota.includes(`week 20% ${expected}`));
+	}
+});
+
+test("shows Claude extra usage separately from subscription quota", () => {
+	const cards = parseCards(JSON.stringify([claude, { ...claude, provider: "other" }]));
+	assert.match(details(cards, false, now), /Usage credits: 50\.05 \/ 50 SGD/);
+	assert.match(footer(cards, false, now).quota, /#1 7 days 15% \? · #2 Usage credits 0%/);
+	const incomplete = parseCards(JSON.stringify([{ ...claude, windows: [{ name: "Usage credits", remaining: 0 }] }]));
+	assert.match(details(incomplete, false, now), /Usage credits: unknown/);
+	assert.match(footer(incomplete, false, now).quota, /#1 unknown/);
+});
+
+test("groups newly low windows per card and tracks recovery separately", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now });
+	let first = 15, second = 10;
+	const card = () => [{ ...claude, windows: [
+		{ name: "7 days", remaining: first }, { name: "5 hours", remaining: second }, claude.windows[1],
+	] }];
+	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+		const url = new URL(String(input));
+		if (url.pathname.endsWith("quotas")) return Response.json({ data: card() });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route: null });
+		return Response.json({ total: 0, rows: [] });
+	});
+	const h = harness(async (_: string, args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === "status" ? { running: true, url: "http://127.0.0.1:3425" } : card()) }));
+	h.events.get("session_start")!({}, h.ctx); await h.command("");
+	const warnings = () => h.notices.filter((notice) => notice.includes("% remaining."));
+	assert.deepEqual(warnings(), ["Magpie claude / one / subscription: 7 days has 15% remaining; 5 hours has 10% remaining."]);
+	await h.command("refresh"); assert.equal(warnings().length, 1);
+	first = 30; await h.command("refresh");
+	first = 15; await h.command("refresh");
+	assert.equal(warnings().at(-1), "Magpie claude / one / subscription: 7 days has 15% remaining.");
+	assert.equal(warnings().length, 2);
+	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
 test("does not associate an ambiguous account with a quota card", () => {

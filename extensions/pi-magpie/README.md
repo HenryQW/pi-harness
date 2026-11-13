@@ -12,9 +12,11 @@ Requires Pi 1.5.0 or later. Install Magpie and make `magpie` available on your p
 
 ## Use
 
-For a Magpie model, the footer shows up to two account cards. Each card shows its lowest known remaining percentage and the minutes to reset. Card numbers match `/magpie-quota`. The served model and fallback count use a separate status. A matching account uses its card number; otherwise the account is unknown. With `pi-footer`, the cards appear above the served model.
+For a Magpie model, the footer shows up to two account cards. Each card shows its lowest known remaining percentage and the time to reset in days, hours, and minutes. Card numbers match `/magpie-quota`. The served model and fallback count use a separate status. A matching account uses its card number; otherwise the account is unknown. With `pi-footer`, the cards appear above the served model.
 
-The extension warns once when a fresh quota window falls below 25 percent. It can warn again after a fresh reading rises to 25 percent or more. Stale and unknown readings do not cause warnings. A narrow terminal can truncate the status; use `/magpie-quota` for the full route, account, and all quota windows.
+Claude usage credits are an extra-usage spending cap. `/magpie-quota` shows the amount used and the limit when Magpie provides them. Credits do not change the footer quota or cause low quota warnings.
+
+The extension warns once when a fresh quota window falls below 25 percent. One warning includes all newly low windows on a card. Each window can cause a new warning after a fresh reading rises to 25 percent or more. Stale and unknown readings do not cause warnings. A narrow terminal can truncate the status; use `/magpie-quota` for the full route, account, and all quota windows.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
