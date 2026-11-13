@@ -13,7 +13,7 @@
     "pack:check": "npm pack --dry-run"
   },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "^1.5.0" },
-  "devDependencies": { "@earendil-works/pi-coding-agent": "1.5.0" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "1.5.2" },
   "repository": { "type": "git", "url": "git+https://github.com/HenryQW/pi-harness.git", "directory": "extensions/pi-magpie" },
   "bugs": { "url": "https://github.com/HenryQW/pi-harness/issues" },
   "publishConfig": { "access": "public" },
