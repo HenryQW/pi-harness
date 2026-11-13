@@ -57,7 +57,7 @@
     "docs:validate": "pnpm --filter @henryqw/pi-docs run validate"
   },
   "dependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
   },
   "devDependencies": {
