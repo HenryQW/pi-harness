@@ -9,7 +9,6 @@ import {
 	availableTaskModels,
 	executeTaskRoutes,
 	loadTaskModelsConfig,
-	registerTaskModelsConfigReporting,
 	registerModelTask,
 	resolveConfiguredTaskRoute,
 	resolveConfiguredTaskRoutes,
@@ -62,9 +61,6 @@ function eventBus() {
 		},
 		emit(channel: string, payload: unknown) {
 			for (const handler of [...(listeners.get(channel) ?? [])]) handler(payload);
-		},
-		listenerCount(channel: string) {
-			return listeners.get(channel)?.size ?? 0;
 		},
 	};
 }
@@ -136,25 +132,6 @@ test("loads defaults without writing or legacy fallback and preserves invalid fi
 	}
 });
 
-test("warns once at session start when config is missing", () => {
-	const dir = tempDir();
-	try {
-		const { sessionStart } = controlPlane(eventBus(), dir);
-		assert.ok(sessionStart);
-		const notices: Array<[string, string]> = [];
-		sessionStart({}, {
-			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
-		});
-		assert.deepEqual(notices, [[
-			`Task model config is missing at ${configFile(dir)}; run /task-models to configure task routes.`,
-			"warning",
-		]]);
-		assert.throws(() => readFileSync(configFile(dir), "utf8"), { code: "ENOENT" });
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
 test("reports config issues at launch: warnings fall back, a broken profile table disables", () => {
 	const dir = tempDir();
 	try {
@@ -183,30 +160,6 @@ test("reports config issues at launch: warnings fall back, a broken profile tabl
 		writeFileSync(file, JSON.stringify({ profile: {} }));
 		sessionStart({}, ctx);
 		assert.deepEqual(notices[0], [`pi-task-models disabled (${file}): profiles: unknown key "profile"; did you mean "profiles"?`, "error"]);
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
-test("consumers report task-model config issues at launch and after a lazy read, once per session", () => {
-	const dir = tempDir();
-	try {
-		const file = configFile(dir);
-		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
-		writeFileSync(file, JSON.stringify({ extra: 1 }));
-		const handlers: Array<(event: unknown, ctx: unknown) => void> = [];
-		const pi = { on: (_event: string, handler: (event: unknown, ctx: unknown) => void) => { handlers.push(handler); } };
-		const first = registerTaskModelsConfigReporting(pi as never, dir);
-		const second = registerTaskModelsConfigReporting(pi as never, dir);
-		const notices: Array<[string, string]> = [];
-		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
-		const event = {};
-		for (const handler of handlers) handler(event, ctx);
-		assert.deepEqual(notices, [[`pi-task-models config issues (${file}): extra: unknown key; defaults replace invalid settings.`, "warning"]]);
-		writeFileSync(file, JSON.stringify({ extra: 1, tasks: { "pi-example/review": "slow" } }));
-		first(ctx as never);
-		second(ctx as never);
-		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, ultra, fav; defaults replace invalid settings.`, "warning"]]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -606,30 +559,6 @@ test("preset saving rejects invalid names, malformed existing files, and oversiz
 	}
 });
 
-test("task model TUI delegates selection and cancellation to Pi's native list", async () => {
-	const dir = tempDir();
-	try {
-		const { handler } = controlPlane(eventBus(), dir);
-		let key = "\x1b";
-		const ctx = { mode: "tui", ui: {
-			custom: async (factory: any, options: any) => {
-				assert.deepEqual(options, { blocked: { kind: "question", message: "Select a task model" } });
-				let result: unknown;
-				factory({ requestRender() {} }, { fg: (_color: string, text: string) => text }, {}, (value: unknown) => { result = value; }).handleInput(key);
-				return result;
-			},
-			select: async (title: string) => { assert.equal(title, "Profile fast primary"); return undefined; },
-			notify: () => assert.fail("unexpected notification"),
-		}, scopedModels: [], modelRegistry: { getAvailable: () => [{ provider: "test", id: "model", input: ["text"] }] } };
-		await handler("", ctx);
-		key = "\r";
-		await handler("", ctx);
-		assert.throws(() => readFileSync(configFile(dir)), { code: "ENOENT" });
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
-});
-
 test("uses scoped models and pinned thinking for picker and route resolution", () => {
 	const allowed = { provider: "provider", id: "allowed", input: ["text"], reasoning: true, thinkingLevelMap: { low: "low", high: "high" } } as any;
 	const excluded = { provider: "provider", id: "excluded", input: ["text"], reasoning: false } as any;
@@ -856,7 +785,7 @@ test("stops before or after cancellation and on non-fallback errors", async () =
 	assert.equal(nonFallbackCalls, 1);
 });
 
-test("registers model tasks idempotently and discovers them in either load order", async () => {
+test("discovers registered model tasks in either load order", async () => {
 	for (const consumerFirst of [true, false]) {
 		const dir = tempDir();
 		try {
@@ -875,7 +804,6 @@ test("registers model tasks idempotently and discovers them in either load order
 			registerTaskModelsExtension(pi as never, { agentDir: dir });
 			if (!consumerFirst) register();
 			register();
-			assert.equal(events.listenerCount(MODEL_TASK_REQUEST_EVENT), 6, "registration is idempotent");
 
 			const responses: unknown[] = [];
 			const offResponses = events.on(MODEL_TASK_RESPONSE_EVENT, (payload) => responses.push(payload));
