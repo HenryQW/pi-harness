@@ -202,7 +202,7 @@ test("Role modelClass accepts shared profiles and rejects invalid values", async
 	assert.equal(loadRoleCatalog(agentDir).roles.find(({ name }) => name === "role")!.modelClass, "frontier");
 
 	await writeFile(rolePath, "---\nname: role\ndescription: d\nmodelClass: slow\ntools: []\nextensions: []\nskills: []\n---\nBody.\n");
-	assert.match(roleError(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, fav\./);
+	assert.match(roleError(agentDir), /role\.md: modelClass must be one of fast, balanced, frontier, ultra, fav\./);
 });
 
 test("duplicate names among user role files remain an error", async (t) => {

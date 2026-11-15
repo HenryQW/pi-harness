@@ -65,7 +65,7 @@ test("parses and normalizes each explicit workflow mode", () => {
 		delegations: [delegation("one"), delegation("two")],
 	});
 
-	for (const modelClass of ["fast", "balanced", "frontier", "fav"]) {
+	for (const modelClass of ["fast", "balanced", "frontier", "ultra", "fav"]) {
 		assert.equal(parseWorkflow({ ...delegation(), modelClass }).delegations[0]!.modelClass, modelClass);
 	}
 	assert.equal(parseWorkflow({ tasks: Array.from({ length: MAX_WORKFLOW_ENTRIES }, () => delegation()) }).delegations.length, 8);
@@ -76,7 +76,7 @@ test("provider schemas keep string enums and strict runtime validation", () => {
 	const schema = JSON.parse(JSON.stringify(DelegateTaskParameters));
 	assert.equal(schema.type, "object");
 	assert.equal(schema.anyOf, undefined);
-	for (const [name, values] of Object.entries({ access: ["read", "write"], kind: ["text"], modelClass: ["fast", "balanced", "frontier", "fav"] })) {
+	for (const [name, values] of Object.entries({ access: ["read", "write"], kind: ["text"], modelClass: ["fast", "balanced", "frontier", "ultra", "fav"] })) {
 		assert.equal(schema.properties[name].type, "string");
 		assert.deepEqual([...schema.properties[name].enum].sort(), values.sort());
 		for (const value of [null, 42, "unknown"]) {
@@ -87,7 +87,7 @@ test("provider schemas keep string enums and strict runtime validation", () => {
 	}
 	assert.ok(Check(DelegateTaskParameters, { mode: "direct", ...delegation() }));
 	assert.ok(Check(DelegateTaskParameters, { mode: "isolated", id: "check", goal: "Inspect", tasks: [
-		{ id: "inspect", kind: "text", role: "worker", modelClass: "fast", requirements: "Inspect", deliverable: "Report", dependsOn: [], contextFrom: [] },
+		{ id: "inspect", kind: "text", role: "worker", modelClass: "ultra", requirements: "Inspect", deliverable: "Report", dependsOn: [], contextFrom: [] },
 	] }));
 });
 

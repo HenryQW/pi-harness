@@ -616,6 +616,9 @@ test("isolated work remains visible before any workspace is allocated", () => {
 	state.request.tasks[0] = { id: "research", kind: "text", role: "scout", modelClass: "fast", requirements: "Investigate", deliverable: "Report", dependsOn: [], contextFrom: [] };
 	state.tasks[0] = { taskId: "research", kind: "text", status: "running", attempts: [{ number: 1, status: "running" }] };
 	assert.deepEqual(workspaceWidgetLines(state), ["◌ I [S1] research · running"]);
+	state.request.tasks[0]!.modelClass = "ultra";
+	assert.deepEqual(workspaceWidgetLines(state), ["◌ I [S4] research · running"]);
+	state.request.tasks[0]!.modelClass = "fast";
 	const textTask = state.tasks[0]!;
 	textTask.status = "needs_attention";
 	textTask.failure = "Recover the task";

@@ -13,7 +13,7 @@ import {
 	type FieldParser,
 } from "@henryqw/pi-config-store";
 
-export const PROFILE_NAMES = ["fast", "balanced", "frontier", "fav"] as const;
+export const PROFILE_NAMES = ["fast", "balanced", "frontier", "ultra", "fav"] as const;
 export type ProfileName = (typeof PROFILE_NAMES)[number];
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;

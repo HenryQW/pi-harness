@@ -211,7 +211,7 @@ Role Markdown files in `~/.pi/agent/config/pi-subagent/` require frontmatter and
 | Field | Requirement |
 | --- | --- |
 | `name`, `description` | Required non-empty text without terminal control characters |
-| `modelClass` | Optional `fast`, `balanced`, `frontier`, or `fav` default |
+| `modelClass` | Optional `fast`, `balanced`, `frontier`, `ultra`, or `fav` default |
 | `tools` | Required base or internal tool-name array; `[]` selects none. Name `codemode` or `git_read` to activate it. |
 | `extensions` | Required array of trusted absolute paths, supported package sources, or Pi built-ins such as `builtin:codemode` |
 | `skills` | Required array of effective Pi Skill names |

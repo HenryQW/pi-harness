@@ -9,7 +9,7 @@ A consumer-owned, independently executed model operation with a declared identit
 _Avoid_: package-wide model setting, centrally owned consumer-task catalog, current-agent work
 
 **Task Profile**:
-A named shared route set: `fast`, `balanced`, `frontier`, or `fav`. A configured profile has a primary Task Route and an optional fallback, except that `fav` has no fallback.
+A named shared route set: `fast`, `balanced`, `frontier`, `ultra`, or `fav`. A configured profile has a primary Task Route and an optional fallback, except that `fav` has no fallback.
 _Avoid_: package-owned model picker, per-extension model catalog
 
 **Task Route**:

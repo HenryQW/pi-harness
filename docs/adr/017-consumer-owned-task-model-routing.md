@@ -13,7 +13,7 @@ Task-model routing defaults were centralized in `DEFAULT_TASK_ASSIGNMENTS` insid
 
 **Ownership boundaries.**
 - **Consumer** (each importing package): declares its Model Tasks and default Task Profiles via namespaced Pi events at load time. Owns task identity and intent.
-- **@henryqw/pi-task-models**: owns shared Task Profiles (`fast`, `balanced`, `frontier`, `fav`), explicit user Task overrides, route resolution, and configuration UI. Does not own consumer defaults.
+- **@henryqw/pi-task-models**: owns shared Task Profiles (`fast`, `balanced`, `frontier`, `ultra`, `fav`), explicit user Task overrides, route resolution, and configuration UI. Does not own consumer defaults.
 - **Pi model registry**: owns available models, authentication, and capabilities. Task Routes resolve model references against the registry; they do not copy model metadata.
 
 **Configuration persistence.** Shared config persists **explicit user overrides only**. Startup never writes consumer defaults. Consumer declarations are the source of truth for defaults; user overrides layer on top.
