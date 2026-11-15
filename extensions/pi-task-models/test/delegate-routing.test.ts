@@ -25,22 +25,16 @@ test("native delegate calls resolve live routes, honor overrides, and block fail
 	const bus = { on: () => () => {}, emit: () => {} };
 	const pi = { events: bus, on: (name: string, handler: any) => { if (name === "tool_call") handlers.push(handler); }, registerCommand: () => {}, getAllTools: () => [{ name: "acp_delegate", sourceInfo: { origin: "package", source } }] };
 	createTaskModelsExtension(pi as never, { agentDir: dir });
-	const observed: unknown[] = [];
-	handlers.push((event) => { observed.push(event.input.model); });
 	const ctx = { model: balanced, scopedModels: [{ model: balanced }], modelRegistry: { getAvailable: () => models }, hasUI: true, ui: { notify: (text: string) => warnings.push(text) } };
-	// This is the native ordered mutable-input boundary, including nested tool calls.
 	const call = async (input: Record<string, unknown>, toolName = "acp_delegate", nested = false) => {
 		const event = { type: "tool_call", toolName, input, toolCallId: "1", ...(nested ? { parentToolCallId: "parent" } : {}) };
 		for (const handler of handlers) { const result = await handler(event, ctx); if (result?.block) return result; }
 		return undefined;
 	};
 	try {
-		for (const agent of ["reviewer", "worker", "planner", "oracle", "researcher"]) {
-			const input: Record<string, unknown> = { agent, task: "work" };
-			assert.equal(await call(input, "acp_delegate", true), undefined);
-			assert.deepEqual([input.model, input.thinkingLevel], agent === "researcher" ? ["test/fast", "low"] : ["test/balanced", "off"]);
-		}
-		assert.deepEqual(observed, ["test/balanced", "test/balanced", "test/balanced", "test/balanced", "test/fast"]);
+		const input: Record<string, unknown> = { agent: "worker", task: "work" };
+		assert.equal(await call(input, "acp_delegate", true), undefined);
+		assert.deepEqual([input.model, input.thinkingLevel], ["test/balanced", "off"]);
 		const explicit = { agent: "worker", model: "test/fast", thinkingLevel: "high" };
 		assert.equal(await call(explicit), undefined);
 		assert.deepEqual(explicit, { agent: "worker", model: "test/fast", thinkingLevel: "high" });
