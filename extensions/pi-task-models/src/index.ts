@@ -530,13 +530,10 @@ export function createTaskModelsExtension(
 ): void {
 	const agentDir = options?.agentDir ?? getAgentDir();
 	const configStore = taskModelsConfigStore(agentDir);
-	registerBiliModels(pi, agentDir, () => {
-		const snapshot = configStore.loadSync();
-		if (snapshot.issues.length) throw new Error(`Task model config at ${configStore.path} has issues: ${formatConfigIssues(snapshot.issues)}. Run /task-models.`);
-	});
 	const repairStore = taskModelsConfigStore(agentDir, true);
 	const presetsStore = taskModelPresetsStore(agentDir);
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
+	registerBiliModels(pi, agentDir, (ctx) => reporter.report(ctx, configStore, configStore.loadSync()));
 	pi.on("session_start", (_event, ctx) => {
 		if (configStore.loadSync().source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");

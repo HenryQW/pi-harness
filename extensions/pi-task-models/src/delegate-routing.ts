@@ -1,5 +1,5 @@
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelReference, registerModelTask, resolveConfiguredTaskRoute, THINKING_LEVELS, type ModelTask, type ThinkingLevel } from "./index.js";
 
 const roles = ["reviewer", "researcher", "worker", "planner", "oracle"] as const;
@@ -10,7 +10,7 @@ const tasks = roles.map((role) => ({
 	defaultProfile: role === "researcher" ? "fast" : "balanced",
 } satisfies ModelTask));
 
-export function registerBiliModels(pi: ExtensionAPI, agentDir: string, validateConfig: () => void): void {
+export function registerBiliModels(pi: ExtensionAPI, agentDir: string, reportConfig: (ctx: ExtensionContext) => void): void {
 	for (const task of tasks) registerModelTask(pi, task);
 	pi.on("tool_call", (event, ctx) => {
 		if (event.toolName !== "acp_delegate" || event.input.resumeFrom) return;
@@ -36,7 +36,7 @@ export function registerBiliModels(pi: ExtensionAPI, agentDir: string, validateC
 				}
 				return;
 			}
-			validateConfig();
+			reportConfig(ctx);
 			// A child process has its own model scope; the parent's scopedModels must not restrict it.
 			const childContext = { model: ctx.model, scopedModels: [], modelRegistry: ctx.modelRegistry };
 			const route = resolveConfiguredTaskRoute(childContext, task, agentDir, thinking as ThinkingLevel | undefined, (profile, fallback) => {
