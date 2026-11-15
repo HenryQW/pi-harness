@@ -86,6 +86,62 @@ test("does not associate an ambiguous account with a quota card", () => {
 	assert.equal(footer([], false, now, "codex", current).model, "magpie/codex/gpt account?");
 });
 
+test("reads the selected remote gateway and identifies its served account", async (t) => {
+	const requests: { url: URL; authorization: string | null }[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(String(input));
+		assert.equal(init?.redirect, "error");
+		requests.push({ url, authorization: new Headers(init?.headers).get("authorization") });
+		if (url.pathname.endsWith("quotas")) return Response.json({ data: payload });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route: { ...route, asked: "gpt-6.1-terra", model: "codex/gpt-6.1-terra", served: "gpt-6.1-terra", tries: [{ model: "codex/gpt-6.1-terra" }] } });
+		return Response.json({ total: 1, rows: [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt-6.1-terra", status: 200, providerAccount: "two" }] });
+	});
+	const h = harness();
+	(h.ctx as any).model = { provider: "magpie", id: "gpt-6.1-terra", baseUrl: "https://gateway.example/v1" };
+	(h.ctx as any).modelRegistry = { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }) };
+	h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
+	assert.equal(h.models.at(-1), "magpie/codex/gpt-6.1-terra #2");
+	await h.command("refresh");
+	assert.ok(requests.some(({ url }) => url.pathname.endsWith("quotas") && !url.search));
+	assert.ok(requests.every(({ url, authorization }) => url.origin === "https://gateway.example" && authorization === "Bearer test-key"));
+	h.events.get("session_shutdown")!({}, h.ctx);
+});
+
+test("does not send credentials to a gateway that differs from the resolved auth address", async (t) => {
+	let requests = 0;
+	t.mock.method(globalThis, "fetch", async () => { requests++; return Response.json({}); });
+	const h = harness();
+	(h.ctx as any).model = { provider: "magpie", id: "gpt-6.1-terra", baseUrl: "https://gateway.example/v1" };
+	(h.ctx as any).modelRegistry = { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key", baseUrl: "https://other.example/v1" }) };
+	h.events.get("session_start")!({}, h.ctx); await h.command("");
+	assert.equal(requests, 0);
+	assert.equal(h.statuses.at(-1), "Magpie: quota unavailable");
+	assert.equal(h.models.at(-1), "route?");
+	h.events.get("session_shutdown")!({}, h.ctx);
+});
+
+test("refreshes the newly selected gateway after an earlier refresh is cancelled", async (t) => {
+	let release!: (response: Response) => void;
+	const origins: string[] = [];
+	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+		const url = new URL(String(input)); origins.push(url.origin);
+		if (url.origin === "https://old.example") return new Promise<Response>((resolve) => { release = resolve; });
+		if (url.pathname.endsWith("quotas")) return Response.json({ data: payload });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route });
+		return Response.json({ total: 1, rows: [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: "two" }] });
+	});
+	const h = harness();
+	(h.ctx as any).modelRegistry = { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "key" }) };
+	(h.ctx as any).model = { provider: "magpie", id: "auto/main", baseUrl: "https://old.example/v1" };
+	h.events.get("session_start")!({}, h.ctx); await tick();
+	(h.ctx as any).model = { provider: "magpie", id: "auto/main", baseUrl: "https://new.example/v1" };
+	h.events.get("model_select")!({ model: h.ctx.model }, h.ctx);
+	release(Response.json({ data: payload })); await tick(); await tick(); await tick();
+	assert.ok(origins.includes("https://new.example"));
+	assert.equal(h.models.at(-1), "magpie/codex/gpt-v2 fallback(1) #2");
+	h.events.get("session_shutdown")!({}, h.ctx);
+});
+
 test("correlates fallback and served account across usage pages", async (t) => {
 	const urls: URL[] = [];
 	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
