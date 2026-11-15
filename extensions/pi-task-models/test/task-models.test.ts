@@ -83,7 +83,7 @@ function controlPlane(events: ReturnType<typeof eventBus>, agentDir: string) {
 			handler = command.handler;
 		},
 	};
-	registerTaskModelsExtension(pi as never, { agentDir, delegateConfigPath: join(agentDir, "billion-context.json") });
+	registerTaskModelsExtension(pi as never, { agentDir });
 	assert.ok(handler);
 	return { pi, handler: handler!, sessionStart };
 }
@@ -872,7 +872,7 @@ test("registers model tasks idempotently and discovers them in either load order
 			};
 			const register = () => registerModelTask(pi as never, EXAMPLE_TASK);
 			if (consumerFirst) register();
-			registerTaskModelsExtension(pi as never, { agentDir: dir, delegateConfigPath: join(dir, "billion-context.json") });
+			registerTaskModelsExtension(pi as never, { agentDir: dir });
 			if (!consumerFirst) register();
 			register();
 			assert.equal(events.listenerCount(MODEL_TASK_REQUEST_EVENT), 6, "registration is idempotent");

@@ -40,3 +40,7 @@ Task-model routing defaults were centralized in `DEFAULT_TASK_ASSIGNMENTS` insid
 - **Bundled control-plane per consumer**: duplicate extensions, conflicting UI/state, wasted resources.
 - **Splitting pi-task-models into core + UI**: premature; single package serves both concerns today.
 - **Making all pi-memory commands Model Tasks**: conflates current-agent work with independent execution; adds routing where none is needed.
+
+## Delegate integration
+
+Pi resolves each new `npm:billion-context` delegate through the role's Model Task at the `tool_call` boundary. It writes the selected model and thinking level into the mutable input. Explicit models keep their exact provider identity. Supported explicit thinking levels override profile thinking. Resume calls keep their original route. Delegate routes use available registry models independently of the parent's model scope. Missing or unusable routes block launches. The integration reports configured fallbacks. It does not write delegate configuration or retry launched delegates.
