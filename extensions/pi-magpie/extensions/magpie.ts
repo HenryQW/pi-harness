@@ -104,10 +104,10 @@ export function footer(cards: Card[], failed: boolean, now = Date.now(), provide
 	return { quota: cards.length ? `Magpie ${parts.join(" · ")}` : `Magpie: ${failed ? "quota unavailable" : "no quota"}`, model: route ? `magpie/${routed}` : "route?" };
 }
 
-async function readRoute(url: string, session: string, signal: AbortSignal): Promise<Route | undefined> {
+async function readRoute(url: string, session: string, signal: AbortSignal, headers?: HeadersInit): Promise<Route | undefined> {
 	const target = new URL("/v1/magpie/route", url);
 	target.searchParams.set("session", session);
-	const response = await fetch(target, { signal });
+	const response = await fetch(target, { signal, headers, redirect: "error" });
 	if (!response.ok) throw new Error("Route unavailable");
 	const data = await response.json() as { session?: unknown; route?: any };
 	const r = data.route;
@@ -121,7 +121,7 @@ async function readRoute(url: string, session: string, signal: AbortSignal): Pro
 	try {
 		for (let offset = 0; offset < 1000; offset += 100) {
 			usage.searchParams.set("offset", String(offset));
-			const page = await fetch(usage, { signal });
+			const page = await fetch(usage, { signal, headers, redirect: "error" });
 			if (!page.ok) break;
 			const body = await page.json() as { rows?: any; total?: unknown };
 			if (!Array.isArray(body.rows) || typeof body.total !== "number") break;
@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 	let cards: Card[] = [], failed = false, controller: AbortController | undefined;
 	let running: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 	let active = false, staleTimer: ReturnType<typeof setTimeout> | undefined;
-	let provider: string | undefined, gateway: string | undefined, route: Route | undefined;
+	let provider: string | undefined, gateway: string | undefined, gatewayHeaders: HeadersInit | undefined, route: Route | undefined;
 	let routeVersion = 0, routeController: AbortController | undefined, routeTimer: ReturnType<typeof setTimeout> | undefined;
 	let requestPending = false;
 	const lowWindows = new Set<string>();
@@ -169,17 +169,33 @@ export default function (pi: ExtensionAPI) {
 		const nextStale = cards.flatMap((card) => [Date.parse(card.readAt || "") + STALE_AFTER, ...card.windows.map((window) => Date.parse(window.resetsAt || ""))]).filter((time) => time > now && time <= now + STALE_AFTER);
 		if (nextStale.length) { staleTimer = setTimeout(() => paint(ctx), Math.min(...nextStale) - now); staleTimer.unref(); }
 	}
-	async function refresh(ctx: ExtensionContext, force = false): Promise<void> {
+	async function refresh(ctx: ExtensionContext, force = false, restart = false): Promise<void> {
 		while (running) {
 			await running;
-			if (!force || !active) return;
+			if ((!force && !restart) || !active) return;
 		}
 		const current = new AbortController();
 		controller = current;
 		running = (async () => {
 			try {
 				let output: string;
-				if (force || !gateway) {
+				const model = ctx.model;
+				const target = model?.provider === "magpie" && model.baseUrl ? new URL(model.baseUrl) : undefined;
+				const remote = target && !["127.0.0.1", "localhost", "[::1]"].includes(target.hostname);
+				if (remote && model) {
+					if (!/^https?:$/.test(target.protocol)) throw new Error("Invalid gateway protocol");
+					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+					if (!auth.ok || (auth.baseUrl && new URL(auth.baseUrl).origin !== target.origin)) throw new Error("Gateway authentication unavailable");
+					const headers = new Headers();
+					for (const [key, value] of Object.entries(auth.headers ?? {})) if (value !== null) headers.set(key, value);
+					if (auth.apiKey && !headers.has("authorization")) headers.set("authorization", `Bearer ${auth.apiKey}`);
+					const response = await fetch(new URL(`/v1/magpie/quotas${force ? "" : "?kept=1"}`, target.origin), { headers, redirect: "error", signal: AbortSignal.any([current.signal, AbortSignal.timeout(force ? 20_000 : 5_000)]) });
+					if (!response.ok) throw new Error("Quota unavailable");
+					output = JSON.stringify((await response.json()).data);
+					if (current.signal.aborted || !active) return;
+					gateway = target.origin;
+					gatewayHeaders = headers;
+				} else if (force || !gateway) {
 					const result = await pi.exec("magpie", force ? ["quota", "--json"] : ["status", "--json"], { signal: current.signal, timeout: 20_000, maxBuffer: 1_048_576 });
 					if (result.code !== 0 || result.killed || result.truncated) throw new Error("Magpie command failed");
 					output = result.stdout;
@@ -191,7 +207,7 @@ export default function (pi: ExtensionAPI) {
 						gateway = address.origin;
 					}
 				} else output = "";
-				if (!force) {
+				if (!force && !remote) {
 					const response = await fetch(new URL("/v1/magpie/quotas?kept=1", gateway), { signal: AbortSignal.any([current.signal, AbortSignal.timeout(5_000)]) });
 					if (!response.ok) throw new Error("Cached quota unavailable");
 					output = JSON.stringify((await response.json()).data);
@@ -199,7 +215,7 @@ export default function (pi: ExtensionAPI) {
 				const next = parseCards(output);
 				if (!current.signal.aborted && active) { cards = next; failed = false; alertLow(ctx, next); if (!force) void updateRoute(ctx); }
 			} catch {
-				if (!current.signal.aborted && active) { failed = true; if (!force) { gateway = undefined; route = undefined; ++routeVersion; } }
+				if (!current.signal.aborted && active) { failed = true; if (!force) { gateway = undefined; gatewayHeaders = undefined; route = undefined; ++routeVersion; } }
 			} finally {
 				if (controller === current) { controller = undefined; running = undefined; paint(ctx); }
 			}
@@ -216,7 +232,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active || requestPending || model?.provider !== "magpie" || !gateway) return;
 		try {
 			if (model.baseUrl && new URL(model.baseUrl).origin !== gateway) throw new Error("Different gateway");
-			const found = await readRoute(gateway, sessionKey(ctx.sessionManager.getSessionId()), AbortSignal.any([current.signal, AbortSignal.timeout(5_000)]));
+			const found = await readRoute(gateway, sessionKey(ctx.sessionManager.getSessionId()), AbortSignal.any([current.signal, AbortSignal.timeout(5_000)]), gatewayHeaders);
 			if (active && version === routeVersion) route = found?.asked === model.id ? found : undefined;
 		} catch {
 			if (active && version === routeVersion) route = undefined;
@@ -254,6 +270,10 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("model_select", (event, ctx) => {
 		provider = event.model.provider === "magpie" ? event.model.id.split("/")[0] : undefined;
+		controller?.abort();
+		gateway = undefined;
+		gatewayHeaders = undefined;
+		cards = [];
 		requestPending = false;
 		route = undefined;
 		if (routeTimer) clearTimeout(routeTimer);
@@ -263,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("magpie-quota", undefined);
 			ctx.ui.setStatus("magpie-model", undefined);
 		}
-		else { paint(ctx); void updateRoute(ctx); }
+		else { paint(ctx); void refresh(ctx, false, true); }
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		active = false;

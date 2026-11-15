@@ -8,7 +8,7 @@ See the current Magpie route, served account, and quota in the Pi footer. Use `/
 pi install npm:@henryqw/pi-magpie
 ```
 
-Requires Pi 1.5.0 or later. Install Magpie and make `magpie` available on your path. Sign in to providers in Magpie. Keep the Magpie gateway running for cached reports.
+Requires Pi 1.5.0 or later. Keep the selected Magpie gateway running. For a local gateway, install Magpie and make `magpie` available on your path. For a remote gateway, configure its address and key in the Pi model registry.
 
 ## Use
 
@@ -29,6 +29,6 @@ A manual refresh asks Magpie for a new report; Magpie can return a cached readin
 
 ## Limits and recovery
 
-The extension reads the local gateway reported by `magpie status`. A Magpie model that uses another gateway has an unknown route and account. Gateway permissions, missing usage records, older Magpie versions, or a route that does not match the selected model can also leave them unknown. Account lookup scans at most 1,000 records for the route. A provider name that differs from its subscription name can prevent a quota card match.
+The extension reads the selected model's Magpie gateway. For a remote gateway, it uses the model registry's credentials and refuses redirects. Gateway permissions, missing usage records, older Magpie versions, or a route that does not match the selected model can leave the route or account unknown. Account lookup scans at most 1,000 records for the route. A provider name that differs from its subscription name can prevent a quota card match.
 
 Magpie decides which providers and accounts report quota. Text-only windows and balances are not percentages. If Magpie cannot provide a reading, the footer shows `unknown` or `unavailable`. Check Magpie and run `/magpie-quota refresh`. The extension does not show raw command errors, which can contain secrets. It does not run Magpie's per-account refresh command, which can have provider-specific effects.
