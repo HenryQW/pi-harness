@@ -111,7 +111,7 @@ function compactWidgetField(value: string): string {
 }
 
 function workspaceBadge(role: string, modelClass: ModelClass): string {
-	const modelCode = { fast: "1", balanced: "2", frontier: "3", fav: "*" }[modelClass];
+	const modelCode = { fast: "1", balanced: "2", frontier: "3", ultra: "4", fav: "*" }[modelClass];
 	return `[${Array.from(role)[0]!.toUpperCase()}${modelCode}]`;
 }
 

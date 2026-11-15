@@ -113,6 +113,15 @@ function state(requestValue: ExecuteRequest): RunState {
 	};
 }
 
+test("isolated requests accept ultra for tasks and judgments", () => {
+	const parsed = parseExecuteRequest(request([
+		{ ...changesetTask("change"), modelClass: "ultra", judgment: { role: "reviewer", modelClass: "ultra", criterion: "Review." } },
+	], { role: "reviewer", modelClass: "ultra", criterion: "Review all." }));
+	assert.equal(parsed.tasks[0]!.modelClass, "ultra");
+	assert.equal(parsed.tasks[0]!.kind === "changeset" && parsed.tasks[0]!.judgment?.modelClass, "ultra");
+	assert.equal(parsed.finalJudgment?.modelClass, "ultra");
+});
+
 function retainedChangesetState(): RunState {
 	const definition = parseExecuteRequest(request([changesetTask("change", {
 		judgment: { role: "reviewer", modelClass: "frontier", criterion: "Review the exact candidate." },

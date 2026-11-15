@@ -113,7 +113,7 @@ Package-owned: `~/.pi/agent/config/pi-cron/config.json`
 | `jobs[].at` | Daily wall-clock schedule. | `HH:MM` in 24-hour time. | — |
 | `jobs[].timezone` | Zone for `at`. Only valid with `at`. | IANA name such as `Asia/Hong_Kong`. | The system time zone. |
 | `jobs[].role` | pi-subagent Role to run. | Name of a built-in or user Role. | — |
-| `jobs[].modelClass` | Shared task-models profile. Not allowed with `model`. | `fast`, `balanced`, `frontier`, or `fav`. | The Role's `modelClass`, else the `pi-cron/job` task assignment (`fast`). |
+| `jobs[].modelClass` | Shared task-models profile. Not allowed with `model`. | `fast`, `balanced`, `frontier`, `ultra`, or `fav`. | The Role's `modelClass`, else the `pi-cron/job` task assignment (`fast`). |
 | `jobs[].model` | Explicit model. Requires `thinking`. | `provider/model` available in the current session. | — |
 | `jobs[].thinking` | Thinking level for `model`. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. | — |
 | `jobs[].cwd` | Working directory of the run. | Absolute path. | — |

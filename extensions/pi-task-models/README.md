@@ -1,6 +1,6 @@
 # `@henryqw/pi-task-models`
 
-Configure shared Task Profiles for `fast`, `balanced`, `frontier`, and `fav`. Each Task Route pairs a model with a thinking level; each consumer owns its Model Tasks and defaults.
+Configure shared Task Profiles for `fast`, `balanced`, `frontier`, `ultra`, and `fav`. Each Task Route pairs a model with a thinking level; each consumer owns its Model Tasks and defaults.
 
 ![Pi showing task model profiles and task routes](./example.png)
 
@@ -10,7 +10,7 @@ Configure shared Task Profiles for `fast`, `balanced`, `frontier`, and `fav`. Ea
 pi install npm:@henryqw/pi-task-models
 ```
 
-Requires Pi 1.5.0 or later in the 1.x series.
+Requires Pi 1.5.0 or later in the 1.x series. Update installed consumer packages before you assign `ultra`. Older consumers can ignore the assignment and use their default profile.
 
 ## Works with
 
@@ -90,18 +90,18 @@ Package-owned: `~/.pi/agent/config/pi-task-models/config.json`. Only explicit `/
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
-| `profiles` | Stores shared routes. | Object keyed by `fast`, `balanced`, `frontier`, or `fav`. | `{}` |
+| `profiles` | Stores shared routes. | Object keyed by `fast`, `balanced`, `frontier`, `ultra`, or `fav`. | `{}` |
 | `profiles.<profile>.primary.model` | Required primary model. | Canonical `provider/model` without whitespace or NUL. | — |
 | `profiles.<profile>.primary.thinkingLevel` | Required primary thinking level. | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`; model support required at resolution. | — |
 | `profiles.<profile>.fallback` | Route to try when the primary is unavailable. | Object requiring `model` and `thinkingLevel`, with primary rules. Forbidden for `fav`. | No fallback. |
 | `tasks` | Explicit profile overrides. | Object mapping `<package>/<task>` IDs to profiles. | `{}` |
-| `tasks.<taskId>` | Overrides the declared profile. | `fast`, `balanced`, `frontier`, or `fav`. | Task declaration's `defaultProfile`. |
+| `tasks.<taskId>` | Overrides the declared profile. | `fast`, `balanced`, `frontier`, `ultra`, or `fav`. | Task declaration's `defaultProfile`. |
 
 Task defaults belong to consumer declarations. Existing overrides equal to those defaults remain valid.
 
 ### Preset file
 
-You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps preset names to any subset of the four profiles, each in the `profiles.<profile>` format above. The picker sorts names alphabetically.
+You can edit `~/.pi/agent/config/pi-task-models/presets.json` manually. It maps preset names to any subset of the five profiles, each in the `profiles.<profile>` format above. The picker sorts names alphabetically.
 
 Missing, empty, or invalid files do not change active config. Invalid names, presets, and profiles produce warnings and are ignored; valid entries remain available.
 

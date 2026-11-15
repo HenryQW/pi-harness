@@ -168,7 +168,7 @@ test("reports config issues at launch: warnings fall back, a broken profile tabl
 		const ctx = { hasUI: true, ui: { notify(message: string, level: string) { notices.push([message, level]); } } };
 		sessionStart({}, ctx);
 		assert.deepEqual(notices, [
-			[`pi-task-models config issues (${file}): extra: unknown key; tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"],
+			[`pi-task-models config issues (${file}): extra: unknown key; tasks["pi-example/review"]: must be one of fast, balanced, frontier, ultra, fav; defaults replace invalid settings.`, "warning"],
 			[`pi-task-models config issues (${presets}): [" bad"]: preset names must be non-empty text without surrounding whitespace or control characters; defaults replace invalid settings.`, "warning"],
 		]);
 
@@ -206,7 +206,7 @@ test("consumers report task-model config issues at launch and after a lazy read,
 		writeFileSync(file, JSON.stringify({ extra: 1, tasks: { "pi-example/review": "slow" } }));
 		first(ctx as never);
 		second(ctx as never);
-		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, fav; defaults replace invalid settings.`, "warning"]]);
+		assert.deepEqual(notices.slice(1), [[`pi-task-models config issues (${file}): tasks["pi-example/review"]: must be one of fast, balanced, frontier, ultra, fav; defaults replace invalid settings.`, "warning"]]);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -300,6 +300,7 @@ test("preset picker applies supplied profiles and preserves omitted profiles and
 				fallback: { model: "provider/backup", thinkingLevel: "low" },
 			},
 			frontier: { primary: { model: "provider/deep", thinkingLevel: "high" } },
+			ultra: { primary: { model: "provider/ultra", thinkingLevel: "max" }, fallback: { model: "provider/backup", thinkingLevel: "low" } },
 		};
 		const fav = { primary: { model: "provider/favorite", thinkingLevel: "max" } };
 		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
@@ -691,6 +692,16 @@ test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 		assert.deepEqual(selections, [], "an available fallback is not a selected fallback");
 
 		writeFileSync(file, JSON.stringify({
+			profiles: { ultra: {
+				primary: { model: "provider/unavailable", thinkingLevel: "off" },
+				fallback: { model: "provider/fallback", thinkingLevel: "off" },
+			} },
+			tasks: { [EXAMPLE_TASK.id]: "ultra" },
+		}));
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, EXAMPLE_TASK, dir), { model: fallback, thinkingLevel: "off" });
+		assert.deepEqual(resolveConfiguredTaskRoute(ctx, { ...EXAMPLE_TASK, id: "pi-example/other", defaultProfile: "ultra" }, dir), { model: fallback, thinkingLevel: "off" });
+
+		writeFileSync(file, JSON.stringify({
 			profiles: {
 				frontier: {
 					primary: { model: "provider/unavailable", thinkingLevel: "off" },
@@ -892,6 +903,7 @@ test("registers model tasks idempotently and discovers them in either load order
 							"fast · not configured",
 							"balanced · not configured",
 							"frontier · not configured",
+							"ultra · not configured",
 							"fav · not configured",
 							"Delegate oracle · billion-context/acp-oracle · balanced",
 							"Delegate planner · billion-context/acp-planner · balanced",
@@ -920,8 +932,8 @@ test("task-models stores only non-default active task assignments", async () => 
 		registerModelTask(pi as never, EXAMPLE_TASK);
 		const selections = [
 			"Example review · pi-example/review · fast",
-			"frontier",
-			"Example review · pi-example/review · frontier",
+			"ultra",
+			"Example review · pi-example/review · ultra",
 			"fast",
 		];
 		await handler("", {
@@ -935,7 +947,7 @@ test("task-models stores only non-default active task assignments", async () => 
 				notify() {},
 			},
 		});
-		assert.deepEqual(loadTaskModelsConfig(dir).value.tasks, { [EXAMPLE_TASK.id]: "frontier" });
+		assert.deepEqual(loadTaskModelsConfig(dir).value.tasks, { [EXAMPLE_TASK.id]: "ultra" });
 
 		await handler("", {
 			ui: {

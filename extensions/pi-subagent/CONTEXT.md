@@ -13,7 +13,7 @@ The Pi session and checkout that coordinate delegated work.
 A named capability definition with instructions, tools, trusted extension sources, Skills, optional MCP servers, and an optional Model Class default. A Role does not select isolation.
 
 **Model Class**:
-A `fast`, `balanced`, `frontier`, or `fav` choice resolved through Pi Task Models.
+A `fast`, `balanced`, `frontier`, `ultra`, or `fav` choice resolved through Pi Task Models.
 
 **Direct task**:
 A bounded task in Main's shared checkout with declared `read` or `write` access. Authorized writes take effect immediately, without rollback or checked integration.

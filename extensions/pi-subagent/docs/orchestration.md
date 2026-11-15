@@ -72,7 +72,7 @@ Each entry has:
 | `paths` | no | Write tasks only: 1 to 32 repo-relative globs (`path.matchesGlob` syntax, such as `src/**`). The change report flags changed paths outside them. A report only, not enforced |
 | `continueFrom` | no | Direct reference such as `D7.1`; continues that finished worker's Pi session. `role` must equal the recorded Role |
 | `kind` | no | `text` only (default); direct `changeset` is rejected |
-| `modelClass` | no | `fast`, `balanced`, `frontier`, or `fav` route |
+| `modelClass` | no | `fast`, `balanced`, `frontier`, `ultra`, or `fav` route |
 | `model` | no | `provider/modelId`; replaces only the route model |
 
 An explicit model must support the route's thinking level. A launched child is never retried automatically after provider or process failure.
@@ -221,7 +221,7 @@ Outside a Git repository, the extension makes no report and the task continues. 
 
 ### Status widgets
 
-The TUI has two separate compact status widgets. Each widget has one row for each visible worker or task. `D` marks direct work, and `I` marks isolated work. Badges such as `[S]` and `[I3]` identify the Role initial. Isolated badges also include the model class: `1` fast, `2` balanced, `3` frontier, `*` fav.
+The TUI has two separate compact status widgets. Each widget has one row for each visible worker or task. `D` marks direct work, and `I` marks isolated work. Badges such as `[S]` and `[I3]` identify the Role initial. Isolated badges also include the model class: `1` fast, `2` balanced, `3` frontier, `4` ultra, `*` fav.
 
 Each direct row starts with a saved direct reference such as `D7.1`. `D7` is the workflow number in this Pi session, and `.1` is the position of the worker in the original request. `/subagent` uses the same reference and name. The Herdr tab label shows them at launch. Numbers continue after reload, and the session never uses a number again.
 

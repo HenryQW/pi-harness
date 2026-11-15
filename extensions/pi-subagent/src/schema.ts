@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { PROFILE_NAMES } from "@henryqw/pi-task-models";
 import { parseRoleName, type RoleName } from "./index.ts";
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
@@ -20,12 +21,7 @@ const RoleNameSchema = Type.String({ minLength: 1, maxLength: 32_000 });
 const RuntimeTextSchema = Type.String({ minLength: 1, maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES });
 const OptionalRuntimeTextSchema = Type.Optional(Type.String({ maxLength: MAX_PERSISTED_RUNTIME_TEXT_BYTES }));
 const TimestampSchema = Type.Integer({ minimum: 0 });
-const ModelClassSchema = Type.Union([
-	Type.Literal("fast"),
-	Type.Literal("balanced"),
-	Type.Literal("frontier"),
-	Type.Literal("fav"),
-]);
+const ModelClassSchema = Type.Enum(PROFILE_NAMES, { type: "string" });
 
 export const CheckCommandSchema = Type.Object({
 	command: TextSchema,
