@@ -1,12 +1,12 @@
-// Delegation-shape and no-wait judgment for the pi-subagent skill. Stub parameters are the real extension
-// schemas, but stubs apply only that schema. Graders run the real parseDelegateTask on delegate_task arguments,
-// so a request that the live tool rejects fails the case.
+// Archived with pi-subagent. The active runner does not load this file.
+// Stub parameters are the real extension schemas, but stubs apply only that schema. Graders run the real
+// parseDelegateTask on delegate_task arguments, so a request that the live tool rejects fails the case.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DelegateTaskParameters, parseDelegateTask } from "../../deprecated/pi-subagent/extensions/workflow.ts";
-import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../../deprecated/pi-subagent/src/schema.ts";
-import { check, git, noBash, notCalled } from "../graders.ts";
-import type { EvalCase, StubResponse, StubTool, ToolCall, Trace } from "../types.ts";
+import { check, git, noBash, notCalled } from "../../../evals/graders.ts";
+import type { EvalCase, StubResponse, StubTool, ToolCall, Trace } from "../../../evals/types.ts";
+import { DelegateTaskParameters, parseDelegateTask } from "../extensions/workflow.ts";
+import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../src/schema.ts";
 
 const skill = "deprecated/pi-subagent/skills/pi-subagent";
 

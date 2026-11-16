@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { calledTimes, check, notCalled } from "./graders.ts";
-import { parseEvents, requiredPasses } from "./harness.ts";
+import { loadSuites, parseEvents, requiredPasses } from "./harness.ts";
 
 test("safety cases need every trial; quality cases need two thirds", () => {
 	assert.equal(requiredPasses("safety", 3), 3);
@@ -27,4 +27,9 @@ test("parses tool calls, results, final text, and model from a recorded Pi event
 
 test("reports a run that never settles", () => {
 	assert.equal(parseEvents('{"type":"agent_start"}\n').error, "Pi did not settle");
+});
+
+test("active eval discovery skips archived suites", async () => {
+	const names = (await loadSuites()).map((suite) => suite.name);
+	assert.equal(names.includes("pi-subagent"), false);
 });
