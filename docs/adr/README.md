@@ -15,9 +15,8 @@ An Architecture Decision Record (ADR) records one current architecture choice. T
 
 - [006 — pi-memory Global Store Threat Model](006-pi-memory-global-store-threat-model.md)
 - [013 — pi-auto-compact Architecture](013-pi-auto-compact-architecture.md)
-- [019 — Unified pi-subagent orchestration](019-pi-subagent-orchestration.md)
-- [020 — pi-cron In-Session Scheduler](020-pi-cron-in-session-scheduler.md)
 - [021 — One Herdr Workflow Extension](021-herdr-workflow-consolidation.md)
+- [022 — Retire pi-subagent and pi-cron](022-retire-pi-subagent-and-pi-cron.md)
 
 ## Process
 

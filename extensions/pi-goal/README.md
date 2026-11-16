@@ -66,9 +66,9 @@ Read the [static goal flow diagram](https://github.com/HenryQW/pi-harness/blob/m
 
 Pi Goal does not add a continuation when another extension already continues the same stop. One continuation request then serves both extensions.
 
-Pi Goal waits when Pi Subagent owns a live direct or isolated result that will start a turn in the current session. It adds no empty continuation or no-progress warning during this wait. Budget and maximum-continuation limits still apply. A result or failure restores normal goal handling. Retained, interrupted, unknown, or other-session work does not cause a wait.
+Pi Goal waits when a retired subagent install owns a live direct or isolated result that will start a turn in the current session. It adds no empty continuation or no-progress warning during this wait, but budget and maximum-continuation limits still apply. A result or failure restores normal goal handling. Retained, interrupted, unknown, or other-session work does not cause a wait. The query applies only when that retired install is loaded. See the [archived pending-result contract](../../deprecated/pi-subagent/CONTEXT.md#pending-result-event-contract).
 
-Background-command notices do not start turns and do not cause a wait. Pi Subagent is optional; without it, the normal stop checks apply.
+Background-command notices do not start turns and do not cause a wait. Without a retired subagent install, the normal stop checks apply.
 
 ## State and storage
 

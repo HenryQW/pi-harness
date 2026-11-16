@@ -20,7 +20,6 @@ Both entry points load by default. To load only one, keep `extensions/footer.ts`
 | [`@henryqw/pi-magpie`](https://pi.henry.wang/extensions/pi-magpie) | Improves | Adds Magpie route and quota status. |
 | [`@henryqw/pi-multi-codex`](https://pi.henry.wang/extensions/pi-multi-codex) | Improves | Adds active Codex subscription quota and reset status. |
 | [`@henryqw/pi-pr`](https://pi.henry.wang/extensions/pi-pr) | Improves | Adds current-branch pull-request status. |
-| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves | Adds completed background workflow usage to the token and cost totals. |
 
 ## Use
 
@@ -40,7 +39,7 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 | Second: usage line | Input and output token totals, latest cache-hit rate, response throughput, estimated cost, and context use. | Active model and thinking level. For Magpie, the served model and account card number replace the selected model when available. |
 | Third | CodeGraph first, then other extension statuses sorted by key, including Ponytail and `pi-rewind`. | Cumulative agent-work time. |
 
-Token and cost totals include native usage entries, reported tool usage, and completed `pi-subagent` background workflows. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
+Token and cost totals include native usage entries, reported tool usage, and completed background workflow entries from a retired subagent install. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
 
 The model name includes its provider, so one model ID that several providers serve stays distinguishable: `opencode-go/deepseek-v4.1-flash • high`. A missing model shows `no-model`. When a Magpie route is unknown, the selected model shows with `route?`.
 

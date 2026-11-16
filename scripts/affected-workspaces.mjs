@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-// These packages have consumers outside the declared dependency graph:
-// pi-pr/test/pr-native.test.ts and pi-herdr-tools/test/loading.test.ts.
-const crossPackageTestSources = new Set(["@henryqw/pi-subagent", "@henryqw/pi-ask-question"]);
+// This package has a consumer outside the declared dependency graph:
+// pi-herdr-tools/test/loading.test.ts.
+const crossPackageTestSources = new Set(["@henryqw/pi-ask-question"]);
 
 /** Return selected workspace names, or null when all workspace tests are required. */
 export function affectedWorkspaces(base, packageManagerExecPath) {

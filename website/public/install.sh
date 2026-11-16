@@ -11,9 +11,6 @@ PI_MIN_VERSION="1.1.0"
 HERDR_INSTALLER_URL="https://herdr.dev/install.sh"
 HERDR_LATEST_URL="https://herdr.dev/latest.json"
 HERDR_MIN_VERSION="0.7.4"
-HERDR_SUBAGENT_MIN_VERSION="0.9.0"
-SUBAGENT_PACKAGE="@henryqw/pi-subagent"
-RETIRED_PACKAGE_SOURCES="npm:@henryqw/pi-auto-dag npm:@henryqw/pi-orchestrator"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
@@ -23,7 +20,6 @@ EXTENSIONS='
 @henryqw/pi-auto-compact
 @henryqw/pi-bark
 @henryqw/pi-codegraph
-@henryqw/pi-cron
 @henryqw/pi-deps
 @henryqw/pi-footer
 @henryqw/pi-goal
@@ -34,7 +30,6 @@ EXTENSIONS='
 @henryqw/pi-pr
 @henryqw/pi-rtk-test
 @henryqw/pi-session-recall
-@henryqw/pi-subagent
 @henryqw/pi-task-models
 @henryqw/pi-undo
 '
@@ -282,17 +277,8 @@ ensure_pi() {
   success "Pi $pi_version $pi_status: $pi_bin"
 }
 
-select_herdr_minimum() {
-  required_herdr_version=$HERDR_MIN_VERSION
-  for extension in $selected_extensions; do
-    if [ "$extension" = "$SUBAGENT_PACKAGE" ]; then
-      required_herdr_version=$HERDR_SUBAGENT_MIN_VERSION
-      return 0
-    fi
-  done
-}
-
 ensure_herdr() {
+  required_herdr_version=$HERDR_MIN_VERSION
   if herdr_bin=$(find_herdr); then
     herdr_status="already installed"
   else
@@ -447,7 +433,6 @@ list_package_sources() {
 
 remove_retired_package_sources() {
   case "$1" in
-    "$SUBAGENT_PACKAGE") retired_sources=$RETIRED_PACKAGE_SOURCES ;;
     "@henryqw/pi-herdr-tools") retired_sources="npm:@henryqw/pi-herdr-btw npm:@henryqw/pi-herdr-clone npm:@henryqw/pi-herdr-rename npm:@henryqw/pi-herdr-done" ;;
     "@henryqw/pi-footer") retired_sources="npm:@henryqw/pi-open-in" ;;
     *) return 0 ;;
@@ -522,7 +507,6 @@ main() {
 
   printf '\nHenry Pi Harness installer\nPi + Herdr + selected extensions\n'
   choose_extensions
-  select_herdr_minimum
   ensure_pi
   ensure_herdr
   install_extensions

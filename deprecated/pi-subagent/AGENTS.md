@@ -1,6 +1,6 @@
 # Pi Subagent maintenance rules
 
-Follow [ADR 019](../../docs/adr/019-pi-subagent-orchestration.md) and the [orchestration/API contract](docs/orchestration.md). These implementation boundaries supplement the repository rules.
+Follow [ADR 022](../../docs/adr/022-retire-pi-subagent-and-pi-cron.md). The [orchestration/API contract](docs/orchestration.md) is the historical implementation contract. These implementation boundaries supplement the repository rules.
 
 ## Sources and boundaries
 

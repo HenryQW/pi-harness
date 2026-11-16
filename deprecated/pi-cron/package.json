@@ -45,7 +45,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
-    "directory": "extensions/pi-cron"
+    "directory": "deprecated/pi-cron"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-harness/issues"

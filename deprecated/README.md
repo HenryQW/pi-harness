@@ -1,15 +1,17 @@
 # Deprecated extensions
 
-The retired Herdr and prompt creator packages keep their final source, documentation, and tests here for reference. These archives are excluded from active workspaces, extension loading, CI tests, and publishing; they are not maintained replacements for the published packages.
+The retired packages keep their final source, documentation, and tests here for reference. These archives are excluded from active workspaces, extension loading, CI tests, and publishing; they are not maintained replacements for the published packages.
 
-Use [`@henryqw/pi-herdr-tools`](../extensions/pi-herdr-tools/README.md) for cloning, side questions, conversation titles, and worktree completion. Install it before removing old packages, then restart Pi. Each archived package's README links to the migration instructions.
+Use [`@henryqw/pi-herdr-tools`](../extensions/pi-herdr-tools/README.md) for cloning, side questions, conversation titles, and worktree completion. Direct delegation uses `npm:billion-context` and `acp_delegate`. Checked worktrees and scheduled jobs have no replacement. Install a replacement before you remove an old package that has one, then restart Pi. Each archived package's README gives the removal command.
 
 Repository retirement is separate from npm deprecation. Add registry warnings only after the replacement is publicly installable; follow the [release runbook](../docs/releasing.md#retire-a-package).
 
 | Extension | Reason |
 | --- | --- |
 | [`@henryqw/pi-model-thinking`](./pi-model-thinking) | Pi v0.84.3 added native per-model thinking defaults. |
-| [`@henryqw/pi-orchestrator`](./pi-orchestrator) | `@henryqw/pi-subagent` now owns durable checked isolated graphs. |
+| [`@henryqw/pi-orchestrator`](./pi-orchestrator) | Retired. Direct delegation uses `npm:billion-context` and `acp_delegate`. Checked worktrees have no replacement. |
+| [`@henryqw/pi-subagent`](./pi-subagent) | Retired. Direct delegation uses `npm:billion-context` and `acp_delegate`. Checked worktrees have no replacement. |
+| [`@henryqw/pi-cron`](./pi-cron) | Retired. Scheduled jobs have no replacement. |
 | [`@henryqw/pi-prompt-creator`](./pi-prompt-creator) | It gave too little value. No replacement. |
 | [`@henryqw/pi-herdr-btw`](./pi-herdr-btw) | Merged into [`@henryqw/pi-herdr-tools`](../extensions/pi-herdr-tools/README.md). |
 | [`@henryqw/pi-herdr-clone`](./pi-herdr-clone) | Merged into [`@henryqw/pi-herdr-tools`](../extensions/pi-herdr-tools/README.md). |

@@ -49,7 +49,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/HenryQW/pi-harness.git",
-    "directory": "extensions/pi-subagent"
+    "directory": "deprecated/pi-subagent"
   },
   "bugs": {
     "url": "https://github.com/HenryQW/pi-harness/issues"
@@ -67,7 +67,7 @@
     "prompts": [
       "./prompts"
     ],
-    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/extensions/pi-subagent/example.png"
+    "image": "https://raw.githubusercontent.com/HenryQW/pi-harness/main/deprecated/pi-subagent/example.png"
   },
   "dependencies": {
     "@henryqw/pi-config-store": "^4.1.3",

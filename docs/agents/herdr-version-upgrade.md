@@ -23,7 +23,7 @@ For each listed package, read the matches and record each contact surface that i
 
 A package with only names, prose, or links to other packages is not a consumer. Record its exclusion. Packages in `deprecated/` are out of scope.
 
-For each consumer that requires Herdr, record its minimum Herdr version from its README and from any runtime check, for example `MIN_HERDR_VERSION` in `pi-subagent`. If the two differ, or the minimum is not stated, record a `change`. An optional integration that works without Herdr, such as `pi-ask-question`'s `herdr:blocked` event, states no minimum; audit only its surface.
+For each consumer that requires Herdr, record its minimum Herdr version from its README and from any runtime check, for example the Herdr minimum in `pi-herdr-tools` or `pi-pr`. If the two differ, or the minimum is not stated, record a `change`. An optional integration that works without Herdr, such as `pi-ask-question`'s `herdr:blocked` event, states no minimum; audit only its surface.
 
 ## 2. Inspect the target release
 
@@ -41,7 +41,7 @@ diff "$tmp/schema-$BASE.json" "$tmp/schema-$TARGET.json" || true
 diff "$tmp/cli-$BASE.mdx" "$tmp/cli-$TARGET.mdx" || true
 ```
 
-Stop if the tag is missing. The schema `protocol` value is the socket API protocol that `pi-subagent` checks. A changelog item is a lead, not proof: confirm it in the schema or the CLI reference diff.
+Stop if the tag is missing. The schema `protocol` value is the socket API protocol. Confirm a protocol change in the schema diff before you treat a changelog item as proof.
 
 ## 3. Audit and implement
 

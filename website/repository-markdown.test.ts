@@ -59,11 +59,11 @@ test("links extension Markdown files to GitHub", () => {
   ].join("\n");
 
   assert.equal(
-    linkRelativeMarkdownToGitHub(markdown, "extensions/pi-subagent/README.md"),
+    linkRelativeMarkdownToGitHub(markdown, "extensions/pi-pr/README.md"),
     [
-      "[orchestration](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/docs/orchestration.md#delegation-fields)",
-      "[role](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/examples/roles/reviewer.md)",
-      "[context](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-subagent/CONTEXT.md)",
+      "[orchestration](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-pr/docs/orchestration.md#delegation-fields)",
+      "[role](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-pr/examples/roles/reviewer.md)",
+      "[context](https://github.com/HenryQW/pi-harness/blob/main/extensions/pi-pr/CONTEXT.md)",
     ].join("\n")
   );
 });

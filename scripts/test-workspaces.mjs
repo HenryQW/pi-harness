@@ -24,7 +24,7 @@ const workspaces = ["extensions", "packages"]
 
 if (!workspaces.length) throw new Error("No workspace test scripts found.");
 
-const prioritizedWorkspaces = ["@henryqw/pi-subagent", "@henryqw/pi-pr"];
+const prioritizedWorkspaces = ["@henryqw/pi-pr"];
 const scheduledWorkspaces = [
 	...prioritizedWorkspaces.filter((workspace) => workspaces.includes(workspace)),
 	...workspaces.filter((workspace) => !prioritizedWorkspaces.includes(workspace)),

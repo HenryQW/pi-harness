@@ -51,7 +51,7 @@ Results go to `<worktree>/.context/pi-harness/pi-deps/status.json`; command outp
 
 The first Pi TUI session to report a completed result removes the status file. RPC, JSON, and print sessions neither show nor consume it. The state directory uses mode `0700`; status and log files use mode `0600` (owner access only).
 
-These files can make the Git worktree dirty. If `.context/` is not ignored, pi-subagent and `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows. The installer log can contain sensitive output. Inspect it before you share or stage it; the extension does not change ignore rules.
+These files can make the Git worktree dirty. If `.context/` is not ignored, `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows. The installer log can contain sensitive output. Inspect it before you share or stage it; the extension does not change ignore rules.
 
 ### Migration to version 4
 
