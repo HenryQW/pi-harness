@@ -10,7 +10,6 @@ This package is deprecated. Do not install it for new use. Existing users can us
 | Package | Relationship | Purpose |
 | --- | --- | --- |
 | [`@henryqw/pi-footer`](https://pi.henry.wang/extensions/pi-footer) | Improves | Shows the active slot's quota status. |
-| [`@henryqw/pi-subagent`](https://pi.henry.wang/extensions/pi-subagent) | Improves | Delegated children keep Main's active Codex slot. |
 | [`@henryqw/pi-task-models`](https://pi.henry.wang/extensions/pi-task-models) | Improves | Numbered slots share one profile route. |
 
 ## Use

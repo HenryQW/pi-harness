@@ -1,6 +1,6 @@
 # Agent instructions
 
-Keep active repository-specific policy here. ADRs own decisions, agent docs own runbooks, and scripts or workflows enforce checks; fix disagreements at their source. Nested `AGENTS.md` files in `extensions/`, `website/`, `extensions/pi-pr/`, and `extensions/pi-subagent/` add rules for their subtrees.
+Keep active repository-specific policy here. ADRs own decisions, agent docs own runbooks, and scripts or workflows enforce checks; fix disagreements at their source. Nested `AGENTS.md` files in `extensions/`, `website/`, and `extensions/pi-pr/` add rules for their subtrees. `@henryqw/pi-subagent` and `@henryqw/pi-cron` are archived under `deprecated/` and excluded from the workspace, tests, and publishing. npm deprecation is already applied for every published version. Do not publish a new version of either package. Agents must not include them in active work.
 
 ## Code exploration
 
@@ -8,7 +8,7 @@ When `.codegraph/codegraph.db` exists, use `codegraph_explore` for symbol lookup
 
 ## Repository defaults
 
-- Compatibility covers each package's documented public contract, not its internals or undocumented behavior. Breaking internal changes need no major release.
+- Compatibility covers each package's documented public contract, not its internals or undocumented behavior. Breaking internal changes need no major release. Do not keep migration guidance for an old install.
 - Use Pi's effective skill and model registries and model metadata as authority. Resolve resources at launch; store names or classes, not paths or copied catalogs.
 - Extension config follows [ADR 018](docs/adr/018-extension-config-homes.md) for config homes and [ADR 004](docs/adr/004-extension-config-safety.md) for warn and disable rules. Locate config-home files with `extensionConfigDir` and `extensionConfigPath`, load user-edited config with `createConfigStore` (`fields` or `entries`), and report issues with `registerConfigReporting`; never parse config files directly. Preserve malformed files and write only after explicit user action. [The config-store reference](docs/agents/pi-config-store-migration.md) lists the contract and consumers.
 

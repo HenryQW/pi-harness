@@ -206,7 +206,7 @@ test("global changes, manifests, removals, renames, and undeclared cross-package
 				f.write("packages/consumer/package.json", JSON.stringify(manifest));
 			} else if (change === "remove-package") rmSync(join(f.cwd, "packages/other"), { recursive: true });
 			else if (change === "cross-package-test") {
-				f.write("extensions/subagent/package.json", JSON.stringify({ name: "@henryqw/pi-subagent", version: "1.0.0", dependencies: { "@test/core": "workspace:*" } }));
+				f.write("extensions/ask-question/package.json", JSON.stringify({ name: "@henryqw/pi-ask-question", version: "1.0.0", dependencies: { "@test/core": "workspace:*" } }));
 				f.commit();
 				f.git("update-ref", "refs/remotes/origin/main", "HEAD");
 				f.write("packages/core/source.js", "changed\n");

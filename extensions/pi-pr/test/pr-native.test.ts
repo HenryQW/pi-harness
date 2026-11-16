@@ -9,7 +9,7 @@ import {
 import pullRequestExtension from "../extensions/pr.ts";
 import { StaleCiCollect } from "../extensions/pr-ci.ts";
 import { StaleSweepStart } from "../extensions/pr-comment-sweep.ts";
-import { exactDirectAnswer } from "../../pi-subagent/src/direct-herdr.ts";
+import { exactDirectAnswer } from "./exact-direct-answer.ts";
 
 const herdrEnv = process.env.HERDR_ENV;
 before(() => { delete process.env.HERDR_ENV; });

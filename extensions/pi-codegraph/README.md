@@ -100,7 +100,7 @@ Each checkout owns `.codegraph/codegraph.db`. The extension can read other index
 | Rejected copy | Deletes the copy and tries the next index. |
 | No usable index | Runs `codegraph init --yes <worktree-root>`. |
 
-The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your ignore rules if necessary. Pi Subagent retains ignored files to prevent data loss, so indexed worker worktrees can require manual cleanup.
+The extension does not add ignore rules, delete indexes, or prune worktrees. Add `.codegraph/` to your ignore rules if necessary. A retired subagent install retains ignored files to prevent data loss, so indexed worker worktrees can require manual cleanup.
 
 ## Limits and recovery
 

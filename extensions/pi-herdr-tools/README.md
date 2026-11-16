@@ -377,7 +377,7 @@ The versioned file separates socket paths and workspace identifiers. `HERDR_SOCK
 
 Symlinks in any checkout-relative state-directory component are refused. Directories are created one component at a time. Every component is checked before state reads and writes. Each component must be owned by the current user. Parent components must not allow group or other writes; the extension directory must be private. Correct the permissions if the extension reports an unsafe directory.
 
-Files are limited to 65,536 bytes, read strictly, and replaced atomically with private permissions. Malformed files remain unchanged. The state is not added to Git or automatically ignored; it can appear as untracked work. If `.context/` is not ignored, pi-subagent and `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows.
+Files are limited to 65,536 bytes, read strictly, and replaced atomically with private permissions. Malformed files remain unchanged. The state is not added to Git or automatically ignored; it can appear as untracked work. If `.context/` is not ignored, `/pr` clean-worktree checks can fail. Configure a Git exclusion if you use those workflows.
 
 A workspace lifetime token is a random, non-secret metadata value that connects the saved selection to the live workspace. Herdr clears this metadata on server restart. A missing or changed token on an existing record disables automatic workspace effects until `/main-tab` confirms selection.
 

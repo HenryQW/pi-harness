@@ -9,7 +9,7 @@ A sweep has three independent tracks: **optimize**, **prune tests**, and **docs*
 
 ## Discover
 
-Delegate read-only scouts in parallel, one for each size group. Measure groups first, for example by source and test line counts for each `extensions/*` and `packages/*` directory. The usual groups are pi-subagent; pi-pr; pi-herdr-tools with pi-session-recall and pi-memory; then all small extensions with patterns that they share.
+Delegate read-only scouts in parallel, one for each size group. Measure groups first, for example by source and test line counts for each `extensions/*` and `packages/*` directory. The usual groups are pi-pr; pi-herdr-tools with pi-session-recall and pi-memory; then all small extensions with patterns that they share. Do not include packages under `deprecated/` and excluded them from the workspace, tests, and publishing.
 
 Give each scout [the rejected findings](rejected.md) and the base commit of the last sweep; scouts inspect later commits with `git_read`. Give exact criteria, a finding limit (8–12), and a word cap (600–700). Without a cap, scouts can fail to persist a final answer.
 

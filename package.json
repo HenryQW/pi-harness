@@ -27,21 +27,19 @@
       "./extensions/pi-herdr-tools/extensions/index.ts",
       "./extensions/pi-bark/extensions/bark.ts",
       "./extensions/pi-multi-codex/extensions",
-      "./extensions/pi-subagent/extensions/subagent.ts",
       "./extensions/pi-memory/extensions/memory.ts",
       "./extensions/pi-magpie/extensions/magpie.ts",
       "./extensions/pi-undo/extensions/undo.ts",
       "./extensions/pi-goal/extensions/goal.ts",
       "./extensions/pi-advisor/extensions/advisor.ts",
-      "./extensions/pi-rtk-test/extensions/rtk-test.ts",
-      "./extensions/pi-cron/extensions/cron.ts"
+      "./extensions/pi-rtk-test/extensions/rtk-test.ts"
     ],
     "skills": [
       "./extensions/pi-pr/skills"
     ]
   },
   "scripts": {
-    "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-herdr-tools --filter @henryqw/pi-process --filter @henryqw/pi-task-models --filter @henryqw/pi-subagent --filter @henryqw/pi-ask-question run build",
+    "build": "pnpm --filter @henryqw/pi-config-store --filter @henryqw/pi-herdr --filter @henryqw/pi-herdr-tools --filter @henryqw/pi-process --filter @henryqw/pi-task-models --filter @henryqw/pi-ask-question run build",
     "postinstall": "pnpm run build",
     "test": "pnpm run test:root && node scripts/test-workspaces.mjs",
     "test:root": "node --test scripts/*.test.mjs && node --test 'evals/**/*.test.ts'",

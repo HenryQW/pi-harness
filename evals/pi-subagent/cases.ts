@@ -3,12 +3,12 @@
 // so a request that the live tool rejects fails the case.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { DelegateTaskParameters, parseDelegateTask } from "../../extensions/pi-subagent/extensions/workflow.ts";
-import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../../extensions/pi-subagent/src/schema.ts";
+import { DelegateTaskParameters, parseDelegateTask } from "../../deprecated/pi-subagent/extensions/workflow.ts";
+import { IdOnlySchema, IntegrationActionParameters, ResumeRequestParameters, StageRequestSchema } from "../../deprecated/pi-subagent/src/schema.ts";
 import { check, git, noBash, notCalled } from "../graders.ts";
 import type { EvalCase, StubResponse, StubTool, ToolCall, Trace } from "../types.ts";
 
-const skill = "extensions/pi-subagent/skills/pi-subagent";
+const skill = "deprecated/pi-subagent/skills/pi-subagent";
 
 const DIRECT_ACK =
 	"Direct delegation started · D1 · direct-1-eval\nHerdr tab: w1:t2 · pane: w1:p3 · agent: D1.1\nExact session: /tmp/pi-eval/sessions/d1-1.jsonl\nAll launched tabs: /subagent (on this session branch).\n1 task(s); result will arrive in one follow-up message. Direct work shares this checkout; completion is an exact answer, not checked integration.";

@@ -13,7 +13,6 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | `pi-bark` | [Pi Bark](extensions/pi-bark/CONTEXT.md) | Bark delivery, notification preferences, and push encryption |
 | `pi-codegraph` | [Pi CodeGraph](extensions/pi-codegraph/CONTEXT.md) | Separate checkout indexes, seed indexes, and indexing consent |
 | `pi-config-store` | [Pi Config Store](packages/pi-config-store/CONTEXT.md) | Extension Config Homes, config issues, and safe replacement |
-| `pi-cron` | [Pi Cron](extensions/pi-cron/CONTEXT.md) | Scheduled jobs, slots, claims, and run delivery |
 | `pi-deps` | [Pi Deps](extensions/pi-deps/CONTEXT.md) | Repository opt-in and dependency preparation for new worktrees |
 | `pi-footer` | [Pi Footer](extensions/pi-footer/CONTEXT.md) | Checkout identity, usage, work time, status, and opening the current directory |
 | `pi-goal` | [Pi Goal](extensions/pi-goal/CONTEXT.md) | Branch-derived Goals, Evidence-based completion, Continuation limits, and Budget |
@@ -25,7 +24,6 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | `pi-notes` | [Pi Notes](extensions/pi-notes/CONTEXT.md) | User reminders owned by one Git worktree instance |
 | `pi-pr` | [Pi PR](extensions/pi-pr/CONTEXT.md) | Current-branch PR identity, workflow authority, feedback, publication, and confirmed merge |
 | `pi-session-recall` | [Pi Session Recall](extensions/pi-session-recall/CONTEXT.md) | Saved conversation evidence, branch-aware retrieval, and independent mining examples |
-| `pi-subagent` | [Pi Subagent](extensions/pi-subagent/CONTEXT.md) | Role delegation, shared-checkout admission, and checked isolated integration |
 | `pi-task-models` | [Pi Task Models](extensions/pi-task-models/CONTEXT.md) | Consumer-owned Model Tasks, shared routes, assignments, and presets |
 | `pi-undo` | [Pi Undo](extensions/pi-undo/CONTEXT.md) | Conversation rewind without filesystem rollback |
 
@@ -37,11 +35,10 @@ Arrows mean that the first context uses a capability owned by the second, unless
 
 | Contexts | Boundary and evidence |
 | --- | --- |
-| `pi-advisor`, `pi-auto-compact`, `pi-cron`, `pi-herdr-tools`, `pi-memory`, `pi-subagent` → `pi-task-models` | Consumers declare their own Model Tasks and use shared Task Profiles. Pi remains the model authority; see [ADR 017](docs/adr/017-consumer-owned-task-model-routing.md). |
-| `pi-cron` → `pi-subagent` | Scheduled jobs use Role launch policy and the bounded executor, not direct shared-checkout delegation or checked integration; see [ADR 020](docs/adr/020-pi-cron-in-session-scheduler.md). |
-| `pi-herdr-tools`, `pi-subagent`, `pi-pr` → `pi-herdr` | The shared package supplies Herdr access. Consumers retain conversation, worker, and PR workflow ownership; see [ADR 002](docs/adr/002-shared-herdr-cli-client.md). |
+| `pi-advisor`, `pi-auto-compact`, `pi-herdr-tools`, `pi-memory` → `pi-task-models` | Consumers declare their own Model Tasks and use shared Task Profiles. Pi remains the model authority; see [ADR 017](docs/adr/017-consumer-owned-task-model-routing.md). |
+| `pi-herdr-tools`, `pi-pr` → `pi-herdr` | The shared package supplies Herdr access. Consumers retain conversation and PR workflow ownership; see [ADR 002](docs/adr/002-shared-herdr-cli-client.md). |
 | `pi-memory` → `pi-ask-question` | Memory conflict resolution uses the shared question UI; see [candidate review](extensions/pi-memory/README.md#candidate-review). |
-| `pi-footer` ← `pi-pr`, `pi-multi-codex`, `pi-codegraph`, `pi-subagent` | The footer displays PR, quota, and index status and counts completed subagent usage. It does not own those workflows; see [footer display](extensions/pi-footer/README.md#use). |
+| `pi-footer` ← `pi-pr`, `pi-multi-codex`, `pi-codegraph` | The footer displays PR, quota, and index status. It also counts completed background workflow entries from a retired subagent install. It does not own those workflows; see [footer display](extensions/pi-footer/README.md#use). |
 | `pi-bark`, `pi-memory` ← `pi-herdr-tools` | Bark uses the Pi session name also shown by Herdr, without reading Herdr state. Memory recognizes side-thread children to omit parent-only injection; see their [Bark](extensions/pi-bark/README.md#automatic-status-notifications) and [Memory](extensions/pi-memory/README.md#works-with) guidance. |
 | `pi-goal`, `pi-auto-compact`, `pi-pr` | All three handle Pi's final-settlement boundary. Each keeps earlier boundary entries; Pi Goal yields when another handler already continues. See [Pi Goal flow](extensions/pi-goal/README.md#flow). |
 | `pi-advisor` ← `pi-goal`, `pi-auto-compact`, `pi-pr` | Pi Advisor reviews a Run only after Pi settles it, so boundary continuations by these extensions stay in the reviewed Run. It starts at most one follow-up Run for each user prompt. See [Pi Advisor flow](extensions/pi-advisor/README.md#flow). |
@@ -50,13 +47,13 @@ Arrows mean that the first context uses a capability owned by the second, unless
 Scope boundaries also matter:
 
 - `pi-memory` keeps curated cross-session facts; `pi-session-recall` retrieves historical evidence; `pi-notes` keeps user reminders for one worktree. These are not interchangeable stores. See [ADR 005](docs/adr/005-knowledge-tier-model.md).
-- `pi-herdr-tools` manages human-directed conversations and worktree completion; `pi-subagent` owns checked delegation and integration; `pi-pr` owns guarded GitHub publication and confirmed merge. A side-thread merge is text delivery, not a Git merge. See [ADR 019](docs/adr/019-pi-subagent-orchestration.md) and [ADR 021](docs/adr/021-herdr-workflow-consolidation.md).
+- `pi-herdr-tools` manages human-directed conversations and worktree completion; `pi-pr` owns guarded GitHub publication and confirmed merge. A side-thread merge is text delivery, not a Git merge. See [ADR 021](docs/adr/021-herdr-workflow-consolidation.md).
 - `pi-deps` prepares dependencies when Git creates an opted-in worktree; `pi-codegraph` prepares indexes when Pi starts. One does not prove the other is ready. See [dependency preparation](extensions/pi-deps/README.md#flow) and [index setup](extensions/pi-codegraph/README.md#flow).
 - `pi-auto-compact` reduces active model context; `pi-undo` rewinds a conversation branch. None of these operations restores filesystem changes. A `pi-undo` rewind also removes `pi-goal` records after the rewind point, because `pi-goal` reads its Goal from the branch.
 
 ## Retired contexts
 
-These glossaries describe archived packages, not active contracts. The archives are excluded from workspace execution, tests, and publication. [ADR 021](docs/adr/021-herdr-workflow-consolidation.md) records the Herdr consolidation.
+These glossaries describe archived packages, not active contracts. The archives are excluded from workspace execution, tests, and publication. [ADR 021](docs/adr/021-herdr-workflow-consolidation.md) records the Herdr consolidation. [ADR 022](docs/adr/022-retire-pi-subagent-and-pi-cron.md) records the retirement of `pi-subagent` and `pi-cron`.
 
 | Retired context | Historical glossary | Active replacement |
 | --- | --- | --- |
@@ -64,6 +61,8 @@ These glossaries describe archived packages, not active contracts. The archives 
 | `pi-herdr-clone` | [Pi Herdr Clone](deprecated/pi-herdr-clone/CONTEXT.md) | [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md): clones and worktree completion |
 | `pi-herdr-done` | [Pi Herdr Done](deprecated/pi-herdr-done/CONTEXT.md) | First [Pi Herdr Clone](deprecated/pi-herdr-clone/CONTEXT.md), then [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md): worktree completion |
 | `pi-herdr-rename` | [Pi Herdr Rename](deprecated/pi-herdr-rename/CONTEXT.md) | [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md): conversation titles and semantic branches |
+| `pi-cron` | [Pi Cron](deprecated/pi-cron/CONTEXT.md) | None. |
 | `pi-prompt-creator` | [Pi Prompt Creator](deprecated/pi-prompt-creator/CONTEXT.md) | None |
+| `pi-subagent` | [Pi Subagent](deprecated/pi-subagent/CONTEXT.md) | Direct delegation is `npm:billion-context` and `acp_delegate`. Checked worktrees have none. |
 
 Other retired packages have no context glossary. Their replacement guidance remains in [the archive index](deprecated/README.md).

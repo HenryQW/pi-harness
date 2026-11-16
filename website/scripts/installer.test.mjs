@@ -160,23 +160,24 @@ test("installer stays synchronized with every public Pi package", () => {
   assert.ok(!names.includes("@henryqw/pi-herdr"));
   assert.ok(!names.includes("@henryqw/pi-auto-dag"));
   assert.ok(!names.includes("@henryqw/pi-orchestrator"));
-  assert.ok(names.includes("@henryqw/pi-subagent"));
+  assert.ok(!names.includes("@henryqw/pi-subagent"));
+  assert.ok(!names.includes("@henryqw/pi-cron"));
 });
 
-test("all mode requires Herdr 0.9.0, installs every extension, and skips absent legacy cleanup", () => {
+test("all mode accepts Herdr 0.7.4, installs every extension, and skips absent legacy cleanup", () => {
   const names = collectInstallablePackages(repoRoot);
 
-  withInstaller(compatiblePi, compatibleHerdr, ({ commands, runInstaller }) => {
+  withInstaller(compatiblePi, baseHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 0);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
       ...names.flatMap((name) => [
         `pi install npm:${name}`,
-        ...(["@henryqw/pi-footer", "@henryqw/pi-herdr-tools", "@henryqw/pi-subagent"].includes(name) ? ["pi list"] : []),
+        ...(["@henryqw/pi-footer", "@henryqw/pi-herdr-tools"].includes(name) ? ["pi list"] : []),
       ]),
     ]);
-  });
+  }, { herdrLatest: "0.7.4" });
 });
 
 test("pi-herdr-tools alone retains the Herdr 0.7.4 floor", () => {
@@ -192,16 +193,6 @@ test("pi-herdr-tools alone retains the Herdr 0.7.4 floor", () => {
     extensions: ["@henryqw/pi-herdr-tools"],
     herdrLatest: "0.7.4",
   });
-});
-
-test("pi-subagent alone rejects Herdr below 0.9.0", () => {
-  const olderHerdr = compatibleTool("herdr", "0.8.9");
-  withInstaller(compatiblePi, olderHerdr, ({ commands, runInstaller }) => {
-    const result = runInstaller();
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Herdr 0\.8\.9.*Herdr 0\.9\.0\+ is required/);
-    assert.deepEqual(commands(), ["pi --version", "herdr --version"]);
-  }, { extensions: ["@henryqw/pi-subagent"] });
 });
 
 test("update flag approves available Pi and Herdr updates", () => {
@@ -220,7 +211,7 @@ test("update flag approves available Pi and Herdr updates", () => {
       "herdr --version",
       ...names.flatMap((name) => [
         `pi install npm:${name}`,
-        ...(["@henryqw/pi-footer", "@henryqw/pi-herdr-tools", "@henryqw/pi-subagent"].includes(name) ? ["pi list"] : []),
+        ...(["@henryqw/pi-footer", "@henryqw/pi-herdr-tools"].includes(name) ? ["pi list"] : []),
       ]),
     ]);
   }, { piLatest: "1.1.0", herdrLatest: "0.9.0" });
@@ -241,34 +232,6 @@ esac
     assert.match(result.stderr, /Pi update failed/);
     assert.deepEqual(commands(), ["pi --version", "pi update --self"]);
   }, { piLatest: "1.1.0" });
-});
-
-test("a skipped Herdr update still enforces the selected 0.9.0 floor", () => {
-  const herdr = updatableTool("herdr", "0.8.2", "0.9.0");
-
-  withInstaller(compatiblePi, herdr, ({ commands, runInstaller }) => {
-    const result = runInstaller();
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Skipping the Herdr update because no interactive terminal is available/);
-    assert.match(result.stderr, /Herdr 0\.8\.2.*Herdr 0\.9\.0\+ is required/);
-    assert.deepEqual(commands(), ["pi --version", "herdr --version"]);
-  });
-});
-
-test("an approved Herdr update must reach the selected 0.9.0 floor", () => {
-  const herdr = updatableTool("herdr", "0.8.2", "0.8.3");
-
-  withInstaller(compatiblePi, herdr, ({ commands, runInstaller }) => {
-    const result = runInstaller("--all", "--update");
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Herdr 0\.8\.3.*Herdr 0\.9\.0\+ is required/);
-    assert.deepEqual(commands(), [
-      "pi --version",
-      "herdr --version",
-      "herdr update",
-      "herdr --version",
-    ]);
-  });
 });
 
 test("a broken existing Pi stops before extension installation", () => {
@@ -302,7 +265,7 @@ test("a broken existing Herdr reports the selected floor", () => {
   withInstaller(compatiblePi, `#!/bin/sh\nprintf 'herdr %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nexit 1\n`, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /could not start.*0\.9\.0\+/);
+    assert.match(result.stderr, /could not start.*0\.7\.4\+/);
     assert.deepEqual(commands(), ["pi --version", "herdr --version"]);
   });
 });
@@ -311,48 +274,9 @@ test("an unrecognized existing Herdr version reports the selected floor", () => 
   withInstaller(compatiblePi, `#!/bin/sh\nprintf 'herdr %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"\nprintf 'development build\\n'\n`, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /did not report a recognized semantic version.*0\.9\.0\+/);
+    assert.match(result.stderr, /did not report a recognized semantic version.*0\.7\.4\+/);
     assert.deepEqual(commands(), ["pi --version", "herdr --version"]);
   });
-});
-
-test("an older existing Herdr reports the pi-subagent floor", () => {
-  withInstaller(compatiblePi, compatibleTool("herdr", "0.8.9"), ({ commands, runInstaller }) => {
-    const result = runInstaller();
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Herdr 0\.8\.9.*Herdr 0\.9\.0\+ is required/);
-    assert.deepEqual(commands(), ["pi --version", "herdr --version"]);
-  });
-});
-
-test("a pi-subagent upgrade removes only the exact retired npm source after installation", () => {
-  withInstaller(legacyPi(), compatibleHerdr, ({ commands, runInstaller }) => {
-    assert.equal(runInstaller().status, 0);
-    assert.deepEqual(commands(), [
-      "pi --version",
-      "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
-      "pi list",
-      "pi uninstall npm:@henryqw/pi-auto-dag",
-      "pi list",
-      "pi install npm:@henryqw/pi-herdr-tools",
-      "pi list",
-    ]);
-  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-tools"] });
-});
-
-test("a pi-subagent upgrade removes the retired orchestrator source after installation", () => {
-  withInstaller(legacyPi({ packageSource: "npm:@henryqw/pi-orchestrator" }), compatibleHerdr, ({ commands, runInstaller }) => {
-    assert.equal(runInstaller().status, 0);
-    assert.deepEqual(commands(), [
-      "pi --version",
-      "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
-      "pi list",
-      "pi uninstall npm:@henryqw/pi-orchestrator",
-      "pi list",
-    ]);
-  }, { extensions: ["@henryqw/pi-subagent"] });
 });
 
 test("folded packages are removed only after their selected replacement installs", () => {
@@ -383,18 +307,18 @@ test("selecting footer does not remove the retired Herdr completion package", ()
 });
 
 test("a later install failure does not leave an earlier replacement's retired source installed", () => {
-  withInstaller(legacyPi({ installFails: true }), compatibleHerdr, ({ commands, runInstaller }) => {
+  withInstaller(legacyPi({ installFails: true, packageSource: "npm:@henryqw/pi-open-in" }), baseHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 1);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
+      "pi install npm:@henryqw/pi-footer",
       "pi list",
-      "pi uninstall npm:@henryqw/pi-auto-dag",
+      "pi uninstall npm:@henryqw/pi-open-in",
       "pi list",
       "pi install npm:@henryqw/pi-herdr-tools",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent", "@henryqw/pi-herdr-tools"] });
+  }, { extensions: ["@henryqw/pi-footer", "@henryqw/pi-herdr-tools"], herdrLatest: "0.7.4" });
 });
 
 test("a failed replacement install leaves its own retired sources untouched", () => {
@@ -421,47 +345,47 @@ test("legacy cleanup ignores package-name substrings", () => {
 printf 'pi %s\\n' "$*" >> "$PI_HARNESS_TEST_LOG"
 case "$1" in
   --version) printf 'pi 1.1.0\\n' ;;
-  list) printf 'User packages:\\n  npm:@henryqw/pi-auto-dag-copy\\n    /tmp/pi-auto-dag\\n' ;;
+  list) printf 'User packages:\\n  npm:@henryqw/pi-herdr-btw-copy\\n    /tmp/pi-herdr-btw\\n' ;;
 esac
 `;
-  withInstaller(pi, compatibleHerdr, ({ commands, runInstaller }) => {
+  withInstaller(pi, baseHerdr, ({ commands, runInstaller }) => {
     assert.equal(runInstaller().status, 0);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
+      "pi install npm:@henryqw/pi-herdr-tools",
       "pi list",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent"] });
+  }, { extensions: ["@henryqw/pi-herdr-tools"], herdrLatest: "0.7.4" });
 });
 
 test("a failed legacy uninstall aborts", () => {
-  withInstaller(legacyPi({ uninstallFails: true }), compatibleHerdr, ({ commands, runInstaller }) => {
+  withInstaller(legacyPi({ uninstallFails: true, packageSource: "npm:@henryqw/pi-open-in" }), baseHerdr, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /Could not remove retired Pi package source npm:@henryqw\/pi-auto-dag/);
+    assert.match(result.stderr, /Could not remove retired Pi package source npm:@henryqw\/pi-open-in/);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
+      "pi install npm:@henryqw/pi-footer",
       "pi list",
-      "pi uninstall npm:@henryqw/pi-auto-dag",
+      "pi uninstall npm:@henryqw/pi-open-in",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent"] });
+  }, { extensions: ["@henryqw/pi-footer"], herdrLatest: "0.7.4" });
 });
 
 test("failed proof of legacy removal aborts", () => {
-  withInstaller(legacyPi({ removalPersists: true }), compatibleHerdr, ({ commands, runInstaller }) => {
+  withInstaller(legacyPi({ removalPersists: true, packageSource: "npm:@henryqw/pi-open-in" }), baseHerdr, ({ commands, runInstaller }) => {
     const result = runInstaller();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /npm:@henryqw\/pi-auto-dag is still installed/);
+    assert.match(result.stderr, /npm:@henryqw\/pi-open-in is still installed/);
     assert.deepEqual(commands(), [
       "pi --version",
       "herdr --version",
-      "pi install npm:@henryqw/pi-subagent",
+      "pi install npm:@henryqw/pi-footer",
       "pi list",
-      "pi uninstall npm:@henryqw/pi-auto-dag",
+      "pi uninstall npm:@henryqw/pi-open-in",
       "pi list",
     ]);
-  }, { extensions: ["@henryqw/pi-subagent"] });
+  }, { extensions: ["@henryqw/pi-footer"], herdrLatest: "0.7.4" });
 });
