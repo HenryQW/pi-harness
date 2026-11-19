@@ -371,6 +371,11 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 		name: "codegraph_explore",
 		label: "CodeGraph explore",
 		description: "Primary code exploration tool. Call it first for how-does-X-work, architecture, bug, or where-is-X questions, and before editing. Returns the verbatim source of the relevant symbols grouped by file, plus the call path among them, in one capped call. Treat the shown source as already read.",
+		promptSnippet: "Explore code symbols and call paths from the CodeGraph index",
+		promptGuidelines: [
+			"codegraph_explore: call it first for symbol lookups, call graphs, imports, and codebase mapping when the worktree has a CodeGraph index; its result already counts as a read.",
+			"codegraph_explore: prefer it over grep or read to locate an implementation; fall back to grep or read when the index lacks the file or the query is not about code structure.",
+		],
 		parameters: Type.Object({
 			query: Type.String({ description: "Symbol names, file names, short code terms, or a natural-language question." }),
 			maxFiles: Type.Optional(Type.Number({ description: "Maximum files to include (default 12)." })),

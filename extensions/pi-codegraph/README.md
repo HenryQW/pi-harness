@@ -40,6 +40,8 @@ In the status display, `CG` means CodeGraph. In server names, `root-hash` identi
 
 `codegraph_explore` accepts `query`, optional `maxFiles` (default 12), and optional `projectPath` (default: Pi's working directory). A nested directory selects its containing Git worktree, not a separate nested index. Relative paths use Pi's working directory. Symbolic links to the same worktree share setup and one watcher.
 
+The tool declares `promptSnippet` and `promptGuidelines`, so Pi adds it to the model's tool list and rules. The model then calls it before `grep` or `read` when the worktree has an index, and falls back to those tools when the index does not cover the query.
+
 The tool runs `codegraph explore --path <worktree-root> --max-files <maxFiles> <query>` and returns unchanged output. The `--max-files` option limits the source files in the result. A command error or runtime above 120 seconds fails the exploration and shows the end of the error output. Setup can take longer.
 
 For example, a session in `/workspace` can query two repositories:
