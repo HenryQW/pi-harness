@@ -5,6 +5,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { resolveCodegraphLaunch, type CodegraphLaunch } from "./codegraph-launch.ts";
 
 const LOCK_WAIT_MS = 5 * 60_000;
 const INIT_TIMEOUT_MS = 10 * 60_000;
@@ -13,6 +14,25 @@ const STATUS_KEY = "pi-codegraph";
 const MCP_SERVER = "pi-codegraph";
 const SPINNER_INTERVAL_MS = 100;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// One resolved launch for every CodeGraph call: Windows has no spawnable
+// `codegraph` on PATH, and the MCP server needs the same command.
+let launch: CodegraphLaunch | undefined;
+function codegraphLaunch(): CodegraphLaunch {
+	// Cache success only: an install finished while Pi runs must be picked up on retry.
+	const resolved = launch ?? resolveCodegraphLaunch();
+	if ("error" in resolved) return resolved;
+	return launch = resolved;
+}
+
+type ExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
+
+// A missing executable is a prerequisite, not a spawn failure.
+async function execCodegraph(pi: ExtensionAPI, args: string[], cwd: string, options: { timeout: number; signal: AbortSignal }): Promise<ExecResult> {
+	const resolved = codegraphLaunch();
+	if ("error" in resolved) throw new PrerequisitesError(resolved.error);
+	return pi.exec(resolved.command, [...resolved.args, ...args], { ...options, cwd });
+}
 
 function showProgress(ctx: ExtensionContext, action: string, signal: AbortSignal): () => void {
 	if (!ctx.hasUI) return () => {};
@@ -122,7 +142,7 @@ async function copyIndex(pi: ExtensionAPI, source: string, root: string, signal:
 	}
 	if (copied) {
 		// CodeGraph decides whether the copy is complete and built by its current extraction engine.
-		const status = await pi.exec("codegraph", ["status", "--json", root], { cwd: root, timeout: 30_000, signal });
+		const status = await execCodegraph(pi, ["status", "--json", root], root, { timeout: 30_000, signal });
 		signal.throwIfAborted();
 		try {
 			const { index } = JSON.parse(status.stdout) as { index?: { state?: string; reindexRecommended?: boolean } };
@@ -157,7 +177,7 @@ async function acquireLock(lock: string, recovery: string, signal: AbortSignal, 
 }
 
 async function codegraph(pi: ExtensionAPI, root: string, args: string[], signal: AbortSignal): Promise<void> {
-	const result = await pi.exec("codegraph", [...args, root], { cwd: root, timeout: INIT_TIMEOUT_MS, signal });
+	const result = await execCodegraph(pi, [...args, root], root, { timeout: INIT_TIMEOUT_MS, signal });
 	signal.throwIfAborted();
 	if (result.code !== 0 || result.killed || !(await hasIndex(root))) {
 		throw new Error(`CodeGraph ${args[0]} failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${(result.stderr || result.stdout).trim().slice(-2000)}`);
@@ -248,7 +268,7 @@ class PrerequisitesError extends Error {}
 // Returns the worktree root only after its initialization lock is clear.
 async function initialize(pi: ExtensionAPI, ctx: ExtensionContext, root: string, signal: AbortSignal, primaries: Map<string, Promise<boolean>>): Promise<string | undefined> {
 	ctx.ui.setStatus(STATUS_KEY, undefined);
-	const version = await pi.exec("codegraph", ["--version"], { cwd: root, timeout: 10_000, signal });
+	const version = await execCodegraph(pi, ["--version"], root, { timeout: 10_000, signal });
 	signal.throwIfAborted();
 	if (version.code !== 0 || version.killed) {
 		const detail = version.killed ? "timed out or killed" : version.stderr.trim().slice(-1000) || `exit ${version.code}`;
@@ -348,7 +368,10 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 			if (ready && !watched.has(root)) {
 				// Root identity keeps separate repositories and linked worktrees independent.
 				const name = root === sessionRoot ? MCP_SERVER : `${MCP_SERVER}-${createHash("sha256").update(root).digest("hex").slice(0, 16)}`;
-				pi.registerMcpServer(name, { command: "codegraph", args: ["serve", "--mcp", "--path", root], cwd: root, exposure: "hidden" });
+				const resolved = codegraphLaunch();
+				if ("error" in resolved) throw new PrerequisitesError(resolved.error);
+				// The MCP server starts the same way as every other CodeGraph call.
+				pi.registerMcpServer(name, { command: resolved.command, args: [...resolved.args, "serve", "--mcp", "--path", root], cwd: root, exposure: "hidden" });
 				watched.set(root, name);
 			} else if (!ready) unwatch(root);
 			return ready;
@@ -391,7 +414,7 @@ export default function codegraphExtension(pi: ExtensionAPI): void {
 				throw new Error(`No CodeGraph index in ${root}. Run codegraph init --yes in that directory, or index the primary checkout to enable linked-worktree setup. Set projectPath to select another indexed worktree.`);
 			}
 			callSignal.throwIfAborted();
-			const result = await pi.exec("codegraph", ["explore", "--path", root, "--max-files", String(maxFiles ?? 12), query], { cwd: root, signal: callSignal, timeout: EXPLORE_TIMEOUT_MS });
+			const result = await execCodegraph(pi, ["explore", "--path", root, "--max-files", String(maxFiles ?? 12), query], root, { signal: callSignal, timeout: EXPLORE_TIMEOUT_MS });
 			callSignal.throwIfAborted();
 			if (result.code !== 0 || result.killed) {
 				throw new Error(`codegraph explore failed (${result.killed ? "timed out or killed" : `exit ${result.code}`}): ${result.stderr.trim().slice(-2000)}`);
