@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { setImmediate, setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import codegraphExtension from "../extensions/codegraph.ts";
+import { resolveCodegraphLaunch } from "../extensions/codegraph-launch.ts";
 
 const exec = promisify(execFile);
 type ExecResult = Awaited<ReturnType<ExtensionAPI["exec"]>>;
@@ -46,20 +47,38 @@ function harness(cwd: string, options: {
 	let shutdown!: typeof start;
 	const notices: { message: string; level: string }[] = [];
 	const calls: { command: string; args: string[]; cwd: string; timeout?: number }[] = [];
-	const servers = new Map<string, { cwd: string }>();
+	const servers = new Map<string, { command?: string; args?: string[]; cwd: string }>();
 	const registrations: string[] = [];
 	const removals: string[] = [];
 	const prompts: string[] = [];
 	let tool!: ToolDefinition;
 	const pi = {
-		registerMcpServer: (name: string, config: { cwd: string }) => { registrations.push(name); servers.set(name, config); },
+		registerMcpServer: (name: string, config: { command?: string; args?: string[]; cwd: string }) => {
+			const launch = resolveCodegraphLaunch();
+			// The MCP server must start exactly like every CLI call; store it under
+			// the same neutral command name so assertions stay platform-neutral.
+			assert.equal(config.command, launch.command);
+			assert.deepEqual(config.args?.slice(0, launch.args?.length ?? 0), launch.args);
+			servers.set(name, { ...config, command: "codegraph", args: config.args?.slice(launch.args?.length ?? 0) });
+			registrations.push(name);
+		},
 		unregisterMcpServer: (name: string) => { removals.push(name); servers.delete(name); },
 		on: (name: string, handler: typeof start) => {
 			if (name === "session_start") start = handler;
 			else if (name === "session_shutdown") shutdown = handler;
 		},
 		registerTool: (definition: ToolDefinition) => { tool = definition; },
-		exec: async (command: string, args: string[], opts: { cwd: string; timeout?: number; signal?: AbortSignal }) => {
+		exec: async (rawCommand: string, rawArgs: string[], opts: { cwd: string; timeout?: number; signal?: AbortSignal }) => {
+			// Every CodeGraph call must use the resolved launch; record it under one name
+			// with the launch arguments removed, so assertions stay platform-neutral.
+			const launch = resolveCodegraphLaunch();
+			let args = rawArgs;
+			const resolved = rawCommand === launch.command;
+			const command = resolved ? "codegraph" : rawCommand;
+			if (resolved) {
+				assert.deepEqual(args.slice(0, launch.args.length), launch.args);
+				args = args.slice(launch.args.length);
+			}
 			calls.push({ command, args, cwd: opts.cwd, ...(args[0] === "explore" && { timeout: opts.timeout }) });
 			if (command === "codegraph") {
 				if (args[0] === "--version") return options.version ?? { code: 0, stdout: "1.6.0", stderr: "", killed: false, truncated: false };
