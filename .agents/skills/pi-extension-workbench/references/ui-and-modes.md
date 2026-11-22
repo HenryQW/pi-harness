@@ -32,6 +32,10 @@ unavailable, unless an explicit safe non-UI policy authorizes it. Do not use
   until their inputs change; include content, width, theme, and loaded grammars
   in the relevant cache inputs. Clear caches in `invalidate()` and request
   rendering after state changes. See `Keep rendering responsive` in `docs/tui.md`.
+- In Pi 1.6 and later, treat lines returned by `render()` as read-only. Built-in
+  components can return a cached array. Copy it before modification, including
+  output from `super.render()` or an embedded component. Return a new array when
+  output changes so a parent can detect the change.
 - Use injected `context.keyHint()` and `context.keyText()` in tool renderers,
   and `options.keyHint()` / `options.keyText()` in message and entry renderers.
   Package-level imports can see a different package instance and miss configured
