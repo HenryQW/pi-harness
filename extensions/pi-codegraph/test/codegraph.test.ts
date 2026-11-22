@@ -519,6 +519,9 @@ test("codegraph_explore resolves nested paths, passes arguments, and reports bou
 	const run = harness(primary);
 	await run.start();
 	assert.equal(run.tool.name, "codegraph_explore");
+	// Without a prompt snippet Pi leaves the tool out of the system prompt tool list.
+	assert.match(run.tool.promptSnippet!, /CodeGraph/);
+	assert.ok(run.tool.promptGuidelines!.some((guideline) => guideline.startsWith("codegraph_explore:")));
 	const parameters = JSON.parse(JSON.stringify(run.tool.parameters));
 	assert.equal(parameters.type, "object");
 	assert.ok(parameters.properties);
