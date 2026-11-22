@@ -57,7 +57,8 @@ schema builder, remains supported within that contract.
   or cancellation. Test doubles of `ExecResult` must include `truncated`.
   Pi preserves characters split across output chunks and reports spawn errors
   in stderr. After timeout or abort, it forces termination after five seconds
-  if the initial termination signal did not stop the child.
+  if the initial termination signal did not stop the child. In Pi 1.6 and later,
+  a command terminated by a signal reports `128 + signal number` as its code.
   Native execution has no standard-input option, separate stream limits, tail
   capture, or process-group cancellation; keep such distinct process contracts.
 - Use a plain string `enum` schema, not literal unions, for Google compatibility.

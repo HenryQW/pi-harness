@@ -47,7 +47,9 @@ check its lockfile, scripts, and documented support policy.
 | Observe/adjust provider HTTP traffic | Provider request/headers/response events | `examples/extensions/provider-payload.ts` |
 
 Do not build a custom MCP client or provider for ordinary server registration,
-model selection, or model routing. MCP registrations are session/runtime-local;
+model selection, or model routing. Classifiers whose `input` includes `"image"`
+can receive image blocks; Pi 1.6 fixes image delivery to llama.cpp classifiers.
+MCP registrations are session/runtime-local;
 register again on load and honor configured server overrides. Pass cancellation
 to network input/output operations. Never log credentials, authorization headers,
 or provider secrets.
