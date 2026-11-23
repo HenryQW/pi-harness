@@ -15,14 +15,19 @@ function safe(value: unknown, fallback = ""): string {
 	return typeof value === "string" ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, " ").slice(0, 120) : fallback;
 }
 
+// Matching identifiers must not be changed by display sanitization.
+function identity(value: unknown): string {
+	return typeof value === "string" && value.length <= 120 && !/[\x00-\x1f\x7f-\x9f]/.test(value) ? value : "";
+}
+
 export function parseCards(output: string): Card[] {
 	const data: unknown = JSON.parse(output);
 	if (!Array.isArray(data)) throw new Error("Invalid quota response");
 	return data.map((item): Card => {
 		if (!item || typeof item !== "object" || typeof item.provider !== "string" || !item.provider || !Array.isArray(item.windows)) throw new Error("Invalid quota card");
 		return {
-			provider: safe(item.provider), name: safe(item.name, item.provider), kind: safe(item.kind, "unknown"),
-			user: safe(item.user), alias: safe(item.alias), from: safe(item.from), plan: safe(item.plan),
+			provider: identity(item.provider), name: safe(item.name, item.provider), kind: safe(item.kind, "unknown"),
+			user: identity(item.user), alias: safe(item.alias), from: safe(item.from), plan: safe(item.plan),
 			balance: safe(item.balance), readAt: safe(item.readAt), error: item.error ? "unavailable" : undefined,
 			windows: item.windows.map((window: unknown): Window => {
 				if (!window || typeof window !== "object" || !("name" in window) || typeof window.name !== "string") throw new Error("Invalid quota window");
@@ -82,26 +87,23 @@ function resetTime(reset: number, now: number): string {
 	return `~${[days && `${days}d`, hours && `${hours}h`, remainder && `${remainder}m`].filter(Boolean).join(" ")}`;
 }
 
-export function footer(cards: Card[], failed: boolean, now = Date.now(), provider?: string, route?: Route): { quota: string; model: string } {
-	const indexed = cards.map((card, index) => ({ card, index }));
-	const routedProvider = route?.model.split("/")[0] || provider;
-	const matches = route?.account ? indexed.filter(({ card }) => card.user === route.account && !card.from && card.kind === "subscription" && card.provider === routedProvider) : [];
-	const matched = matches.length === 1 ? matches[0] : undefined;
-	const ordered = [...indexed].sort((a, b) => {
-		const rank = (entry: typeof a) => entry === matched ? 0 : entry.card.provider === routedProvider ? 1 : 2;
-		return rank(a) - rank(b);
-	});
-	const parts = ordered.slice(0, 2).map(({ card, index }) => {
-		const windows = card.windows.filter((w) => !extraUsage(card, w) && !w.text && !w.unlimited && w.balance === undefined && w.remaining !== undefined);
-		const w = windows.reduce<Window | undefined>((lowest, value) => !lowest || value.remaining! < lowest.remaining! ? value : lowest, undefined);
-		const reset = Date.parse(w?.resetsAt || "");
-		const time = resetTime(reset, now);
-		const old = failed || stale(card, now) || (Number.isFinite(reset) && reset <= now);
-		return `#${index + 1} ${w ? `${w.name} ${w.remaining}% ${time}` : "unknown"}${old ? " stale" : ""}${card.error ? " unavailable" : ""}`;
-	});
-	const model = route?.served ? (route.served.startsWith(`${routedProvider}/`) ? route.served : `${routedProvider}/${route.served}`) : route?.model;
-	const routed = route ? `${model || "unknown"}${route.tries.length > 1 ? ` fallback(${route.tries.length - 1})` : ""}${route.done && route.status >= 400 ? " failed" : ""} ${matched ? `#${matched.index + 1}` : "account?"}` : "route?";
-	return { quota: cards.length ? `Magpie ${parts.join(" · ")}` : `Magpie: ${failed ? "quota unavailable" : "no quota"}`, model: route ? `magpie/${routed}` : "route?" };
+export function footer(cards: Card[], failed: boolean, now = Date.now(), selected?: string, route?: Route): { quota: string; model: string } {
+	const routedProvider = route?.model.split("/")[0];
+	const matches = route?.done && route.status >= 200 && route.status < 300 && route.account ? cards.filter((card) => card.user === route.account && !card.from && card.kind === "subscription" && card.provider === routedProvider) : [];
+	const card = matches.length === 1 ? matches[0] : undefined;
+	const group = selected?.match(/(?:^|\/)group\/(.+)$/)?.[1];
+	const name = group ? `${group} group` : selected || route?.asked || "Magpie";
+	const served = route?.served ? (route.served.startsWith(`${routedProvider}/`) ? route.served : `${routedProvider}/${route.served}`) : route?.model;
+	const state = !route ? "route unavailable" : !route.done ? "routing" : route.status < 200 || route.status >= 300 ? "route failed" : !card ? "account unavailable" : "";
+	const model = `${name}${served ? ` → ${served}` : ""}${route && route.tries.length > 1 ? ` fallback(${route.tries.length - 1})` : ""}${state ? ` · ${state}` : ""}`;
+	if (!card) return { quota: "Magpie: quota unavailable", model };
+	const windows = card.windows.filter((w) => !extraUsage(card, w) && !w.text && !w.unlimited && w.balance === undefined && w.remaining !== undefined);
+	const w = windows.reduce<Window | undefined>((lowest, value) => !lowest || value.remaining! < lowest.remaining! ? value : lowest, undefined);
+	const reset = Date.parse(w?.resetsAt || "");
+	const old = failed || stale(card, now) || (Number.isFinite(reset) && reset <= now);
+	const account = `${card.provider} / ${card.alias || card.user || card.name}`;
+	const quota = card.error || !w ? "quota unavailable" : `${w.name} ${w.remaining}% remaining · resets ${resetTime(reset, now)}`;
+	return { quota: `${account} · ${quota}${old ? " · stale" : ""}`, model };
 }
 
 async function readRoute(url: string, session: string, signal: AbortSignal, headers?: HeadersInit): Promise<Route | undefined> {
@@ -112,7 +114,7 @@ async function readRoute(url: string, session: string, signal: AbortSignal, head
 	const data = await response.json() as { session?: unknown; route?: any };
 	const r = data.route;
 	if (data.session !== session || !r || !Number.isSafeInteger(r.id) || r.id <= 0 || !Array.isArray(r.tries)) return undefined;
-	const route: Route = { id: r.id, asked: safe(r.asked), model: safe(r.model), served: safe(r.served), tries: r.tries.map((t: any) => safe(t?.model)).filter(Boolean), done: r.done === true, status: typeof r.status === "number" ? r.status : 0 };
+	const route: Route = { id: r.id, asked: identity(r.asked), model: identity(r.model), served: safe(r.served), tries: r.tries.map((t: any) => safe(t?.model)).filter(Boolean), done: r.done === true, status: typeof r.status === "number" ? r.status : 0 };
 	if (!route.done || route.status < 200 || route.status >= 300) return route;
 	const usage = new URL("/v1/magpie/usage/requests", url);
 	usage.searchParams.set("period", "all");
@@ -126,7 +128,7 @@ async function readRoute(url: string, session: string, signal: AbortSignal, head
 			const body = await page.json() as { rows?: any; total?: unknown };
 			if (!Array.isArray(body.rows) || typeof body.total !== "number") break;
 			const row = body.rows.find((row: any) => row.route_id === route.id && row.session === session && row.provider === route.model.split("/")[0] && (row.model === route.model || row.model === route.model.slice(route.model.indexOf("/") + 1)) && !row.source && row.status >= 200 && row.status < 300);
-			if (row) { route.account = safe(row.providerAccount) || undefined; break; }
+			if (row) { route.account = identity(row.providerAccount) || undefined; break; }
 			if (offset + body.rows.length >= body.total || !body.rows.length) break;
 		}
 	} catch { /* Route remains useful when usage is unavailable. */ }
@@ -137,7 +139,7 @@ export default function (pi: ExtensionAPI) {
 	let cards: Card[] = [], failed = false, controller: AbortController | undefined;
 	let running: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 	let active = false, staleTimer: ReturnType<typeof setTimeout> | undefined;
-	let provider: string | undefined, gateway: string | undefined, gatewayHeaders: HeadersInit | undefined, route: Route | undefined;
+	let gateway: string | undefined, gatewayHeaders: HeadersInit | undefined, route: Route | undefined;
 	let routeVersion = 0, routeController: AbortController | undefined, routeTimer: ReturnType<typeof setTimeout> | undefined;
 	let requestPending = false;
 	const lowWindows = new Set<string>();
@@ -163,7 +165,7 @@ export default function (pi: ExtensionAPI) {
 		if (!active || !ctx.hasUI) return;
 		const now = Date.now();
 		if (ctx.model?.provider !== "magpie") return;
-		const status = footer(cards, failed, now, provider, route);
+		const status = footer(cards, failed, now, ctx.model.id, route);
 		ctx.ui.setStatus("magpie-quota", status.quota);
 		ctx.ui.setStatus("magpie-model", status.model);
 		const nextStale = cards.flatMap((card) => [Date.parse(card.readAt || "") + STALE_AFTER, ...card.windows.map((window) => Date.parse(window.resetsAt || ""))]).filter((time) => time > now && time <= now + STALE_AFTER);
@@ -262,14 +264,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		active = true;
-		provider = ctx.model?.provider === "magpie" ? ctx.model.id.split("/")[0] : undefined;
 		if (ctx.model?.provider === "magpie") ctx.ui.setStatus("magpie-quota", "Magpie: loading");
 		void refresh(ctx);
 		timer = setInterval(() => { void refresh(ctx); }, INTERVAL);
 		timer.unref();
 	});
 	pi.on("model_select", (event, ctx) => {
-		provider = event.model.provider === "magpie" ? event.model.id.split("/")[0] : undefined;
 		controller?.abort();
 		gateway = undefined;
 		gatewayHeaders = undefined;

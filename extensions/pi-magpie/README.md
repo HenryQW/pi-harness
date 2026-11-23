@@ -1,6 +1,6 @@
 # `@henryqw/pi-magpie`
 
-See the current Magpie route, served account, and quota in the Pi footer. Use `/magpie-quota` for full details.
+See the selected Magpie model, its route, and the served account's quota in the Pi footer. Use `/magpie-quota` for full details.
 
 ## Install
 
@@ -12,7 +12,9 @@ Requires Pi 1.5.0 or later. Keep the selected Magpie gateway running. For a loca
 
 ## Use
 
-For a Magpie model, the footer shows up to two account cards. Each card shows its lowest known remaining percentage and the time to reset in days, hours, and minutes. Card numbers match `/magpie-quota`. The served model and fallback count use a separate status. A matching account uses its card number; otherwise the account is unknown. With `pi-footer`, the cards appear above the served model.
+For a Magpie model, the footer shows the selected model or group and the last route. When the served account matches one subscription card, it shows that account's lowest remaining percentage and reset time. The percentage is the account's allowance, not a group total. With `pi-footer`, the quota appears above the route.
+
+The footer shows `route unavailable` when it cannot match a route to the session. It shows `account unavailable` when it cannot identify one subscription card for the route. It shows `quota unavailable` when the account or its percentage is unavailable. Use `/magpie-quota` to see all cards and windows.
 
 Claude usage credits are an extra-usage spending cap. `/magpie-quota` shows the amount used and the limit when Magpie provides them. Credits do not change the footer quota or cause low quota warnings.
 
@@ -29,6 +31,8 @@ A manual refresh asks Magpie for a new report; Magpie can return a cached readin
 
 ## Limits and recovery
 
-The extension reads the selected model's Magpie gateway. For a remote gateway, it uses the model registry's credentials and refuses redirects. Gateway permissions, missing usage records, older Magpie versions, or a route that does not match the selected model can leave the route or account unknown. Account lookup scans at most 1,000 records for the route. A provider name that differs from its subscription name can prevent a quota card match.
+Gateway permissions, missing usage records, older Magpie versions, or a route that does not match the selected model can make the route or account unavailable. A remote Magpie provider can route a request through another gateway without reporting the final account to the selected gateway. The footer cannot identify that account from the outer route alone. Account lookup scans at most 1,000 records for the route. A provider name that differs from its subscription name can prevent a quota card match.
 
-Magpie decides which providers and accounts report quota. Text-only windows and balances are not percentages. If Magpie cannot provide a reading, the footer shows `unknown` or `unavailable`. Check Magpie and run `/magpie-quota refresh`. The extension does not show raw command errors, which can contain secrets. It does not run Magpie's per-account refresh command, which can have provider-specific effects.
+The extension reads the selected model's Magpie gateway. For a remote gateway, it uses the model registry's credentials and refuses redirects. Magpie decides which providers and accounts report quota. Text-only windows and balances are not percentages.
+
+If Magpie cannot provide a reading, the footer shows `quota unavailable`. Check Magpie and run `/magpie-quota refresh`. The extension does not show raw command errors, which can contain secrets. It does not run Magpie's per-account refresh command, which can have provider-specific effects.
