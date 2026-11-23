@@ -11,6 +11,7 @@ const payload = [
 	] },
 	{ provider: "codex", name: "Codex", kind: "subscription", user: "two", readAt: "2026-01-01T11:00:00Z", error: "secret-token", windows: [{ name: "week", remaining: 0 }] },
 ];
+const servedOne = { id: 1, asked: "group/main", model: "codex/gpt", served: "gpt", tries: [], done: true, status: 200, account: "one" };
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 const claude = { provider: "claude", name: "Claude", kind: "subscription", user: "one", readAt: "2026-01-01T11:59:00Z", windows: [
 	{ name: "7 days", remaining: 15 }, { name: "Usage credits", used: 100, remaining: 0, amount: 50.05, limit: 50, unit: "SGD" },
@@ -28,9 +29,9 @@ const route = { id: 123, asked: "auto/main", model: "codex/gpt", served: "gpt-v2
 
 test("shows each quota window, resets, low and stale accounts without errors", () => {
 	const cards = parseCards(JSON.stringify(payload));
-	const line = footer(cards, false, now).quota;
-	assert.match(line, /#1 5h 12% ~1h/);
-	assert.match(line, /#2 week 0% \? stale unavailable/);
+	const line = footer(cards, false, now, "group/main", servedOne).quota;
+	assert.match(line, /codex \/ one · 5h 12% remaining · resets ~1h/);
+	assert.doesNotMatch(line, /week 0%/);
 	assert.match(details(cards, false, now), /week: 42% remaining \(stale\)/);
 	assert.match(details(cards, false, now), /images: Unknown/);
 	assert.match(details(cards, false, now), /wallet: 5 USD balance/);
@@ -41,17 +42,17 @@ test("shows each quota window, resets, low and stale accounts without errors", (
 test("formats reset times in days, hours, and minutes", () => {
 	for (const [offset, expected] of [[8487, "~5d 21h 27m"], [7759, "~5d 9h 19m"], [1440, "~1d"], [61, "~1h 1m"], [1 / 60, "~1m"], [0, "?"]] as const) {
 		const card = { ...payload[0], windows: [{ name: "week", remaining: 20, resetsAt: new Date(now + offset * 60_000).toISOString() }] };
-		assert.ok(footer(parseCards(JSON.stringify([card])), false, now).quota.includes(`week 20% ${expected}`));
+		assert.ok(footer(parseCards(JSON.stringify([card])), false, now, "group/main", servedOne).quota.includes(`week 20% remaining · resets ${expected}`));
 	}
 });
 
 test("shows Claude extra usage separately from subscription quota", () => {
 	const cards = parseCards(JSON.stringify([claude, { ...claude, provider: "other" }]));
 	assert.match(details(cards, false, now), /Usage credits: 50\.05 \/ 50 SGD/);
-	assert.match(footer(cards, false, now).quota, /#1 7 days 15% \? · #2 Usage credits 0%/);
+	assert.match(footer(cards, false, now, "group/main", { ...servedOne, model: "claude/gpt" }).quota, /7 days 15% remaining/);
 	const incomplete = parseCards(JSON.stringify([{ ...claude, windows: [{ name: "Usage credits", remaining: 0 }] }]));
 	assert.match(details(incomplete, false, now), /Usage credits: unknown/);
-	assert.match(footer(incomplete, false, now).quota, /#1 unknown/);
+	assert.match(footer(incomplete, false, now, "group/main", { ...servedOne, model: "claude/gpt" }).quota, /quota unavailable/);
 });
 
 test("groups newly low windows per card and tracks recovery separately", async (t) => {
@@ -78,12 +79,26 @@ test("groups newly low windows per card and tracks recovery separately", async (
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
+test("shows only the confirmed group member's quota", () => {
+	const cards = parseCards(JSON.stringify(payload));
+	assert.deepEqual(footer(cards, false, now, "vps/group/gpt-6.2-sol", servedOne), {
+		model: "gpt-6.2-sol group → codex/gpt",
+		quota: "codex / one · 5h 12% remaining · resets ~1h",
+	});
+	const remoteRoute = { ...servedOne, model: "vps/group/gpt-6.2-sol", served: "gpt-6.2-sol", account: undefined };
+	assert.deepEqual(footer(cards, false, now, "vps/group/gpt-6.2-sol", remoteRoute), {
+		model: "gpt-6.2-sol group → vps/gpt-6.2-sol · account unavailable",
+		quota: "Magpie: quota unavailable",
+	});
+	assert.equal(footer(cards, false, now, "group/main", { ...servedOne, status: 500 }).quota, "Magpie: quota unavailable");
+});
+
 test("does not associate an ambiguous account with a quota card", () => {
 	const cards = parseCards(JSON.stringify([payload[0], { ...payload[0], name: "another" }]));
 	const current = { id: 1, asked: "codex/gpt", model: "codex/gpt", served: "", tries: [], done: true, status: 200, account: "one" };
-	assert.match(footer(cards, false, now, "codex", current).model, /account\?/);
-	assert.deepEqual(footer([], true, now), { quota: "Magpie: quota unavailable", model: "route?" });
-	assert.equal(footer([], false, now, "codex", current).model, "magpie/codex/gpt account?");
+	assert.match(footer(cards, false, now, "group/main", current).model, /account unavailable/);
+	assert.equal(footer(cards, false, now, "group/main", current).quota, "Magpie: quota unavailable");
+	assert.deepEqual(footer([], true, now, "vps/group/gpt-6.2-sol"), { quota: "Magpie: quota unavailable", model: "gpt-6.2-sol group · route unavailable" });
 });
 
 test("reads the selected remote gateway and identifies its served account", async (t) => {
@@ -100,7 +115,7 @@ test("reads the selected remote gateway and identifies its served account", asyn
 	(h.ctx as any).model = { provider: "magpie", id: "gpt-6.1-terra", baseUrl: "https://gateway.example/v1" };
 	(h.ctx as any).modelRegistry = { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key" }) };
 	h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.equal(h.models.at(-1), "magpie/codex/gpt-6.1-terra #2");
+	assert.equal(h.models.at(-1), "gpt-6.1-terra → codex/gpt-6.1-terra");
 	await h.command("refresh");
 	assert.ok(requests.some(({ url }) => url.pathname.endsWith("quotas") && !url.search));
 	assert.ok(requests.every(({ url, authorization }) => url.origin === "https://gateway.example" && authorization === "Bearer test-key"));
@@ -116,7 +131,7 @@ test("does not send credentials to a gateway that differs from the resolved auth
 	h.events.get("session_start")!({}, h.ctx); await h.command("");
 	assert.equal(requests, 0);
 	assert.equal(h.statuses.at(-1), "Magpie: quota unavailable");
-	assert.equal(h.models.at(-1), "route?");
+	assert.equal(h.models.at(-1), "gpt-6.1-terra · route unavailable");
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -138,7 +153,7 @@ test("refreshes the newly selected gateway after an earlier refresh is cancelled
 	h.events.get("model_select")!({ model: h.ctx.model }, h.ctx);
 	release(Response.json({ data: payload })); await tick(); await tick(); await tick();
 	assert.ok(origins.includes("https://new.example"));
-	assert.equal(h.models.at(-1), "magpie/codex/gpt-v2 fallback(1) #2");
+	assert.equal(h.models.at(-1), "auto/main → codex/gpt-v2 fallback(1)");
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -154,8 +169,9 @@ test("correlates fallback and served account across usage pages", async (t) => {
 	const h = harness(); h.events.get("session_start")!({}, h.ctx);
 	await h.command(""); await tick(); await tick();
 	const text = h.statuses.at(-1)!;
-	assert.equal(h.models.at(-1), "magpie/codex/gpt-v2 fallback(1) #2");
-	assert.ok(text.indexOf("#2") < text.indexOf("#1"));
+	assert.equal(h.models.at(-1), "auto/main → codex/gpt-v2 fallback(1)");
+	assert.match(text, /codex \/ two · quota unavailable · stale/);
+	assert.doesNotMatch(text, /one/);
 	await h.command("");
 	assert.match(h.notices.at(-1)!, /auto\/main → codex\/gpt \(served gpt-v2\).*tried other\/model → codex\/gpt.*account two/);
 	assert.doesNotMatch(text, /secret|wrong/);
@@ -177,10 +193,10 @@ test("does not attribute unrelated, unavailable, or failed usage to a session", 
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx);
 	await h.command(""); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /gpt-v2.*account\?/);
+	assert.match(h.models.at(-1)!, /gpt-v2.*account unavailable/);
 	usage = new Response("denied", { status: 403 });
 	h.events.get("turn_end")!({}, h.ctx); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /gpt-v2.*account\?/);
+	assert.match(h.models.at(-1)!, /gpt-v2.*account unavailable/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -221,7 +237,7 @@ test("ignores routes from another selected model and aborts manual refresh", asy
 		signal = opts.signal; return new Promise((resolve) => { finish = resolve; });
 	});
 	h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route unavailable/);
 	const pending = h.command("refresh");
 	h.events.get("session_shutdown")!({}, h.ctx); assert.equal(signal.aborted, true);
 	finish({ code: 0, stdout: JSON.stringify(payload) }); await pending;
@@ -239,7 +255,7 @@ test("does not substitute an older account when the latest matching record has n
 		] });
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /account\?/);
+	assert.match(h.models.at(-1)!, /account unavailable/);
 	assert.doesNotMatch(h.models.at(-1)!, /account old/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
@@ -249,17 +265,18 @@ test("serializes manual refreshes and marks readings stale on time", async (t) =
 	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
 		const url = new URL(String(input));
 		if (url.pathname.endsWith("quotas")) return Response.json({ data: [{ ...payload[0], windows: [payload[0].windows[0]], readAt: new Date(now).toISOString() }] });
-		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route: null });
-		return Response.json({ total: 0, rows: [] });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route: { ...route, tries: [{ model: "codex/gpt" }] } });
+		return Response.json({ total: 1, rows: [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: "one" }] });
 	});
 	const complete: ((value: object) => void)[] = [];
 	const h = harness(async (_: string, args: string[]) => args[0] === "status"
 		? { code: 0, stdout: JSON.stringify({ running: true, url: "http://127.0.0.1:3425" }) }
 		: new Promise((resolve) => { complete.push(resolve); }));
-	h.events.get("session_start")!({}, h.ctx); await h.command("");
-	assert.doesNotMatch(h.statuses.at(-1)!, /#1.* stale/);
+	h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
+	assert.match(h.statuses.at(-1)!, /5h 12% remaining/);
+	assert.doesNotMatch(h.statuses.at(-1)!, /stale/);
 	t.mock.timers.tick(600_000);
-	assert.match(h.statuses.at(-1)!, /#1.* stale/);
+	assert.match(h.statuses.at(-1)!, /stale/);
 	const pending = [h.command("refresh"), h.command("refresh")];
 	assert.equal(complete.length, 1);
 	complete[0]({ code: 0, stdout: JSON.stringify(payload) }); await tick();
@@ -289,6 +306,20 @@ test("warns once for each fresh low window and warns again after recovery", asyn
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
+test("does not match accounts that differ after the display limit", async (t) => {
+	const prefix = "a".repeat(120);
+	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+		const url = new URL(String(input));
+		if (url.pathname.endsWith("quotas")) return Response.json({ data: [{ ...payload[0], user: `${prefix}1` }] });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route });
+		return Response.json({ total: 1, rows: [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: `${prefix}2` }] });
+	});
+	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
+	assert.match(h.models.at(-1)!, /account unavailable/);
+	assert.equal(h.statuses.at(-1), "Magpie: quota unavailable");
+	h.events.get("session_shutdown")!({}, h.ctx);
+});
+
 test("retries the account lookup after the route completes", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let rows: object[] = [], visible = false;
@@ -299,12 +330,13 @@ test("retries the account lookup after the route completes", async (t) => {
 		return Response.json({ total: rows.length, rows });
 	});
 	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route unavailable/);
 	visible = true; t.mock.timers.tick(2_000); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /account\?/);
-	rows = [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: "two" }];
+	assert.match(h.models.at(-1)!, /account unavailable/);
+	assert.equal(h.statuses.at(-1), "Magpie: quota unavailable");
+	rows = [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: "one" }];
 	t.mock.timers.tick(2_000); await tick(); await tick();
-	assert.match(h.models.at(-1)!, /fallback\(1\) #2/);
+	assert.match(h.statuses.at(-1)!, /codex \/ one · 5h 12% remaining/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
 
@@ -322,6 +354,6 @@ test("does not restore a previous route during a new request", async (t) => {
 	const before = routeReads;
 	t.mock.timers.tick(5 * 60_000); await tick(); await tick();
 	assert.equal(routeReads, before);
-	assert.match(h.models.at(-1)!, /route\?/);
+	assert.match(h.models.at(-1)!, /route unavailable/);
 	h.events.get("session_shutdown")!({}, h.ctx);
 });
