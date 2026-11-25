@@ -18,7 +18,7 @@ The footer shows `route unavailable` when it cannot match a route to the session
 
 Claude usage credits are an extra-usage spending cap. `/magpie-quota` shows the amount used and the limit when Magpie provides them. Credits do not change the footer quota or cause low quota warnings.
 
-The extension warns once when a fresh quota window falls below 25 percent. One warning includes all newly low windows on a card. Each window can cause a new warning after a fresh reading rises to 25 percent or more. Stale and unknown readings do not cause warnings. A narrow terminal can truncate the status; use `/magpie-quota` for the full route, account, and all quota windows.
+The extension warns once when a fresh quota window falls below 25 percent. One warning includes all newly low windows on a card. Each window can cause a new warning after a fresh reading rises to 25 percent or more. Stale and unknown readings do not cause warnings. Email addresses keep the domain visible and mask the account name. A narrow terminal can truncate the status; use `/magpie-quota` for the full route, account, and all quota windows.
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
