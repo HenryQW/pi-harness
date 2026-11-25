@@ -42,6 +42,11 @@ export function parseCards(output: string): Card[] {
 	});
 }
 
+// Mask display text only; account matching keeps the original identifier.
+function maskEmails(text: string): string {
+	return text.replace(/(?:"(?:[^"\\]|\\.)*"|[\p{L}\p{M}\p{N}_.!#$%&'*+/=?^`{|}~-]+)@[\p{L}\p{M}\p{N}](?:[\p{L}\p{M}\p{N}.-]*[\p{L}\p{M}\p{N}])?/giu, (email) => `${email.startsWith('"') ? "" : Array.from(email)[0]}***${email.slice(email.lastIndexOf("@"))}`);
+}
+
 function label(card: Card): string {
 	return [card.provider, card.user || card.alias || card.name, card.from && `via ${card.from}`, card.kind, card.plan].filter(Boolean).join(" / ");
 }
@@ -61,7 +66,7 @@ function windowValue(card: Card, w: Window): string {
 }
 export function details(cards: Card[], failed: boolean, now = Date.now()): string {
 	if (!cards.length) return failed ? "Magpie quota unavailable. Check that Magpie is installed and try /magpie-quota refresh." : "Magpie returned no quota cards.";
-	return cards.map((card, index) => {
+	return maskEmails(cards.map((card, index) => {
 		const state = [failed || stale(card, now) ? "stale" : "", card.error ? "unavailable" : ""].filter(Boolean).join(", ");
 		const windows = card.windows.map((w) => {
 			const reset = Date.parse(w.resetsAt || "");
@@ -70,14 +75,14 @@ export function details(cards: Card[], failed: boolean, now = Date.now()): strin
 		if (card.balance) windows.push(`  Balance: ${card.balance}`);
 		if (!windows.length) windows.push("  Quota unavailable");
 		return `${index + 1}. ${label(card)}${state ? ` (${state})` : ""}\n${windows.join("\n")}\n  Read: ${card.readAt || "unknown"}`;
-	}).join("\n\n");
+	}).join("\n\n"));
 }
 type Route = { id: number; asked: string; model: string; served: string; tries: string[]; done: boolean; status: number; account?: string };
 
 function routeDetails(route?: Route): string {
-	return route
+	return maskEmails(route
 		? `${route.asked || "unknown"} → ${route.model || "unknown"}${!route.done ? " (trying)" : route.status >= 400 ? " (failed)" : ""}${route.served && route.served !== route.model ? ` (served ${route.served})` : ""}${route.tries.length > 1 ? ` · tried ${route.tries.join(" → ")}` : ""} · account ${route.account || "unknown"}`
-		: "route unknown · account unknown";
+		: "route unknown · account unknown");
 }
 
 function resetTime(reset: number, now: number): string {
@@ -96,14 +101,14 @@ export function footer(cards: Card[], failed: boolean, now = Date.now(), selecte
 	const served = route?.served ? (route.served.startsWith(`${routedProvider}/`) ? route.served : `${routedProvider}/${route.served}`) : route?.model;
 	const state = !route ? "route unavailable" : !route.done ? "routing" : route.status < 200 || route.status >= 300 ? "route failed" : !card ? "account unavailable" : "";
 	const model = `${name}${served ? ` → ${served}` : ""}${route && route.tries.length > 1 ? ` fallback(${route.tries.length - 1})` : ""}${state ? ` · ${state}` : ""}`;
-	if (!card) return { quota: "Magpie: quota unavailable", model };
+	if (!card) return { quota: "Magpie: quota unavailable", model: maskEmails(model) };
 	const windows = card.windows.filter((w) => !extraUsage(card, w) && !w.text && !w.unlimited && w.balance === undefined && w.remaining !== undefined);
 	const w = windows.reduce<Window | undefined>((lowest, value) => !lowest || value.remaining! < lowest.remaining! ? value : lowest, undefined);
 	const reset = Date.parse(w?.resetsAt || "");
 	const old = failed || stale(card, now) || (Number.isFinite(reset) && reset <= now);
 	const account = `${card.provider} / ${card.alias || card.user || card.name}`;
 	const quota = card.error || !w ? "quota unavailable" : `${w.name} ${w.remaining}% remaining · resets ${resetTime(reset, now)}`;
-	return { quota: `${account} · ${quota}${old ? " · stale" : ""}`, model };
+	return { quota: maskEmails(`${account} · ${quota}${old ? " · stale" : ""}`), model: maskEmails(model) };
 }
 
 async function readRoute(url: string, session: string, signal: AbortSignal, headers?: HeadersInit): Promise<Route | undefined> {
@@ -157,7 +162,7 @@ export default function (pi: ExtensionAPI) {
 					lowWindows.add(key);
 				} else lowWindows.delete(key);
 			}
-			if (warnings.length) ctx.ui.notify(`Magpie ${label(card)}: ${warnings.join("; ")}.`, "warning");
+			if (warnings.length) ctx.ui.notify(maskEmails(`Magpie ${label(card)}: ${warnings.join("; ")}.`), "warning");
 		}
 	}
 	function paint(ctx: ExtensionContext) {

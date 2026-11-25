@@ -27,6 +27,28 @@ function harness(exec?: (...args: any[]) => any) {
 }
 const route = { id: 123, asked: "auto/main", model: "codex/gpt", served: "gpt-v2", tries: [{ model: "other/model", fail: "secret" }, { model: "codex/gpt" }], done: true, status: 200 };
 
+test("masks emails on quota displays while matching the full account", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now });
+	const account = "person+quota@example.com";
+	const cards = [{ ...payload[0], user: account, alias: "backup@example.net" }, { ...payload[0], user: "private@example.com", alias: "other" }];
+	t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+		const url = new URL(String(input));
+		if (url.pathname.endsWith("quotas")) return Response.json({ data: cards });
+		if (url.pathname.endsWith("route")) return Response.json({ session: sessionKey("pi-session"), route });
+		return Response.json({ total: 1, rows: [{ route_id: 123, session: sessionKey("pi-session"), provider: "codex", model: "gpt", status: 200, providerAccount: account }] });
+	});
+	const h = harness(); h.events.get("session_start")!({}, h.ctx); await h.command(""); await tick(); await tick();
+	await h.command("");
+	assert.match(h.statuses.at(-1)!, /codex \/ b\*\*\*@example\.net · 5h 12% remaining/);
+	assert.ok(h.notices.some((notice) => notice.includes("Magpie codex / p***@example.com / subscription: 5h has 12% remaining.")));
+	assert.match(h.notices.at(-1)!, /account p\*\*\*@example\.com/);
+	assert.doesNotMatch(h.notices.join("\n") + h.statuses.join("\n"), /person\+quota@example\.com|private@example\.com|backup@example\.net/);
+	const quoted = details(parseCards(JSON.stringify([{ ...payload[0], user: "", alias: '"first last"@example.org' }])), false, now);
+	assert.match(quoted, /\*\*\*@example\.org/);
+	assert.doesNotMatch(quoted, /first last/);
+	h.events.get("session_shutdown")!({}, h.ctx);
+});
+
 test("shows each quota window, resets, low and stale accounts without errors", () => {
 	const cards = parseCards(JSON.stringify(payload));
 	const line = footer(cards, false, now, "group/main", servedOne).quota;
