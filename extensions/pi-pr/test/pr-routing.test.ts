@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	deriveNamedPullRequestVerdict,
 	deriveNextStep,
 	derivePullRequestNextStep,
 	type LocalMergeSafety,
@@ -33,6 +34,14 @@ function pullRequest(overrides: {
 		local: { ...local, ...overrides.local },
 	};
 }
+
+test("a running Codex review does not hide a merge policy block, but running CI does", () => {
+	const codex = { status: "running" as const, findings: 0 };
+	assert.deepEqual(deriveNamedPullRequestVerdict("open", { ...conditions, ci: "success", policy: "pending", codex }, 0),
+		{ verdict: "block", reasons: ["merge policy not satisfied", "Codex review of the current head not finished"] });
+	assert.deepEqual(deriveNamedPullRequestVerdict("open", { ...conditions, ci: "running", policy: "pending", codex }, 0),
+		{ verdict: "wait", reasons: ["CI running", "Codex review of the current head not finished"] });
+});
 
 test("routes exactly one highest-priority next step", () => {
 	const cases: Array<{ name: string; pullRequest: PullRequest; expected: NextStep }> = [

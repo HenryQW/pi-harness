@@ -568,6 +568,23 @@ test("dirty work on a diverged local HEAD is committed by publish-work before sy
 	assert.equal(app.messages[0]?.content, `/skill:pi-pr-publish-work runId=${workflowRunId} action=inspect projectPath="/repo"`);
 });
 
+test("a mergeable PR with pre-receive hooks is merge-ready, not blocked by policy", async () => {
+	const app = harness({ states: [{ mergeStateStatus: "HAS_HOOKS" }, { mergeStateStatus: "HAS_HOOKS" }] });
+	assert.equal(await app.handler("", app.context), "merge");
+});
+
+test("the lifecycle scope merges a ready PR without confirmation only with agentMerge", async () => {
+	const lifecycle = (agentMerge: boolean) => Object.assign(invocation(new PrRun({ agentMerge })), { publication: { scope: "lifecycle" as const, allowUpstream: false } });
+	const off = harness({ states: [{}] });
+	assert.equal(await off.handler("", off.context, lifecycle(false)), "none");
+	assert.equal(mutationCalls(off.calls).length, 0);
+	const on = harness({ states: [{}, {}] });
+	assert.equal(await on.handler("", on.context, lifecycle(true)), "merge");
+	assert.equal(on.confirmations.length, 0);
+	assert.ok(mutationCalls(on.calls)[0]?.args.some((arg) => arg.startsWith("expectedHeadOid=")));
+	assert.match(on.notifications.at(-1)?.message ?? "", /merged at head .* as agentMerge permits/);
+});
+
 test("merges with the configured merge method", async () => {
 	const app = harness({ states: [{}, {}] });
 	assert.equal(await app.handler("", app.context, Object.assign(() => {}, { sessionGeneration: 1, run: new PrRun({ mergeMethod: "rebase" }), assertCurrent() {} })), "merge");
@@ -582,6 +599,10 @@ test("waits for running CI within the invocation budget, then re-reads GitHub be
 	assert.equal(await merged.handler("", merged.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "merge");
 	assert.deepEqual(merged.events, ["load", "notify", "load", "load", "confirm", "load", "merge"]);
 	assert.match(merged.notifications[0]?.message ?? "", /CI is running; checking every 30 s for up to 10 min/);
+
+	const interrupted = harness({ states: [running, { ...running, mergeStateStatus: "UNKNOWN" }, running, {}, {}] });
+	assert.equal(await interrupted.handler("", interrupted.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "merge");
+	assert.equal(interrupted.notifications.filter(({ message }) => /CI is running/.test(message)).length, 1, "pending mergeability does not restart the wait notice");
 
 	const commented = harness({ states: [running, { reviewDecision: "CHANGES_REQUESTED" }], commands: [packageCommand("skill:pi-pr-comment-sweep")] });
 	assert.equal(await commented.handler("", commented.context, invocation(new PrRun({ ciPollSeconds: 30, ciWaitMinutes: 10 }))), "sweep");
@@ -778,6 +799,7 @@ test("reports lifecycle and merge blockers without taking an action", async () =
 		},
 		{ name: "CI running", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })] }, message: "PR #42 is waiting for CI", type: "warning" },
 		{ name: "review pending", state: { reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for review", type: "warning" },
+		{ name: "CI running and review pending", state: { statusCheckRollup: [actionsCheck({ status: "IN_PROGRESS" })], reviewDecision: "REVIEW_REQUIRED" }, message: "PR #42 is waiting for CI and review", type: "warning" },
 		{ name: "merge policy pending", state: { mergeStateStatus: "BLOCKED" }, message: "PR #42 is blocked by merge policy", type: "warning" },
 	];
 

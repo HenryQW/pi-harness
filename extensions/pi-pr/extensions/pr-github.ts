@@ -907,7 +907,8 @@ function conditions(
 		unresolvedThreads,
 		ci: ciStatus(candidate.checkStates),
 		review,
-		policy: candidate.mergeable === "MERGEABLE" && candidate.mergeStateStatus === "CLEAN"
+		// HAS_HOOKS is mergeable with passing statuses; GitHub Enterprise pre-receive hooks run at the merge.
+		policy: candidate.mergeable === "MERGEABLE" && (candidate.mergeStateStatus === "CLEAN" || candidate.mergeStateStatus === "HAS_HOOKS")
 			? "ready"
 			: "pending",
 		// A confirmed conflict on either field is definitive; the other field's UNKNOWN is not worth waiting for.

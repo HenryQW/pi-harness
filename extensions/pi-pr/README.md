@@ -32,10 +32,10 @@ Commands are for you; tools and skills are for the agent.
 | --- | --- | --- |
 | `/pr [projectPath]` | command | Select a worktree and do the PR next step. |
 | `pi_git_commit` | tool | Inspect and commit scoped local changes. Never pushes. |
-| `pi_git_pr` | tool | Create or publish a PR, do one explicitly ordered base update, or bring a PR to merge-ready. Never merges the PR. |
+| `pi_git_pr` | tool | Create or publish a PR, do one explicitly ordered base update, or bring a PR to merge-ready. Merges only with `agentMerge`. |
 | `pi_pr_create` | tool | Run guarded PR creation steps. |
 | `pi_pr_fix_ci` | tool | Repair failed GitHub Actions. |
-| `pi_pr_merge` | tool | Merge a ready named pull request after you confirm. |
+| `pi_pr_merge` | tool | Merge a ready named pull request after you confirm, or without confirmation with `agentMerge`. |
 | `pi_pr_publish_work` | tool | Publish scoped local work. |
 | `pi_pr_status` | tool | Check the readiness of a named pull request, with an optional bounded wait. |
 | `pi_pr_sweep` | tool | Triage feedback and publish fixes. |
@@ -89,7 +89,7 @@ The default `pi_git_pr` scope is `publication`. It permits creation, local publi
 
 For an explicit conflict/base-update order, the agent calls `pi_git_pr` with `{ scope: "update-branch" }`. An optional `base` must match the current PR. Do not supply `allowUpstream`. This scope permits bounded refresh, one base update and its checked publication, then stops. It cannot create, link, sync local history, publish unrelated work, sweep feedback, repair CI, or merge the PR. It needs a configured, open, non-draft current PR and clean local state at the published head, or matching verified update recovery.
 
-When you authorize the agent to bring a PR to merge-ready, the agent calls `pi_git_pr` with `{ scope: "lifecycle" }`. This scope permits each `/pr` route except the merge: creation, publication, feedback sweeps, CI repair, base updates, and CI and Codex waits. It works without an interactive UI. When the PR is merge-ready, the scope stops and gives the head OID. A merge then needs `pi_pr_merge` or `/pr`, and your confirmation.
+When you authorize the agent to bring a PR to merge-ready, the agent calls `pi_git_pr` with `{ scope: "lifecycle" }`. This scope permits each `/pr` route except the merge: creation, publication, feedback sweeps, CI repair, base updates, and CI and Codex waits. It works without an interactive UI. When the PR is merge-ready, the scope stops and gives the head OID. A merge then needs `pi_pr_merge` or `/pr`, and your confirmation. With `agentMerge: true`, the scope merges a `ready` PR without confirmation.
 
 When a lifecycle run stops after a workflow, the agent gets the stop reason in one more turn. The agent can then report the reason, or start a new entry if your authorization still applies.
 
@@ -144,18 +144,20 @@ The merge bar uses these reasons:
 - `block`: CI failed, a reviewer requested changes, or a required review is missing.
 - `block`: unresolved Codex P0/P1 threads remain. `unresolvedThreads.blocking` counts them. `unresolvedThreads.other` counts the other unresolved threads, which do not block.
 - `wait`: mergeability stays unknown after three re-reads five seconds apart, CI is running, or the Codex review of the current head did not finish.
-- `block`: the merge policy is not clean and no wait reason applies.
+- `block`: the merge policy is not clean, while CI is not running and mergeability is known. A running Codex review does not change this result.
 - `ready` through a ruleset bypass: see [Ruleset bypass](#ruleset-bypass).
 
 Any block reason gives `block`. If no block reason applies, any wait reason gives `wait`. If no reason applies, the verdict is `ready`. `codex` is `disabled` unless `codexReview` is `true`; then the [Codex review gate](#codex-review-gate) rules apply.
 
 `pi_pr_merge` checks readiness again. It refuses unless the verdict is `ready` and the live head equals `headOid`. Without an interactive UI, it refuses and the PR stays unchanged. Otherwise, it asks `Merge PR #<number>?` with the URL, the short head OID, the base ref, `mergeMethod`, and any ruleset bypass. If you decline, the PR stays unchanged. After you confirm, it checks readiness, PR identity, head, base OID, and the bypass again, then merges the exact head through GitHub.
 
+With `agentMerge: true`, `pi_pr_merge` does not ask, and it works without an interactive UI. It still does all the checks before the merge.
+
 `pi_pr_merge` does not do the local merge safety checks of `/pr`, because your checkout is not the PR branch. It does not delete branches or worktrees, enable automatic merging, or use a merge queue.
 
 With `waitMinutes` (`1` to `60`), `pi_pr_status` reads the PR again every `ciPollSeconds` while the verdict is `wait`. It returns at the first `ready` or `block` verdict, or when the time ends. Use one call with `waitMinutes` instead of repeated calls.
 
-For a manager workflow, each worker agent waits for its own PR with `pi_pr_status` and `waitMinutes`, then reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane.
+For a manager workflow, each worker agent waits for its own PR with `pi_pr_status` and `waitMinutes`, then reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane. With `agentMerge: true`, the merge occurs without confirmation.
 
 ### Ruleset bypass
 
@@ -188,7 +190,7 @@ Required checks are read for the exact head. If a required check sets an integra
 | Changes requested, unresolved threads, or new feedback | Assess feedback and fix scoped issues. Leave blocked threads open. |
 | Running CI or required Codex review; no other blocker | Wait with `ciPollSeconds` and shared `ciWaitMinutes`, then select from fresh evidence. Running CI blocks merging, not repairs. |
 | Configured draft, closed, merged, or required human review | Report without changes. Human-review waits never poll. |
-| Merge-ready | Ask for confirmation with PR number, URL, short head OID, base ref, and `mergeMethod`. Declining or no UI leaves the PR unchanged. |
+| Merge-ready | Ask for confirmation with PR number, URL, short head OID, base ref, and `mergeMethod`. Declining or no UI leaves the PR unchanged. A `lifecycle` entry with `agentMerge: true` merges without confirmation. |
 
 Creation permits fork heads on the same GitHub host and source. Other fork relationships, published refs without PRs, multiple candidate remotes/PRs, and unsafe push configuration block creation. The base ref can move during creation. Creation does not merge, rebase, or change the base branch. Configured PR targets retain their upstream settings.
 
@@ -249,6 +251,7 @@ Package-owned: `~/.pi/agent/config/pi-pr/config.json`
 | `checkTimeoutMinutes` | Time limit per validation check. Git and GitHub helpers keep shorter limits. | Integer `1` to `35791` | `10` |
 | `mergeMethod` | Direct merge method, subject to repository policy. | `squash`, `merge`, or `rebase` | `squash` |
 | `codexReview` | Require a complete current-head Codex review before merge confirmation, also for named pull requests. Adds at most two GitHub endpoint reads per open-PR discovery. | `true` or `false` | `false` |
+| `agentMerge` | Let the `lifecycle` scope and `pi_pr_merge` merge a `ready` PR without your confirmation, including a ruleset bypass. A `/pr` that you type still asks. Each merge to a published branch can be hard to undo. | `true` or `false` | `false` |
 
 The extension never writes this file. Problems show at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` or `pi_git_pr` call reads config once; a later `/pr`, `pi_git_pr` call, or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
@@ -331,4 +334,4 @@ The commands reject symbolic links. After you verify it, upgrade pi-pr and resum
 - Verified branch updates can resume through `/pr` or the authorized `update-branch` scope. Pending, unverified updates need manual recovery after restart. Merge-containing history uses a merge with the original head as first parent and the pinned base as second parent. Linear history still uses rebase. Other branch refs stay unchanged, even with `rebase.updateRefs=true`.
 - A valid conflict context survives idle turns only in its live session. Continuation checks branch, HEAD, exact operation markers, fresh authority, and the original status baseline. Undeclared edits block continuation and abort without clearing a valid context. Correct those edits, then continue the same run. Cancellation, failure, stale operation state, completion, and shutdown clear the context, not the recovery journal. A new launch cannot replace a valid conflict.
 - In a merge conflict, `ours` is the PR branch and `theirs` is the base. In a rebase conflict, `ours` is the base with commits already replayed and `theirs` is the replayed PR commit. Main owns conflict decisions, not subagents. An advancing base does not start a second update in the same invocation.
-- Every `/pr` merge needs explicit confirmation, clean safe local Git state, and fresh matching authority. A changed PR head during confirmation cancels merging. Active Git operations block merging. `/pr` deletes no branch or worktree.
+- Every `/pr` merge that you type needs explicit confirmation, clean safe local Git state, and fresh matching authority. A changed PR head during confirmation cancels merging. Active Git operations block merging. `/pr` deletes no branch or worktree.
