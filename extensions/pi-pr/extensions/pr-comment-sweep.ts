@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { spawnBounded, type Exec, type ExecOptions } from "@henryqw/pi-process";
 import { markFeedbackHandled } from "./pr-feedback-attention.ts";
-import { checkTimeoutMs, type PrCheck, PrRun } from "./pr-run.ts";
+import { checkExecOptions, type PrCheck, PrRun } from "./pr-run.ts";
 import {
 	extensionConfigDir,
 	readTextFileBounded,
@@ -40,6 +40,7 @@ import {
 	isAncestor,
 	isRecord,
 	parseNulPaths,
+	failureDetail,
 	parseSingleOutputLine,
 	parseStatusSnapshot,
 	pushWithLease,
@@ -884,7 +885,7 @@ export class PullRequestCommentSweep {
 			await this.save(location, state);
 			try {
 				await runChecked(this.exec, "git", ["diff", "--check", state.original.head, head], this.options());
-				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.options({ timeoutMs: checkTimeoutMs(this.run) }));
+				for (const check of checks) await runChecked(this.exec, check.command, check.args, this.options(checkExecOptions(this.run)));
 				await this.currentAuthority(state.authority, state.original.lease, true);
 				await this.requireCleanPublication(state, head);
 			} catch (error) { this.run.checksFailed(); throw error; }
@@ -1489,7 +1490,7 @@ export class PullRequestCommentSweep {
 				for (const check of checks) {
 					let result;
 					try {
-						result = await this.exec(check.command, check.args, this.options({ timeoutMs: checkTimeoutMs(this.run) }));
+						result = await this.exec(check.command, check.args, this.options(checkExecOptions(this.run)));
 					} catch (error) {
 						this.run.checksFailed();
 						state.attempts.finalize.state = "unknown";
@@ -1506,7 +1507,7 @@ export class PullRequestCommentSweep {
 						this.run.checksFailed();
 						state.attempts.finalize.state = "blocked";
 						await this.save(location, state);
-						const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.code}`;
+						const detail = failureDetail(result) || `exit code ${result.code}`;
 						throw new Error(`${check.command} failed: ${detail}`);
 					}
 				}

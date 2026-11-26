@@ -29,9 +29,14 @@ export function createPrPolicyStore(agentDir?: string) {
 	});
 }
 
-/** Time limit for each caller-supplied validation check; Git and gh helpers keep their shorter limits. */
-export function checkTimeoutMs(run: PrRun): number {
-	return run.policy.checkTimeoutMinutes * 60_000;
+const CHECK_OUTPUT_TAIL_BYTES = 64 * 1024;
+
+/**
+ * Limits for each caller-supplied validation check; Git and gh helpers keep their shorter limits.
+ * Only the end of each output stream is kept, so a verbose check finishes instead of failing on an output limit.
+ */
+export function checkExecOptions(run: PrRun): { timeoutMs: number; stdoutTailBytes: number; stderrTailBytes: number } {
+	return { timeoutMs: run.policy.checkTimeoutMinutes * 60_000, stdoutTailBytes: CHECK_OUTPUT_TAIL_BYTES, stderrTailBytes: CHECK_OUTPUT_TAIL_BYTES };
 }
 
 /** One explicit /pr invocation; helper resumes never replenish these limits. */

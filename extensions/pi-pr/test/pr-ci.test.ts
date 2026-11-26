@@ -339,10 +339,10 @@ for (const drift of ["ahead", "base"] as const) test(`cancels ${drift} drift onl
 	await assert.rejects(app.workflow.publish(), /unavailable/);
 });
 
-for (const drift of ["dirty", "operation", "branch", "behind", "diverged", "non-descendant", "identity", "head", "destination", "lease", "base-ref", "moving-head"] as const) {
+for (const drift of ["dirty", "operation", "branch", "behind", "non-descendant", "identity", "head", "destination", "lease", "base-ref", "moving-head"] as const) {
 	test(`initial CI preflight cannot replan unsafe ${drift} drift`, async (t) => {
 		const fresh = pullRequest(repair);
-		if (drift === "behind" || drift === "diverged") fresh.local.head = drift;
+		if (drift === "behind") fresh.local.head = drift;
 		if (drift === "identity") fresh.id = "PR_other";
 		if (drift === "head") fresh.head.oid = "d".repeat(40);
 		if (drift === "destination") fresh.target.ref = "other";

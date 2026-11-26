@@ -40,7 +40,8 @@ type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-export type PublicationRequest = { base?: string; allowUpstream: boolean; scope?: "publication" | "update-branch" };
+/** A model-started entry. Scope `lifecycle` runs every `/pr` route except the merge. */
+export type PublicationRequest = { base?: string; allowUpstream: boolean; scope?: "publication" | "update-branch" | "lifecycle" };
 
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	sessionGeneration: number;
@@ -48,6 +49,8 @@ export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
 	run: PrRun;
 	publication?: PublicationRequest;
 	onDiscovery?: (discovery: CurrentPullRequestDiscovery) => void;
+	/** Receives each reason that routing stopped without a route, so a model-started entry can return it. */
+	onStop?: (reason: string) => void;
 	staleRediscoveries?: number;
 	replanAuthority?: CurrentPullRequest;
 };
@@ -251,6 +254,11 @@ export function createPrCommandHandler(
 		waiting?: "wait-ci" | "wait-review",
 	): Promise<NextStep> => {
 		if (args.trim()) throw new Error("/pr does not accept arguments");
+		const stop = (message: string, type: "info" | "warning"): "none" => {
+			onRouteResolved.onStop?.(message);
+			ctx.ui.notify(message, type);
+			return "none";
+		};
 		const discovery = await load(pi, ctx);
 		onRouteResolved.assertCurrent();
 		onRouteResolved.onDiscovery?.(discovery);
@@ -268,6 +276,9 @@ export function createPrCommandHandler(
 			throw new Error(`Requested base ${publication.base} differs from current PR base ${discovery.pullRequest.base.ref}; no retargeting is authorized`);
 		}
 		const updateOnly = publication?.scope === "update-branch";
+		const lifecycle = publication?.scope === "lifecycle";
+		// A model-started entry cannot run /pr, so its stop reasons name the entry that it can start.
+		const again = publication ? "start a fresh pi_git_pr entry" : "run /pr again";
 		if (updateOnly && discovery.kind === "blocked") {
 			onRouteResolved("blocked");
 			return "blocked";
@@ -289,7 +300,7 @@ export function createPrCommandHandler(
 			nextStep = "sweep";
 			onRouteResolved.assertCurrent();
 		}
-		if (!publication && discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci" || nextStep === "wait-review") &&
+		if ((!publication || lifecycle) && discovery.kind === "current" && (nextStep === "merge" || nextStep === "none" || nextStep === "wait-ci" || nextStep === "wait-review") &&
 			discovery.pullRequest.lifecycle === "open" && !discovery.pullRequest.conditions.draft &&
 			discovery.pullRequest.target.provenance === "configured" &&
 			discovery.pullRequest.local.worktree === "clean" && discovery.pullRequest.local.head === "equal") {
@@ -306,16 +317,15 @@ export function createPrCommandHandler(
 			if ((nextStep === "link-branch" || nextStep === "create" && discovery.kind === "none" && discovery.creationTarget.provenance === "inferred") && !publication.allowUpstream) {
 				throw new Error("Publication needs repository-local upstream configuration; ask for permission, then set allowUpstream: true");
 			}
-			if (!["create", "publish-work", "sync-local", "link-branch", "none"].includes(nextStep)) {
-				ctx.ui.notify(`Create/update authorization stops before ${nextStep}${discovery.kind === "current" ? `: ${discovery.pullRequest.url.href}` : ""}; use /pr only for the full lifecycle`, "info");
-				nextStep = "none";
+			if (!lifecycle && !["create", "publish-work", "sync-local", "link-branch", "none"].includes(nextStep)) {
+				nextStep = stop(`Create/update authorization stops before ${nextStep}${discovery.kind === "current" ? `: ${discovery.pullRequest.url.href}` : ""}; the lifecycle scope or /pr continues only when the user authorized that work`, "info");
 			}
 		}
 		onRouteResolved(nextStep);
 		if (discovery.kind === "inactive") {
 			if (discovery.nonGitHubHosts) {
 				const hosts = discovery.nonGitHubHosts.join(", ");
-				ctx.ui.notify(`/pr needs a GitHub remote: gh has no credentials for ${hosts}; for GitHub Enterprise, run gh auth login --hostname <host>`, "warning");
+				stop(`/pr needs a GitHub remote: gh has no credentials for ${hosts}; for GitHub Enterprise, run gh auth login --hostname <host>`, "warning");
 			}
 			return nextStep;
 		}
@@ -325,7 +335,10 @@ export function createPrCommandHandler(
 		if (nextStep === "none") {
 			if (discovery.kind === "current") {
 				const notification = noActionNotification(discovery.pullRequest);
-				ctx.ui.notify(notification.message, notification.type);
+				stop(notification.message, notification.type);
+			} else if (discovery.kind === "none") {
+				// The footer already shows this state, so only a model-started entry receives the reason.
+				onRouteResolved.onStop?.("No pull request exists for this branch, and the branch has no local work to publish or cannot open one");
 			}
 			return nextStep;
 		}
@@ -339,8 +352,7 @@ export function createPrCommandHandler(
 			if (discovery.kind !== "current") throw new Error("/pr sync failed: pull request is unavailable");
 			const current = discovery.pullRequest;
 			if (onRouteResolved.run.hasCompleted("sync-local", current.head.oid)) {
-				ctx.ui.notify("PR sync-local already ran; inspect fresh state before retrying", "warning");
-				return "none";
+				return stop("PR sync-local already ran; inspect fresh state before retrying", "warning");
 			}
 			const synced = await sync({ cwd: ctx.cwd, authority: current, signal: ctx.signal, loadCurrentPullRequest: load });
 			onRouteResolved.assertCurrent();
@@ -352,8 +364,7 @@ export function createPrCommandHandler(
 		if (nextStep === "refresh") {
 			if (discovery.kind !== "current") throw new Error("/pr refresh failed: pull request is unavailable");
 			if (refreshes >= refreshAttempts) {
-				ctx.ui.notify(`PR #${discovery.pullRequest.number} mergeability is still being computed by GitHub; run /pr again`, "warning");
-				return "none";
+				return stop(`PR #${discovery.pullRequest.number} mergeability is still being computed by GitHub; ${again}`, "warning");
 			}
 			await delay(refreshDelayMs, undefined, { signal: ctx.signal });
 			onRouteResolved.assertCurrent();
@@ -367,12 +378,11 @@ export function createPrCommandHandler(
 			const interval = run.consumeCiWait();
 			if (interval === null) {
 				const budget = run.policy.ciWaitMinutes;
-				ctx.ui.notify(nextStep === "wait-review"
-					? `PR #${current.number} is still waiting for the Codex review of the current head; run /pr again later`
+				return stop(nextStep === "wait-review"
+					? `PR #${current.number} is still waiting for the Codex review of the current head; ${again} later`
 					: budget > 0
-					? `PR #${current.number} is still waiting for CI after ${budget} min; run /pr again later`
+					? `PR #${current.number} is still waiting for CI after ${budget} min; ${again} later`
 					: `PR #${current.number} is waiting for CI`, "warning");
-				return "none";
 			}
 			if (waiting !== nextStep) {
 				const subject = nextStep === "wait-review" ? "waiting for the Codex review" : "CI is running";
@@ -386,20 +396,16 @@ export function createPrCommandHandler(
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
 			const current = discovery.pullRequest;
 			const mergeMethod = onRouteResolved.run.policy.mergeMethod;
-			if (!ctx.hasUI) {
-				ctx.ui.notify(`PR #${current.number} is merge-ready; merge needs confirmation in an interactive session`, "info");
-				return "none";
-			}
+			// A model-started lifecycle never merges; the user confirms a merge through /pr or pi_pr_merge.
+			if (lifecycle) return stop(`PR #${current.number} is merge-ready at head ${current.head.oid}; the lifecycle scope never merges, and a merge needs the user's confirmation`, "info");
+			if (!ctx.hasUI) return stop(`PR #${current.number} is merge-ready; merge needs confirmation in an interactive session`, "info");
 			const confirmed = await ctx.ui.confirm(
 				`Merge PR #${current.number}?`,
 				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${mergeMethod}.`,
 				{ signal: ctx.signal },
 			);
 			onRouteResolved.assertCurrent();
-			if (!confirmed) {
-				ctx.ui.notify(`PR #${current.number} is merge-ready; merge declined`, "info");
-				return "none";
-			}
+			if (!confirmed) return stop(`PR #${current.number} is merge-ready; merge declined`, "info");
 			await mergePullRequest(pi, ctx, current, load, needsFeedback, mergeMethod);
 			return "merge";
 		}
@@ -409,10 +415,9 @@ export function createPrCommandHandler(
 		if (onRouteResolved.run.hasCompleted(route, discovery.kind === "current" ? discovery.pullRequest.head.oid : null) ||
 			route === "update-branch" && onRouteResolved.run.hasCompletedRoute(route)) {
 			const codexFindings = discovery.kind === "current" && discovery.pullRequest.conditions.codex?.findings;
-			ctx.ui.notify(route === "sweep" && codexFindings
+			return stop(route === "sweep" && codexFindings
 				? `PR sweep already ran; ${codexFindings} unresolved Codex P0/P1 findings block the merge prompt`
 				: `PR ${route} already ran; inspect fresh state before retrying`, "warning");
-			return "none";
 		}
 		const reservation = workflowReservation(route, discovery);
 		await dispatchWorkflow(

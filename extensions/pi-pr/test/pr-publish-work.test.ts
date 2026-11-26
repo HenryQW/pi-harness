@@ -48,9 +48,13 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	let loseCommitResponse = false;
 	let failCheck = true;
 	const exec: Exec = async (command, args, options) => {
-		if (command === "work-check") assert.equal(options?.timeoutMs, 10 * 60_000);
-		else assert.ok((options?.timeoutMs ?? 30_000) < 10 * 60_000, `${command} must keep a short limit`);
-		if (command === "work-check") return { ...result(), code: failCheck ? 7 : 0 };
+		if (command === "work-check") {
+			// A verbose check keeps the end of each stream instead of failing on an output limit.
+			assert.deepEqual([options?.timeoutMs, options?.stdoutTailBytes, options?.stderrTailBytes], [10 * 60_000, 64 * 1024, 64 * 1024]);
+			return { ...result(failCheck ? "last lines" : ""), code: failCheck ? 7 : 0, stdoutTruncated: failCheck };
+		}
+		assert.ok((options?.timeoutMs ?? 30_000) < 10 * 60_000, `${command} must keep a short limit`);
+		assert.equal(options?.stdoutTailBytes ?? options?.stderrTailBytes, undefined, `${command} must keep its output limit`);
 		if (command === "gh" && args[0] === "repo") return result(JSON.stringify({ nameWithOwner: "acme/project", url: "https://github.com/acme/project" }));
 		if (command === "git" && (args[0] === "push" || args[0] === "ls-remote") && args.includes("git@github.com:acme/project.git")) {
 			args = args.map((value) => value === "git@github.com:acme/project.git" ? bare : value);
@@ -76,7 +80,7 @@ test("scoped pending work is committed, validated, and pushed by exact lease onc
 	assert.equal(git("status", "--porcelain=v1", "--untracked-files=all"), "M file.txt");
 	writeFileSync(join(root, "file.txt"), "original\n");
 	const checks = [{ command: "work-check", args: [] }];
-	await assert.rejects(workflow.validate(checks), /failed/);
+	await assert.rejects(workflow.validate(checks), /work-check failed: \[earlier output omitted\] last lines/);
 	await assert.rejects(workflow.validate(checks), /already executed/);
 	writeFileSync(join(root, "*.txt"), "repaired\n");
 	assert.deepEqual((await workflow.inspect()).paths, ["*.txt"]);

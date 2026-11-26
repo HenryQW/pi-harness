@@ -72,6 +72,7 @@ const ROUTING_SPINNER_INTERVAL_MS = 80;
 const ROUTING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ROUTING_WIDGET_TEXT = "Checking pull request…";
 const HERDR_TIMEOUT_MS = 10_000;
+const MAX_STATUS_WAIT_MINUTES = 60;
 export const discoveryExec: Exec = (command, args, options) => command === "git" && ["fetch", "ls-remote"].includes(args[0] ?? "")
 	? spawnBounded("env", ["SSH_ASKPASS_REQUIRE=never", "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", command, ...args], options)
 	: spawnBounded(command, args, options);
@@ -187,11 +188,15 @@ const WorkActions = Type.Union([
 ]);
 const PublicationParameters = Type.Object({
 	projectPath: ProjectPath,
-	scope: Type.Optional(Type.Union([Type.Literal("publication"), Type.Literal("update-branch")])),
+	scope: Type.Optional(Type.Union([Type.Literal("publication"), Type.Literal("update-branch"), Type.Literal("lifecycle")])),
 	base: Type.Optional(Type.String({ minLength: 1, maxLength: 1_024, pattern: "^[^\\s\\x00]+$" })),
 	allowUpstream: Type.Optional(Type.Boolean()),
 }, CLOSED);
-const NamedStatusParameters = Type.Object({ projectPath: ProjectPath, number: Type.Integer({ minimum: 1 }) }, CLOSED);
+const NamedStatusParameters = Type.Object({
+	projectPath: ProjectPath,
+	number: Type.Integer({ minimum: 1 }),
+	waitMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_STATUS_WAIT_MINUTES, description: "Keep reading while the verdict is wait, for at most this many minutes" })),
+}, CLOSED);
 const NamedMergeParameters = Type.Object({
 	projectPath: ProjectPath,
 	number: Type.Integer({ minimum: 1 }),
@@ -257,6 +262,8 @@ type PullRequestExtensionDependencies = {
 	readRulesetBypass?: typeof readRulesetBypass;
 	/** Test override for the named PR mergeability re-read delay. */
 	refreshDelayMs?: number;
+	/** Test override for the named PR status wait sleep; the budget still follows `waitMinutes`. */
+	statusPollMs?: number;
 	canonicalWorktree?: (cwd: string, signal?: AbortSignal) => Promise<string>;
 	newRunId?: () => string;
 	now?: () => number;
@@ -555,7 +562,8 @@ export default function pullRequestExtension(
 						authority: reservation.pullRequest,
 						signal: common.controller.signal,
 						run: common.run,
-						confirmLegacyChecks: async (head, checks) => ctx.hasUI && await ctx.ui.confirm("Retry unknown legacy checks?", `Confirm these commands are safe to repeat on published HEAD ${head}:\n${JSON.stringify(checks)}\nDeclining preserves recovery.`),
+						// Only an explicit /pr permits the retry of unknown legacy checks.
+						confirmLegacyChecks: async (head, checks) => ctx.hasUI && !invocation.publication && await ctx.ui.confirm("Retry unknown legacy checks?", `Confirm these commands are safe to repeat on published HEAD ${head}:\n${JSON.stringify(checks)}\nDeclining preserves recovery.`),
 						loadCurrentPullRequest: load,
 					}),
 				};
@@ -617,7 +625,7 @@ export default function pullRequestExtension(
 			throw new Error(ended && !ended.failed
 				? `No PR workflow is active: this session's run ended at settlement. ${ended.scoped
 					? "If the user's authorization still applies, start a fresh pi_git_pr entry with the same scope."
-					: "For scoped publication already authorized by the user's original instruction, start a fresh pi_git_pr entry; no new approval is needed. Ask the user to run /pr for the full lifecycle."} It must inspect recovery before any mutation; never replay an uncertain action.`
+					: "For work already authorized by the user's original instruction, start a fresh pi_git_pr entry with the matching scope; no new approval is needed. A merge still needs the user's confirmation."} It must inspect recovery before any mutation; never replay an uncertain action.`
 				: ended?.failed
 				? "No PR workflow is active: this session's run failed or was cancelled. Inspect its result and recovery journal before a fresh authorized entry; never replay an uncertain action."
 				: "No PR workflow is active in this session; this runId is foreign or stale. Do not restart it or take over a parent or child run. Ask its owning session to continue.");
@@ -1090,6 +1098,15 @@ export default function pullRequestExtension(
 		const invocation = [...activeInvocations].find(([, phase]) => phase === "workflow" || phase === "create-workflow")?.[0];
 		if (invocation === undefined) return;
 		const generation = sessionGeneration;
+		const stopReasons: string[] = [];
+		// A model-started run has no later tool result, so its stop reason enters the session for one last turn.
+		const reportStop = (reason: string) => ({
+			entries: [...event.entries, {
+				type: "custom_message" as const, customType: "pi-pr-stop", display: false,
+				content: `PR routing stopped after ${selected.route}: ${reason} No PR workflow is active now.`,
+			}],
+			continue: true,
+		});
 		const callback: PrCommandInvocation = Object.assign((next: string) => {
 			if (generation !== sessionGeneration) return;
 			activeInvocations.set(invocation, next === "create" ? "create-workflow" : "workflow");
@@ -1098,6 +1115,10 @@ export default function pullRequestExtension(
 			sessionGeneration: generation,
 			run: selected.run,
 			publication: selected.publication,
+			onStop(reason: string) { stopReasons.push(reason); },
+			onDiscovery(discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>) {
+				if (discovery.kind === "blocked") stopReasons.push(discoveryIssueDetails(discovery.issue).message);
+			},
 			staleRediscoveries: selected.staleRediscoveries + (replanning ? 1 : 0),
 			replanAuthority: replanning ? selected.authority : undefined,
 			assertCurrent() {
@@ -1133,7 +1154,14 @@ export default function pullRequestExtension(
 			}
 			const pending = workflowContext;
 			const identity = pending?.queuedPrompt;
-			if (!identity) return;
+			if (!identity) {
+				// The other scopes stop at a boundary that their skill already names.
+				if (pending || selected.publication?.scope !== "lifecycle" || !stopReasons.length) return;
+				// The run is over, so the last turn can start a fresh entry.
+				activeInvocations.delete(invocation);
+				refreshInBackground();
+				return reportStop(`${stopReasons.join(". ")}.`);
+			}
 			const body = stripFrontmatter(await readFile(identity.path, { encoding: "utf8", signal: ctx.signal })).trim();
 			callback.assertCurrent();
 			pending.controller.signal.throwIfAborted();
@@ -1155,7 +1183,9 @@ export default function pullRequestExtension(
 				if (workflowContext) workflowContext.failed = true;
 				clearWorkflow(workflowContext);
 				activeInvocations.delete(invocation);
-				ctx.ui.notify(`PR continuation stopped: ${error instanceof Error ? error.message : String(error)}`, "warning");
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`PR continuation stopped: ${message}`, "warning");
+				if (selected.publication && !ctx.signal?.aborted) return reportStop(`${message}.`);
 			}
 		} finally {
 			if (generation === sessionGeneration && !workflowContext) {
@@ -1273,10 +1303,12 @@ export default function pullRequestExtension(
 				reconcileWidget(ctx);
 			};
 			let observed: Awaited<ReturnType<typeof loadCurrentPullRequest>> | undefined;
+			const stopReasons: string[] = [];
 			const commandInvocation: PrCommandInvocation = Object.assign(routeResolved, {
 				sessionGeneration: generation,
 				run: prRun,
 				publication,
+				onStop(reason: string) { stopReasons.push(reason); },
 				onDiscovery(discovery: Awaited<ReturnType<typeof loadCurrentPullRequest>>) { observed = discovery; },
 				assertCurrent() {
 					ctx.signal?.throwIfAborted();
@@ -1338,6 +1370,7 @@ export default function pullRequestExtension(
 			return { nextStep,
 				...(observed?.kind === "current" ? { url: observed.pullRequest.url.href } : {}),
 				...(observed?.kind === "blocked" ? { blocker: discoveryIssueDetails(observed.issue).message } : {}),
+				...(stopReasons.length ? { reason: stopReasons.join(". ") } : {}),
 				...(WORKFLOW_ROUTES.has(nextStep) ? { handoff: "End this turn. The reserved package skill will enter this session at settlement; do not call another PR entry or guess a run ID." } : {}),
 			};
 	};
@@ -1348,7 +1381,7 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_git_pr",
 		label: "Create or Update PR",
-		description: "Start a guarded PR workflow in this session. Default scope publication permits only authorized creation or local publication. Scope update-branch requires an explicit conflict/base-update order and permits only bounded refresh, one base update and its checked publication, then stop. This scope never creates, links, syncs, publishes unrelated local work, repairs feedback/CI, or merges the PR. base must match the current PR or creation base. allowUpstream is only for publication with explicit repository-local upstream consent. Read git-pr guidance first.",
+		description: "Start a guarded PR workflow in this session. Default scope publication permits only authorized creation or local publication. Scope update-branch requires an explicit conflict/base-update order and permits only bounded refresh, one base update and its checked publication, then stop. This scope never creates, links, syncs, publishes unrelated local work, repairs feedback/CI, or merges the PR. Scope lifecycle requires authorization to bring the PR to merge-ready: it also runs feedback sweeps, CI repair, base updates, and CI/review waits, then stops with a reason. No scope merges the PR. base must match the current PR or creation base. allowUpstream needs explicit repository-local upstream consent and is not for update-branch. Read git-pr guidance first.",
 		parameters: PublicationParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
@@ -1382,7 +1415,7 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_pr_status",
 		label: "Check Named PR",
-		description: "Read the readiness of one pull request in this repository's origin by number: verdict ready, wait, or block with reasons, head OID, checks, Codex review gate, and unresolved P0/P1 and other threads. Read-only; never changes the local checkout.",
+		description: "Read the readiness of one pull request in this repository's origin by number: verdict ready, wait, or block with reasons, head OID, checks, Codex review gate, and unresolved P0/P1 and other threads. With waitMinutes, keep reading while the verdict is wait and return at the first ready or block verdict, or when the time ends; use this instead of repeated calls. Read-only; never changes the local checkout.",
 		parameters: NamedStatusParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
@@ -1390,7 +1423,20 @@ export default function pullRequestExtension(
 			if (!Check(NamedStatusParameters, raw)) throw new Error("Invalid named PR status request");
 			const operationSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
 			const worktree = await selectWorktree(ctx, raw.projectPath, operationSignal);
-			return toolResult({ ...(await evaluateNamed(raw.number, worktree, operationSignal, loadPolicy(ctx))).status, projectPath: worktree });
+			const policy = loadPolicy(ctx);
+			let { status } = await evaluateNamed(raw.number, worktree, operationSignal, policy);
+			if (raw.waitMinutes === undefined) return toolResult({ ...status, projectPath: worktree });
+			const budgetMs = raw.waitMinutes * 60_000;
+			let waitedMs = 0;
+			while (status.verdict === "wait" && waitedMs < budgetMs) {
+				const interval = Math.min(policy.ciPollSeconds * 1_000, budgetMs - waitedMs);
+				await delay(dependencies.statusPollMs ?? interval, undefined, { signal: operationSignal });
+				// A read can take seconds while GitHub computes mergeability, so reads count against the time too.
+				const readStarted = now();
+				({ status } = await evaluateNamed(raw.number, worktree, operationSignal, policy));
+				waitedMs += interval + (now() - readStarted);
+			}
+			return toolResult({ ...status, projectPath: worktree, waitedSeconds: Math.round(waitedMs / 1_000) });
 		},
 	});
 	pi.registerTool({

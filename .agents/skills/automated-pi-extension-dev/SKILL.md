@@ -30,7 +30,7 @@ Requirements: Herdr, `gh` with access to the repository, Node 22.19.0 or later, 
 
 Copy this into each handoff prompt, with Main's pane ID:
 
-> After each push, call `pi_pr_status` with your PR number every 2 to 3 minutes. Address every Codex comment, P2 included: fix it and reply with the full commit hash, or reply with a one-sentence rebuttal, then resolve the thread. On `block` from failed checks, unresolved threads, or a conflict, fix the cause and push. On `block` that code cannot fix (closed, draft, required human review, or repository policy), report the reasons to Main and stop. On `wait`, keep waiting. When the verdict is `ready` with no unresolved threads, send one message: `herdr agent prompt <Main pane> "READY #<PR> <full head oid> checks: <what you ran>"`. Then stop and wait for Main.
+> After each push, call `pi_pr_status` with your PR number and `waitMinutes: 20`. Call it again while the verdict is `wait`; do not call it without `waitMinutes` in a loop. This handoff authorizes `pi_git_pr` with `scope: "lifecycle"` for your own PR: use it to run feedback sweeps, CI repair, and base updates, and read `reason` when it stops. Address every Codex comment, P2 included: fix it and reply with the full commit hash, or reply with a one-sentence rebuttal, then resolve the thread. On `block` from failed checks, unresolved threads, or a conflict, fix the cause and push. On `block` that code cannot fix (closed, draft, required human review, or repository policy), report the reasons to Main and stop. On `wait`, keep waiting. When the verdict is `ready` with no unresolved threads, send one message: `herdr agent prompt <Main pane> "READY #<PR> <full head oid> checks: <what you ran>"`. Then stop and wait for Main.
 
 ## 4. Main on READY
 
@@ -62,5 +62,4 @@ For a deleted pane directory, the script resolves its nearest existing parent. E
 - Workers can send a message to the wrong pane. Give Main's pane ID in every prompt.
 - Correctness must not depend on extension load order. Pi does not document an order. Prefer events that fire after all handlers, such as `agent_settled`, to boundary handlers that yield to earlier handlers.
 - A long Codex `running` state can stall without end. Do not post `@codex review`; ask the user.
-- The guarded publish validator in pi-pr limits command output. If `pnpm test` exceeds it, publish with package-scoped checks; CI runs the full test.
 - Codex-driven refusals can grow a tool fast. Review each large Codex-driven delta for refusals that also trigger on ordinary input.

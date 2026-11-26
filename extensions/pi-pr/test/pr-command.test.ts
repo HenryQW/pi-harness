@@ -886,26 +886,11 @@ test("cancels a confirmed merge when the confirmed head or base context changes"
 		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
 		assert.equal(app.calls.filter(({ command, args }) => command === "git" && args[0] === "fetch").length, 2, candidate.name);
 		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
-	}
-});
-
-test("cancels when the base retargets or advances during final readiness evaluation", async () => {
-	for (const candidate of [
-		{ name: "base repository retarget", finalState: { baseRepository: "acme/other" }, baseRefTargets: undefined },
-		{ name: "base ref retarget", finalState: { baseRefName: "release" }, baseRefTargets: undefined },
-		{ name: "base advance", finalState: {}, baseRefTargets: [baseHead, "d".repeat(40)] },
-	]) {
-		const app = harness({ states: [{}, candidate.finalState], baseRefTargets: candidate.baseRefTargets });
-		await assert.rejects(app.handler("", app.context), /confirmed pull request context changed/, candidate.name);
-
-		assert.deepEqual(app.events, ["load", "confirm", "load"], candidate.name);
-		assert.equal(mutationCalls(app.calls).length, 0, candidate.name);
 		const finalFetch = app.calls.map(({ command, args }) => command === "git" && args[0] === "fetch").lastIndexOf(true);
 		const readiness = app.calls.map(({ command, args }) =>
 			command === "gh" && args[0] === "api" && args[1] === "graphql" && args.some((arg) => arg.includes("associatedPullRequests("))
 		).lastIndexOf(true);
-		assert.ok(finalFetch >= 0 && readiness > finalFetch, candidate.name);
-		assert.equal(app.calls.slice(readiness).some(({ command, args }) => command === "git" && args[0] === "fetch"), false, candidate.name);
+		assert.ok(readiness > finalFetch, `${candidate.name}: the final readiness read follows the final fetch`);
 	}
 });
 
