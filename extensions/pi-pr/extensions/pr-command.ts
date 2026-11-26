@@ -40,7 +40,7 @@ type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-/** A model-started entry. Scope `lifecycle` runs every `/pr` route except the merge. */
+/** A model-started entry. Scope `lifecycle` runs every `/pr` route except the merge, which it runs only with `agentMerge`. */
 export type PublicationRequest = { base?: string; allowUpstream: boolean; scope?: "publication" | "update-branch" | "lifecycle" };
 
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
