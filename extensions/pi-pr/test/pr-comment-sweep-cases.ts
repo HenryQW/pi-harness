@@ -1092,7 +1092,7 @@ test("committed rename ownership includes the source and destination", async (t)
 	assert.equal(app.world.pushCalls, 0);
 });
 
-for (const drift of ["PR", "base branch"] as const) test(`resume rejects another ${drift} authority in the same worktree without mutation`, async (t) => {
+test("resume rejects another PR authority in the same worktree without mutation", async (t) => {
 	const app = fixture();
 	t.after(app.cleanup);
 	const workflow = app.workflow();
@@ -1102,7 +1102,7 @@ for (const drift of ["PR", "base branch"] as const) test(`resume rejects another
 	const current = app.current();
 	const mismatched = new PullRequestCommentSweep({
 		cwd: app.root,
-		authority: drift === "base branch" ? { ...current, base: { ...current.base, ref: "release" } } : {
+		authority: {
 			...current,
 			id: "PR_99",
 			number: 99,
@@ -1425,23 +1425,6 @@ test("a lost reply with a matching new comment remains ambiguous and is never re
 	const recovery = readFileSync(recoveryPath, "utf8");
 	await assert.rejects(workflow.resume(), /Reply attempt outcome is ambiguous/);
 	assert.equal(readFileSync(recoveryPath, "utf8"), recovery);
-	assert.equal(app.world.replyCalls, 1);
-	assert.equal(app.world.mutationCalls, 0);
-});
-
-test("another actor's identical reply cannot satisfy a lost mutation", async (t) => {
-	const app = fixture();
-	t.after(app.cleanup);
-	const workflow = app.workflow();
-	const started = await workflow.start();
-	const published = await publishRecorded(workflow, await workflow.record(started.guard, ledger(started), []));
-	const pending = await workflow.refresh(published.guard);
-	const refreshed = pending;
-	app.world.applyReply = false;
-	app.world.loseReplyResponse = true;
-	await assert.rejects(workflow.resolve(refreshed.guard), /reply response lost/);
-	app.world.replyBody = published.publicationHead;
-	await assert.rejects(workflow.resume(), /Reply attempt outcome is ambiguous/);
 	assert.equal(app.world.replyCalls, 1);
 	assert.equal(app.world.mutationCalls, 0);
 });

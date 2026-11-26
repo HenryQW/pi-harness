@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
-import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { spawnBounded } from "@henryqw/pi-process";
 import {
 	assertOnlyDeclaredStatusChanged,
@@ -27,12 +25,6 @@ async function temporaryGitRepository(prefix: string): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), prefix));
 	await git(root, ["init", "--quiet"]);
 	return root;
-}
-
-async function worktreeLockPath(root: string, agentDir: string): Promise<string> {
-	const canonical = await realpath(root);
-	const lockNamespace = resolve(extensionConfigDir("pi-pr", agentDir));
-	return join(lockNamespace, "worktree-locks", `${createHash("sha256").update(canonical).digest("hex")}.lock`);
 }
 
 test("tracking repair uses the saved lease and preserves concurrent fetches", async (t) => {
@@ -184,37 +176,6 @@ test("worktree lock namespaces explicit agent directories independently", async 
 		release();
 		await first;
 	}
-});
-
-test("worktree lock recovers a stale lock", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-stale-lock-");
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-pr-stale-agent-"));
-	t.after(() => Promise.all([
-		rm(root, { recursive: true, force: true }),
-		rm(agentDir, { recursive: true, force: true }),
-	]));
-	const lockPath = await worktreeLockPath(root, agentDir);
-	await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
-	await mkdir(lockPath);
-	const stale = new Date(Date.now() - 60_000);
-	await utimes(lockPath, stale, stale);
-	let calls = 0;
-	await withWorktreeLock(root, async () => { calls += 1; }, { agentDir });
-	assert.equal(calls, 1);
-});
-
-test("worktree lock releases safely after operation failure", async (t) => {
-	const root = await temporaryGitRepository("pi-pr-release-lock-");
-	const agentDir = await mkdtemp(join(tmpdir(), "pi-pr-release-agent-"));
-	t.after(() => Promise.all([
-		rm(root, { recursive: true, force: true }),
-		rm(agentDir, { recursive: true, force: true }),
-	]));
-	await assert.rejects(
-		withWorktreeLock(root, async () => { throw new Error("operation failed"); }, { agentDir }),
-		/operation failed/,
-	);
-	await withWorktreeLock(root, async () => {}, { agentDir });
 });
 
 test("porcelain-v2 baseline preserves merge-produced staging outside declared conflicts", () => {

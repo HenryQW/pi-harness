@@ -138,5 +138,4 @@ test("local state is normalized before any remote condition is acted on", () => 
 			assert.equal(actual, expected, `${candidateLocal.worktree}/${candidateLocal.head} ${JSON.stringify(routeConditions)}`);
 		}
 	}
-	assert.equal(derivePullRequestNextStep(pullRequest({ conditions: { ci: "success" } })), "merge");
 });

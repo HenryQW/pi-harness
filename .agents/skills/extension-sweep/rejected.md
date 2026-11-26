@@ -15,6 +15,8 @@ Scouts must not report these again unless the cited code or its call frequency c
 | pi-pr | Remove re-reads that compare against an earlier discovery (`samePullRequestSnapshot`, `sameLinkage`, `freshAuthority`, the feedback guard's second discovery) | Authority brackets around mutations; maintainer kept them. | 2026-10-20 |
 | pi-pr | Parallel discovery reads; drop Codex reads from helper loads | Changes error order; maintainer deferred. | 2026-10-20 |
 | pi-pr | Remove action-list assertions in `pr.test.ts`; UI and discovery test duplicates | Public tool contract, or the only coverage of fetch-before-classify. | 2026-10-20 |
+| pi-pr | Remove the extension-command and top-level-skill rows of "requires the effective package-owned skill"; the `git@` row of the fetch-URL test | Each row is the only test of one clause of the skill-authority check or of one supported URL form. | 2026-11-26 |
+| pi-pr | Remove "fixture copies isolate repositories, remotes, and hooks" | The sweep cases run 4 at a time on copied fixtures. Without this test, a shared fixture shows only as intermittent failures. | 2026-11-26 |
 | pi-herdr-tools | Skip `removeStale()` on the 3 s merge poll | Only expiry path for a deferred merge. | #468 |
 | pi-herdr-tools | Cache merge payload parse per launch | Runs only while a merge request is pending. | 2026-10-20 |
 | pi-herdr-tools | Parallel rename reads; duplicate handoff `rev-parse` | Ordered with `isCurrent`, or once per command. | 2026-10-20 |

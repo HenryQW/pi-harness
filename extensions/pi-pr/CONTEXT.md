@@ -98,6 +98,10 @@ _Avoid_: Update on a merely stale base GitHub still calls clean, unleased force 
 An explicit user conflict/base-update order that permits bounded refresh and one branch update with checked publication, then stops. It permits no creation, linking, local sync, unrelated publication, feedback repair, or pull request merge.
 _Avoid_: Full lifecycle authorization, publication-only scope
 
+**Lifecycle authority**:
+A user instruction to bring the pull request to merge-ready. It permits each PR next step except the merge, in a session with or without a user interface, and stops with a reason. The merge always needs its own confirmation.
+_Avoid_: Merge authorization, automatic merge
+
 **Live conflict context**:
 The exact paused branch update, its operation markers, and its original status baseline retained within one live session for user decisions. Idle turns do not renew or replace its authority.
 _Avoid_: Restart recovery, transferable run

@@ -139,6 +139,12 @@ test("bounded spawn preserves strict UTF-8 output and a complete tail", async ()
 	assert.equal(streamed.stdoutTruncated, true);
 	assert.ok(Buffer.byteLength(streamed.stdout, "utf8") <= 6);
 
+	const both = await spawnBounded(process.execPath, [
+		"-e",
+		"process.stderr.write('e'.repeat(70 * 1024) + 'end'); process.stdout.write('ok')",
+	], { cwd: process.cwd(), stdoutTailBytes: 8, stderrTailBytes: 3 });
+	assert.deepEqual(both, { stdout: "ok", stderr: "end", code: 0, killed: false, stdoutTruncated: false, stderrTruncated: true });
+
 	await assert.rejects(
 		spawnBounded(process.execPath, ["-e", "process.stdout.write(Buffer.from([0xff]))"], {
 			cwd: process.cwd(),

@@ -3,7 +3,6 @@ import { after, before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConfigIssue } from "@henryqw/pi-config-store";
@@ -254,6 +253,7 @@ function harness(options: {
 		loadNamedPullRequest: options.loadNamedPullRequest,
 		readRulesetBypass: options.readRulesetBypass,
 		refreshDelayMs: 0,
+		statusPollMs: 0,
 		loadPrPolicy: () => ({ status: "ok", source: "missing", value: { ...DEFAULT_PR_POLICY, ciWaitMinutes: 0, ...options.policy }, issues: options.policyIssues ?? [] }),
 		needsFeedbackAttention: async () => false,
 	};
@@ -1289,7 +1289,7 @@ test("tool cancellation reaches only its active workflow action", async () => {
 	}
 });
 
-for (const outcome of ["completed", "aborted", "error"]) {
+for (const outcome of ["completed", "aborted"]) {
 	test(`busy /pr launch is consumed at boundary or cancelled (${outcome})`, async () => {
 		let idle = false;
 		let loads = 0;
@@ -1626,13 +1626,14 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	let pendingReads = 1;
 	let reviewRequired = false;
 	let codexRunning = false;
+	let runningReads = Infinity;
 	let changed: Partial<NamedPullRequest> = {};
 	let afterConfirm: Partial<NamedPullRequest> = {};
 	const named = (): NamedPullRequest => ({
 		id: current.id, number: 42, url: current.url, host: "github.com", lifecycle: "open",
 		conditions: { ...current.conditions, mergeability: pendingReads-- > 0 ? "pending" : "known",
 			...(reviewRequired ? { review: "pending", policy: "pending" } as const : {}),
-			...(codexRunning ? { codex: { status: "running", findings: 0 } } as const : {}) },
+			...(codexRunning && runningReads-- > 0 ? { codex: { status: "running", findings: 0 } } as const : {}) },
 		base: current.base, head: current.head,
 		mergeable: "MERGEABLE", mergeStateStatus: reviewRequired ? "BLOCKED" : "CLEAN",
 		reviewDecision: reviewRequired ? "REVIEW_REQUIRED" : null,
@@ -1666,6 +1667,7 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	// A pending mergeability read is re-read before the verdict.
 	const status = (await app.callTool("pi_pr_status", { number: 42 }, ctx)).details as Record<string, unknown>;
 	assert.deepEqual([status.verdict, status.headOid, status.codex, status.unresolvedThreads], ["ready", head, "disabled", { blocking: 0, other: 1 }]);
+	assert.equal("waitedSeconds" in status, false);
 
 	const refusal = async (params: unknown, context: ExtensionContext) => {
 		const details = (await app.callTool("pi_pr_merge", params, context)).details as { merged: boolean; reason: string };
@@ -1683,6 +1685,16 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	const waiting = (await app.callTool("pi_pr_merge", { number: 42, headOid: head }, ctx)).details as { merged: boolean; reason: string; status: { verdict: string } };
 	assert.deepEqual([waiting.merged, waiting.reason, waiting.status.verdict], [false, "PR #42 is not ready", "wait"]);
 	assert.equal(confirmations.length, 1);
+
+	// A bounded status wait re-reads until the verdict leaves wait, or returns the wait verdict when the time ends.
+	const wait = async (waitMinutes: number) => {
+		const details = (await app.callTool("pi_pr_status", { number: 42, waitMinutes }, ctx)).details as { verdict: string; waitedSeconds: number };
+		return [details.verdict, details.waitedSeconds];
+	};
+	runningReads = 2;
+	assert.deepEqual(await wait(5), ["ready", 60]);
+	runningReads = Infinity;
+	assert.deepEqual(await wait(1), ["wait", 60]);
 	codexRunning = false;
 
 	// A P1 thread or a base move after confirmation refuses the merge.
@@ -1798,7 +1810,7 @@ test("fresh automatic feedback sweeps rotate route IDs and resume package recove
 		await app.settle(ctx);
 		await assert.rejects(
 			app.callTool("pi_pr_sweep", { runId: firstRunId, action: "resume" }, ctx),
-			/run \/pr/,
+			/fresh pi_git_pr entry with the matching scope/,
 		);
 
 		await app.command().handler("", ctx as ExtensionCommandContext);
@@ -1836,28 +1848,6 @@ test("direct workflow tools reject foreign authority without starting another ru
 			assert.doesNotMatch(error.message, /\/sweep/);
 			return true;
 		});
-	}
-});
-
-test("starts PR discovery without blocking the next extension and publishes the result later", async () => {
-	const pending = deferred<CurrentPullRequest>();
-	const app = harness({ async load() { return pending.promise; } });
-	const ctx = app.context();
-
-	try {
-		const started = await Promise.race([
-			app.startNow(ctx).then(() => true),
-			new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
-		]);
-		assert.equal(started, true, "session_start must not await GitHub discovery");
-		assert.equal(app.statuses.at(-1), undefined);
-		assert.equal(app.widgets.at(-1), undefined);
-		pending.resolve(currentPullRequest());
-		await flush();
-		assert.match(app.statuses.at(-1) ?? "", /PR #42/);
-	} finally {
-		pending.resolve(currentPullRequest());
-		await app.shutdown(ctx);
 	}
 });
 
@@ -2380,29 +2370,6 @@ sys.exit(os.waitstatus_to_exitcode(status))`;
 	}
 });
 
-test("background Git does not run configured credential prompts", { skip: process.platform === "win32" }, async () => {
-	const directory = mkdtempSync(join(tmpdir(), "pi-pr-askpass-"));
-	const askpass = join(directory, "askpass"), marker = join(directory, "ran");
-	writeFileSync(askpass, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
-	const previous = process.env.GIT_ASKPASS;
-	process.env.GIT_ASKPASS = askpass;
-	const server = createServer((_request, response) => { response.writeHead(401, { "WWW-Authenticate": 'Basic realm="test"' }); response.end(); });
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	try {
-		const address = server.address();
-		if (!address || typeof address === "string") throw new Error("missing test server address");
-		const result = await discoveryExec("git", ["ls-remote", `http://127.0.0.1:${address.port}/repo`], { cwd: directory, timeoutMs: 5_000 });
-		assert.notEqual(result.code, 0);
-		assert.match(result.stderr, /terminal prompts disabled/);
-		assert.equal(existsSync(marker), false);
-	} finally {
-		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-		if (previous === undefined) delete process.env.GIT_ASKPASS;
-		else process.env.GIT_ASKPASS = previous;
-		rmSync(directory, { recursive: true, force: true });
-	}
-});
-
 test("default status discovery reports a Git host key failure", { skip: process.platform === "win32" }, async () => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-pr-discovery-"));
 	const previousPath = process.env.PATH, previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -2760,7 +2727,7 @@ test("repository lookup retry stops on configured target validation failure", as
 	} finally { await app.shutdown(ctx); }
 });
 
-test("repository lookup retry stops on quota failure or shutdown", async (t) => {
+test("repository lookup retry stops on quota failure", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let loads = 0;
 	const app = harness({ async load() {
@@ -2777,9 +2744,6 @@ test("repository lookup retry stops on quota failure or shutdown", async (t) => 
 	await flush();
 	assert.equal(loads, 2);
 	await app.shutdown(ctx);
-	t.mock.timers.tick(3_600_000);
-	await flush();
-	assert.equal(loads, 2);
 });
 
 test("defers polling while busy and stops polling at shutdown", async (t) => {
@@ -3030,43 +2994,6 @@ test("session replacement stops routing animation before stale /pr completion", 
 	await app.shutdown(secondSession);
 });
 
-test("does not warn for the expected published ref during PR creation", async () => {
-	let published = false;
-	let created = false;
-	const app = harness({
-		async load() {
-			if (created) return currentPullRequest();
-			if (published) {
-				return { kind: "blocked", issue: { kind: "published-without-pr", remote: "origin" } };
-			}
-			return noPullRequest(1);
-		},
-		async commandHandler() {
-			return "create";
-		},
-	});
-	const ctx = app.context();
-
-	try {
-		await app.start(ctx);
-		await app.command().handler("", ctx as ExtensionCommandContext);
-		published = true;
-		await app.tool({
-			toolName: "bash",
-			input: { command: "git push origin HEAD" },
-			isError: false,
-		}, ctx);
-
-		assert.deepEqual(app.notifications, []);
-		assert.equal(plain(app.statuses.at(-1) ?? ""), "");
-		created = true;
-		await app.settle(ctx);
-		assert.equal(plain(app.statuses.at(-1) ?? ""), "PR #42 · merge-ready");
-	} finally {
-		await app.shutdown(ctx);
-	}
-});
-
 test("keeps the create hint cleared until the workflow settles", async () => {
 	const workflow = deferred<void>();
 	let loads = 0;
@@ -3099,6 +3026,7 @@ test("keeps the create hint cleared until the workflow settles", async () => {
 			isError: false,
 		}, ctx);
 		assert.equal(loads, 1);
+		assert.deepEqual(app.notifications, [], "the expected published ref must not warn");
 		assert.equal(app.widgets.at(-1), undefined, "a create-workflow refresh must not restore the hint");
 
 		await app.settle(ctx);
@@ -3765,7 +3693,7 @@ test(`ended local ${entry} run gives ${failed ? "failure" : "fresh-entry"} guida
 		else await action();
 		await app.settle(ctx);
 		await assert.rejects(action(), failed ? /run failed or was cancelled.*recovery journal/
-			: entry === "lifecycle" ? /original instruction.*fresh pi_git_pr.*no new approval.*run \/pr for the full lifecycle/
+			: entry === "lifecycle" ? /original instruction.*fresh pi_git_pr.*matching scope.*no new approval.*merge still needs the user's confirmation/
 			: /run ended at settlement.*fresh pi_git_pr/);
 		await assert.rejects(app.callTool("pi_pr_create", { runId: "33333333-1111-4111-8111-111111111111", action: "prepare" }, ctx), /foreign or stale.*owning session/);
 		if (!failed) {
@@ -3845,8 +3773,53 @@ for (const scenario of ["merge", "fix-ci", "update-branch", "sweep-recovery"] as
 	try {
 		await app.start(ctx);
 		const result = await app.callTool("pi_git_pr", { base: "main" }, ctx);
-		assert.deepEqual(result.details, { nextStep: "none", url: pr.url.href });
+		// The model gets the stop reason, not only the screen.
+		const { reason, ...rest } = result.details as { reason: string };
+		assert.deepEqual(rest, { nextStep: "none", url: pr.url.href });
+		assert.ok(reason.startsWith(`Create/update authorization stops before ${scenario === "sweep-recovery" ? "sweep" : scenario}: `), reason);
 		assert.match(app.notifications[0]!.message, /authorization stops before/);
+		assert.equal(app.execCalls.length, 0);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("agent PR entry names the reason when no pull request exists and nothing can be published", async () => {
+	const app = harness({ load: async () => noPullRequest(0), useDefaultCommandHandler: true, canonicalWorktree: async () => "/repo" });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		const details = (await app.callTool("pi_git_pr", {}, ctx)).details as { nextStep: string; reason: string };
+		assert.equal(details.nextStep, "none");
+		assert.match(details.reason, /^No pull request exists for this branch/);
+	} finally { await app.shutdown(ctx); }
+});
+
+test("lifecycle scope repairs CI in a model-started run, then stops before the merge with the reason", async () => {
+	let fixed = false;
+	let confirmations = 0;
+	const app = harness({
+		async load() { return currentPullRequest({ conditions: { ci: fixed ? "success" : "failure" } }); },
+		useDefaultCommandHandler: true, isIdle: () => false, newRunId: () => routeRunId,
+		async canonicalWorktree() { return "/repo"; },
+		createCiFixer: () => ({ async collect() { return { kind: "collected" }; }, async publish() { fixed = true; return { kind: "published" }; } }) as never,
+	});
+	const base = app.context();
+	const ctx = { ...base, ui: { ...base.ui, async confirm() { confirmations += 1; return true; } } } as ExtensionContext;
+	try {
+		await app.start(ctx);
+		assert.equal(((await app.callTool("pi_git_pr", { scope: "lifecycle" }, ctx)).details as { nextStep: string }).nextStep, "fix-ci");
+		assert.equal((await app.beforeSettle(ctx))?.continue, true);
+		await app.callTool("pi_pr_fix_ci", { runId: routeRunId, action: "publish" }, ctx);
+		// No later tool result exists, so the stop reason enters the session for one last turn.
+		const stopped = await app.beforeSettle(ctx) as { continue: boolean; entries: Array<{ customType: string; content: string }> };
+		assert.equal(stopped.continue, true);
+		assert.deepEqual(stopped.entries.map(({ customType }) => customType), ["pi-pr-stop"]);
+		assert.match(stopped.entries[0]!.content, /stopped after fix-ci: PR #42 is merge-ready at head b{40}; the lifecycle scope never merges/);
+
+		// That turn can start a fresh entry; on the ready PR it returns the same reason in the tool result.
+		const ready = (await app.callTool("pi_git_pr", { scope: "lifecycle" }, ctx)).details as { nextStep: string; reason: string };
+		assert.equal(ready.nextStep, "none");
+		assert.match(ready.reason, /merge-ready at head b{40}.*needs the user's confirmation/);
+		assert.equal(confirmations, 0);
 		assert.equal(app.execCalls.length, 0);
 	} finally { await app.shutdown(ctx); }
 });

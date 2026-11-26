@@ -32,12 +32,12 @@ Commands are for you; tools and skills are for the agent.
 | --- | --- | --- |
 | `/pr [projectPath]` | command | Select a worktree and do the PR next step. |
 | `pi_git_commit` | tool | Inspect and commit scoped local changes. Never pushes. |
-| `pi_git_pr` | tool | Create or publish a PR, or do one explicitly ordered base update. Never merges the PR. |
+| `pi_git_pr` | tool | Create or publish a PR, do one explicitly ordered base update, or bring a PR to merge-ready. Never merges the PR. |
 | `pi_pr_create` | tool | Run guarded PR creation steps. |
 | `pi_pr_fix_ci` | tool | Repair failed GitHub Actions. |
 | `pi_pr_merge` | tool | Merge a ready named pull request after you confirm. |
 | `pi_pr_publish_work` | tool | Publish scoped local work. |
-| `pi_pr_status` | tool | Check the readiness of a named pull request. |
+| `pi_pr_status` | tool | Check the readiness of a named pull request, with an optional bounded wait. |
 | `pi_pr_sweep` | tool | Triage feedback and publish fixes. |
 | `pi_pr_update_branch` | tool | Update against the pinned base and publish. |
 | `git_conflict` | tool | List, show, and resolve Git conflict blocks. Never stages files. |
@@ -83,11 +83,15 @@ Local commits require an existing commit and an attached branch. They never fetc
 | --- | --- |
 | `pi_git_commit` `{ action: "inspect", target: "<local-ref-or-OID>" }` | Returns `inspectionId`, `head`, `targetOid`, `mergeBase`, and `paths`. |
 | `pi_git_commit` `{ action: "commit", inspectionId, ownedPaths, message }` | Returns `head` and consumes the inspection. Inspect again for another group. Subjects have at most 72 characters. |
-| `pi_git_pr` `{ scope?: "publication", base?: "<exact-base-ref>", allowUpstream?: true }` | Returns `nextStep` and can include a proven `url`, `blocker`, or `handoff`. With `handoff`, end the turn and do not guess run IDs. |
+| `pi_git_pr` `{ scope?: "publication" \| "update-branch" \| "lifecycle", base?: "<exact-base-ref>", allowUpstream?: true }` | Returns `nextStep` and can include a proven `url`, `blocker`, `reason`, or `handoff`. With `handoff`, end the turn and do not guess run IDs. `reason` tells why routing stopped. |
 
 The default `pi_git_pr` scope is `publication`. It permits creation, local publication, and sync onto the PR head, not the base. It stops before feedback, CI repair, base updates, waiting, or merging. Existing PR bases, titles, and bodies do not change.
 
 For an explicit conflict/base-update order, the agent calls `pi_git_pr` with `{ scope: "update-branch" }`. An optional `base` must match the current PR. Do not supply `allowUpstream`. This scope permits bounded refresh, one base update and its checked publication, then stops. It cannot create, link, sync local history, publish unrelated work, sweep feedback, repair CI, or merge the PR. It needs a configured, open, non-draft current PR and clean local state at the published head, or matching verified update recovery.
+
+When you authorize the agent to bring a PR to merge-ready, the agent calls `pi_git_pr` with `{ scope: "lifecycle" }`. This scope permits each `/pr` route except the merge: creation, publication, feedback sweeps, CI repair, base updates, and CI and Codex waits. It works without an interactive UI. When the PR is merge-ready, the scope stops and gives the head OID. A merge then needs `pi_pr_merge` or `/pr`, and your confirmation.
+
+When a lifecycle run stops after a workflow, the agent gets the stop reason in one more turn. The agent can then report the reason, or start a new entry if your authorization still applies.
 
 To delegate publication, delegate before a workflow starts. Pass the authorized work scope, base intent, and repository-local upstream consent, not a parent `runId`. The child calls `pi_git_pr` and follows its own same-session skill handoff.
 
@@ -131,7 +135,7 @@ A named pull request is one pull request in the `origin` repository, addressed b
 
 | Tool call | Result |
 | --- | --- |
-| `pi_pr_status` `{ number }` | Returns `verdict` (`ready`, `wait`, or `block`), `reasons`, `number`, `url`, `lifecycle`, `baseRef`, full `headOid`, `mergeable`, `mergeStateStatus`, `reviewDecision`, `failingChecks`, `pendingChecks`, `codex`, and `unresolvedThreads`. A ruleset bypass adds `bypass`. |
+| `pi_pr_status` `{ number, waitMinutes? }` | Returns `verdict` (`ready`, `wait`, or `block`), `reasons`, `number`, `url`, `lifecycle`, `baseRef`, full `headOid`, `mergeable`, `mergeStateStatus`, `reviewDecision`, `failingChecks`, `pendingChecks`, `codex`, and `unresolvedThreads`. A ruleset bypass adds `bypass`. `waitMinutes` adds `waitedSeconds`. |
 | `pi_pr_merge` `{ number, headOid }` | Returns `merged: true` with `headOid` and `mergeMethod`, or `merged: false` with `reason` and the fresh `status`. |
 
 The merge bar uses these reasons:
@@ -149,7 +153,9 @@ Any block reason gives `block`. If no block reason applies, any wait reason give
 
 `pi_pr_merge` does not do the local merge safety checks of `/pr`, because your checkout is not the PR branch. It does not delete branches or worktrees, enable automatic merging, or use a merge queue.
 
-For a manager workflow, each worker agent checks its own PR with `pi_pr_status` and reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane.
+With `waitMinutes` (`1` to `60`), `pi_pr_status` reads the PR again every `ciPollSeconds` while the verdict is `wait`. It returns at the first `ready` or `block` verdict, or when the time ends. Use one call with `waitMinutes` instead of repeated calls.
+
+For a manager workflow, each worker agent waits for its own PR with `pi_pr_status` and `waitMinutes`, then reports the verdict and `headOid`. The manager session checks the PR again with `pi_pr_status`. Then it calls `pi_pr_merge` with that `headOid`, and you confirm in the manager's own pane.
 
 ### Ruleset bypass
 
@@ -244,7 +250,7 @@ Package-owned: `~/.pi/agent/config/pi-pr/config.json`
 | `mergeMethod` | Direct merge method, subject to repository policy. | `squash`, `merge`, or `rebase` | `squash` |
 | `codexReview` | Require a complete current-head Codex review before merge confirmation, also for named pull requests. Adds at most two GitHub endpoint reads per open-PR discovery. | `true` or `false` | `false` |
 
-The extension never writes this file. Problems show at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` reads config once; a later `/pr` or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
+The extension never writes this file. Problems show at session start or the next `/pr`. Fix the file, then run `/pr` again. Each explicit `/pr` or `pi_git_pr` call reads config once; a later `/pr`, `pi_git_pr` call, or reload resets limits. Each `pi_pr_status` or `pi_pr_merge` call also reads config. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
 ## State and storage
 
@@ -316,9 +322,9 @@ The commands reject symbolic links. After you verify it, upgrade pi-pr and resum
 
 - After fixing a blocker, run `/pr` again. Resolve ambiguous remotes, unrelated changes, and GitHub blockers first. Unsupported remotes produce a warning without changes.
 - `/pr` starts only on request. It never opens a browser, runs `/done` or `/sweep`, enables automatic merging, or uses a merge queue.
-- Check sets stay fixed and run once per HEAD per invocation. Repairs must change HEAD, not drop checks. Timeout errors name the command and limit.
+- Check sets stay fixed and run once per HEAD per invocation. Repairs must change HEAD, not drop checks. Timeout errors name the command and limit. A check keeps only the last 64 KiB of each output stream, so verbose output does not fail the check.
 - Failed/unknown check sets consume repair budget; confirmed PR-head movements consume publication cycles. Duplicate observations, unchanged heads, and failed pushes do not consume publication cycles.
-- Limits survive continuation and recovery. Exhausted publication budgets still permit published-sweep cleanup and readiness/merge checks. Wait exhaustion reports `still waiting for CI` or `still waiting for the Codex review`. A later `/pr` waits again.
+- Limits survive continuation and recovery. Exhausted publication budgets still permit published-sweep cleanup and readiness/merge checks. Wait exhaustion reports `still waiting for CI` or `still waiting for the Codex review`. A later `/pr` or `lifecycle` entry waits again.
 - Concurrent updates block publication: pushes revalidate their destination and use exact OID leases. Pushes exclude tags, even with `push.followTags=true`. Never replay an uncertain commit or push before checking its outcome.
 - Preflight changes can select another route at most twice without resetting budgets. Changed authority, dirty/divergent work, unreconciled recovery, or uncertain outcomes stop continuation. Repeated completed routes on the same head also stop.
 - [Branch-update guidance](./skills/pi-pr-update-branch/SKILL.md) explains base advancement and changed authority during conflicts. [CI-fix guidance](./skills/pi-pr-fix-ci/SKILL.md) explains preflight changes. Base movement during or after evidence collection blocks CI repair; never reuse stale evidence.

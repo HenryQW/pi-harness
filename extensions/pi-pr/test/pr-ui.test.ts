@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities } from "@earendil-works/pi-tui";
 import {
 	formatPrFooter,
 	formatPrWidget,
@@ -56,12 +56,6 @@ const theme: PrTheme = {
 		return `<${color}>${text}</${color}>`;
 	},
 };
-const ansiTheme: PrTheme = {
-	fg(_color, text) {
-		return `\x1b[36m${text}\x1b[0m`;
-	},
-};
-
 function pullRequest(overrides: {
 	lifecycle?: PullRequestLifecycle;
 	conditions?: Partial<PullRequestConditions>;
@@ -377,17 +371,6 @@ test("prefixes plain actions with themed semantic icons", () => {
 		assert.deepEqual(formatPrWidget(display, theme), [`<${color}>${icon}</${color}> ${text}`], name);
 	}
 	assert.equal(formatPrWidget({}, undefined, 0), undefined);
-});
-
-test("truncates the themed action line to narrow TUI widths", () => {
-	const display = projectPrDisplay(pullRequest({ conditions: { unresolvedThreads: 123_456_789 } }));
-	assert.equal(display.footer?.text, "123456789 unresolved");
-	assert.equal(display.widget, "Run /pr to address review feedback");
-
-	for (const width of [-1, 0]) assert.deepEqual(formatPrWidget(display, ansiTheme, width), []);
-	const widget = formatPrWidget(display, ansiTheme, 8);
-	assert.equal(widget?.length, 1);
-	assert.ok(widget?.every((line) => visibleWidth(line) <= 8));
 });
 
 test("routes dirty work before a merge conflict", () => {

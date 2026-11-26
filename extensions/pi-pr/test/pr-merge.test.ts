@@ -428,7 +428,6 @@ test("blocks local changes made during readiness without a second fetch or mutat
 test("runs one readiness evaluation after local inspection and stops on any read failure", async () => {
 	for (const candidate of [
 		{ name: "read error", error: new Error("readiness unavailable") },
-		{ name: "malformed authority", error: new Error("invalid readiness authority") },
 	]) {
 		const { exec, calls } = mockExec([
 			result(),

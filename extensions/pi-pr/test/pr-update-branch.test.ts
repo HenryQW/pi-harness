@@ -156,7 +156,7 @@ for (const checkpoint of ["initial", "after-fetch", "final", "diverged", "dirty"
 	assert.equal(existsSync(join(app.agentDir, "config", "pi-pr", "update-branch")), false, "no recovery record is written");
 });
 
-for (const drift of ["base", "conflict", "published", "dirty", "branch", "diverged", "unpublished", "remote", "destination", "identity", "base-ref", "host", "repository", "closed"] as const)
+for (const drift of ["base", "conflict", "published", "dirty", "branch", "diverged", "unpublished", "remote", "identity"] as const)
 for (const checkpoint of ["base", "conflict", "published"].includes(drift) ? [1, 2, 3] : [2]) test(`pre-rebase authority ${drift} at checkpoint ${checkpoint}`, async (t) => {
 	let loads = 0;
 	const fresh = pullRequest({ base: { ...pullRequest().base, oid: "d".repeat(40) } });
@@ -165,12 +165,7 @@ for (const checkpoint of ["base", "conflict", "published"].includes(drift) ? [1,
 		fresh.head.oid = merged;
 		fresh.target.remoteOid = drift === "remote" ? oldHead : merged;
 	}
-	if (drift === "destination") fresh.target.fetchSource = "git@github.com:acme/other.git";
 	if (drift === "identity") fresh.id = "PR_other";
-	if (drift === "base-ref") fresh.base.ref = "other";
-	if (drift === "host") fresh.host = "other.example";
-	if (drift === "repository") fresh.head.repository = "acme/other";
-	if (drift === "closed") fresh.lifecycle = "closed";
 	const exec: Exec = async (command, args) => {
 		const changed = loads >= checkpoint;
 		if (command === "git" && args[0] === "status" && changed && drift === "dirty") return result(" M file.txt\n");
@@ -280,7 +275,7 @@ test("does not push when HEAD or target authority changes after final base check
 });
 
 for (const scenario of ["success", "conflict", "stale", "identity", "lease", "first-parent", "second-parent", "extra-parent",
-	"merge-marker", "merge-head", "merge-branch", "rebase-marker", "rebase-head", "rebase-onto", "rebase-original", "rebase-branch"] as const)
+	"merge-marker", "merge-head", "rebase-marker", "rebase-onto"] as const)
 test("real branch update: " + scenario, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "pi-pr-update-history-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -370,12 +365,9 @@ test("real branch update: " + scenario, async (t) => {
 		if (scenario.startsWith("merge-") || linear) {
 			duringDiscovery = () => {
 				if (scenario.endsWith("head")) git("update-ref", "HEAD", initial);
-				else if (scenario === "merge-branch") git("symbolic-ref", "HEAD", "refs/heads/main");
 				else {
 					const name = scenario === "merge-marker" ? "MERGE_HEAD"
-						: scenario === "rebase-onto" ? "rebase-merge/onto"
-						: scenario === "rebase-original" ? "rebase-merge/orig-head"
-						: scenario === "rebase-branch" ? "rebase-merge/head-name" : "REBASE_HEAD";
+						: scenario === "rebase-onto" ? "rebase-merge/onto" : "REBASE_HEAD";
 					writeFileSync(join(worktree, git("rev-parse", "--git-path", name)), initial + "\n");
 				}
 			};

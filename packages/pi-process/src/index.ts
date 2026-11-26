@@ -10,6 +10,7 @@ export type ExecResult = {
 	code: number;
 	killed: boolean;
 	stdoutTruncated?: boolean;
+	stderrTruncated?: boolean;
 };
 
 export type ExecOptions = {
@@ -20,6 +21,7 @@ export type ExecOptions = {
 	stdoutLimitBytes?: number;
 	stdoutTailBytes?: number;
 	stderrLimitBytes?: number;
+	stderrTailBytes?: number;
 	stdin?: string;
 };
 
@@ -59,6 +61,64 @@ function decode(chunks: Buffer[], bytes: number, label: string): string {
 	}
 }
 
+type Capture = { data(chunk: Buffer): void; flush(): void; text(): string; truncated(): boolean | undefined };
+
+/** Collect one stream: fail beyond `limit`, or with `tailLimit` keep only the end as complete UTF-8 characters. */
+function capture(label: string, limit: number, tailLimit: number | undefined, stop: (error: Error) => void): Capture {
+	const chunks: Buffer[] = [];
+	const decoder = tailLimit === undefined ? undefined : new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+	let bytes = 0;
+	let truncated = false;
+	const appendTail = (text: string): void => {
+		if (!text || tailLimit === undefined) return;
+		const chunk = Buffer.from(text, "utf8");
+		chunks.push(chunk);
+		bytes += chunk.length;
+		if (bytes <= tailLimit) return;
+		truncated = true;
+		let remove = bytes - tailLimit;
+		while (remove > 0) {
+			const first = chunks[0]!;
+			if (first.length <= remove) {
+				chunks.shift();
+				bytes -= first.length;
+				remove -= first.length;
+				continue;
+			}
+			let start = remove;
+			while (start < first.length && (first[start]! & 0xc0) === 0x80) start += 1;
+			chunks[0] = Buffer.from(first.subarray(start));
+			bytes -= start;
+			remove = 0;
+		}
+	};
+	const decodeTail = (chunk?: Buffer): void => {
+		if (!decoder) return;
+		try {
+			appendTail(chunk === undefined ? decoder.decode() : decoder.decode(chunk, { stream: true }));
+		} catch {
+			stop(new Error(`${label} was not valid UTF-8`));
+		}
+	};
+	return {
+		data(chunk) {
+			if (decoder) {
+				decodeTail(chunk);
+				return;
+			}
+			bytes += chunk.length;
+			if (bytes > limit) {
+				stop(new Error(`${label} exceeded ${limit} bytes`));
+				return;
+			}
+			chunks.push(chunk);
+		},
+		flush: () => decodeTail(),
+		text: () => decoder ? Buffer.concat(chunks, bytes).toString("utf8") : decode(chunks, bytes, label),
+		truncated: () => decoder ? truncated : undefined,
+	};
+}
+
 /** Run one argv-only child process with bounded streaming output and cancellation. */
 export const spawnBounded: Exec = async (command, args, options) => {
 	requiredText(command, "command");
@@ -71,6 +131,9 @@ export const spawnBounded: Exec = async (command, args, options) => {
 		? undefined
 		: positiveInteger(options.stdoutTailBytes, "stdoutTailBytes");
 	const stderrLimit = positiveInteger(options.stderrLimitBytes ?? DEFAULT_OUTPUT_LIMIT_BYTES, "stderrLimitBytes");
+	const stderrTailLimit = options.stderrTailBytes === undefined
+		? undefined
+		: positiveInteger(options.stderrTailBytes, "stderrTailBytes");
 	if (options.stdin !== undefined && typeof options.stdin !== "string") throw new TypeError("stdin must be a string");
 
 	return await new Promise<ExecResult>((resolve, reject) => {
@@ -83,14 +146,6 @@ export const spawnBounded: Exec = async (command, args, options) => {
 		const childPid = child.pid;
 		const processGroup = process.platform !== "win32" && typeof childPid === "number" &&
 			Number.isSafeInteger(childPid) && childPid > 0 ? childPid : null;
-		const stdout: Buffer[] = [];
-		const stderr: Buffer[] = [];
-		const stdoutDecoder = stdoutTailLimit === undefined
-			? undefined
-			: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-		let stdoutBytes = 0;
-		let stdoutTruncated = false;
-		let stderrBytes = 0;
 		let failure: Error | undefined;
 		let killed = false;
 		let settled = false;
@@ -114,37 +169,8 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			signalChild("SIGTERM");
 			killTimer = setTimeout(() => signalChild("SIGKILL"), PROCESS_TERMINATION_GRACE_MS);
 		};
-		const appendTail = (text: string): void => {
-			if (!text || stdoutTailLimit === undefined) return;
-			const chunk = Buffer.from(text, "utf8");
-			stdout.push(chunk);
-			stdoutBytes += chunk.length;
-			if (stdoutBytes <= stdoutTailLimit) return;
-			stdoutTruncated = true;
-			let remove = stdoutBytes - stdoutTailLimit;
-			while (remove > 0) {
-				const first = stdout[0]!;
-				if (first.length <= remove) {
-					stdout.shift();
-					stdoutBytes -= first.length;
-					remove -= first.length;
-					continue;
-				}
-				let start = remove;
-				while (start < first.length && (first[start]! & 0xc0) === 0x80) start += 1;
-				stdout[0] = Buffer.from(first.subarray(start));
-				stdoutBytes -= start;
-				remove = 0;
-			}
-		};
-		const decodeTail = (chunk?: Buffer): void => {
-			if (!stdoutDecoder) return;
-			try {
-				appendTail(chunk === undefined ? stdoutDecoder.decode() : stdoutDecoder.decode(chunk, { stream: true }));
-			} catch {
-				stop(new Error(`${command} stdout was not valid UTF-8`));
-			}
-		};
+		const stdout = capture(`${command} stdout`, stdoutLimit, stdoutTailLimit, stop);
+		const stderr = capture(`${command} stderr`, stderrLimit, stderrTailLimit, stop);
 		const timer = timeoutMs === undefined ? undefined
 			: setTimeout(() => stop(new Error(`${command} timed out after ${timeoutMs}ms`)), timeoutMs);
 		const abort = (): void => stop(options.signal?.reason instanceof Error
@@ -153,28 +179,8 @@ export const spawnBounded: Exec = async (command, args, options) => {
 		options.signal?.addEventListener("abort", abort, { once: true });
 		if (options.signal?.aborted) abort();
 
-		child.stdout.on("data", (chunk: Buffer) => {
-			if (failure) return;
-			if (stdoutDecoder) {
-				decodeTail(chunk);
-				return;
-			}
-			stdoutBytes += chunk.length;
-			if (stdoutBytes > stdoutLimit) {
-				stop(new Error(`${command} stdout exceeded ${stdoutLimit} bytes`));
-				return;
-			}
-			stdout.push(chunk);
-		});
-		child.stderr.on("data", (chunk: Buffer) => {
-			if (failure) return;
-			stderrBytes += chunk.length;
-			if (stderrBytes > stderrLimit) {
-				stop(new Error(`${command} stderr exceeded ${stderrLimit} bytes`));
-				return;
-			}
-			stderr.push(chunk);
-		});
+		child.stdout.on("data", (chunk: Buffer) => { if (!failure) stdout.data(chunk); });
+		child.stderr.on("data", (chunk: Buffer) => { if (!failure) stderr.data(chunk); });
 		child.once("error", stop);
 		child.stdin.once("error", stop);
 		child.once("close", (code, signal) => {
@@ -183,20 +189,22 @@ export const spawnBounded: Exec = async (command, args, options) => {
 			clearTimeout(timer);
 			if (killTimer !== undefined && processGroup === null) clearTimeout(killTimer);
 			options.signal?.removeEventListener("abort", abort);
-			if (!failure && stdoutDecoder) decodeTail();
+			if (!failure) stdout.flush();
+			if (!failure) stderr.flush();
 			if (failure) {
 				reject(failure);
 				return;
 			}
 			try {
+				const stdoutTruncated = stdout.truncated();
+				const stderrTruncated = stderr.truncated();
 				resolve({
-					stdout: stdoutDecoder
-						? Buffer.concat(stdout, stdoutBytes).toString("utf8")
-						: decode(stdout, stdoutBytes, `${command} stdout`),
-					stderr: decode(stderr, stderrBytes, `${command} stderr`),
+					stdout: stdout.text(),
+					stderr: stderr.text(),
 					code: code ?? 1,
 					killed: killed || signal !== null,
-					...(stdoutDecoder ? { stdoutTruncated } : {}),
+					...(stdoutTruncated === undefined ? {} : { stdoutTruncated }),
+					...(stderrTruncated === undefined ? {} : { stderrTruncated }),
 				});
 			} catch (error) {
 				reject(error);

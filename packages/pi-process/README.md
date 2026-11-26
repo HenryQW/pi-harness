@@ -19,7 +19,7 @@ if (result.code !== 0 || result.killed) throw new Error(result.stderr);
 
 `spawnBounded` accepts an optional UTF-8 string on stdin. It strictly decodes stdout and stderr. The default timeout is 30 seconds. Pass `timeoutMs: null` for a process without an elapsed-time limit. Cancellation and output limits still apply.
 
-Each output stream has a 64 KiB limit. Set `stdoutTailBytes` to keep only the end of stdout instead of applying the stdout limit. The retained text has complete UTF-8 characters.
+Each output stream has a 64 KiB limit. Set `stdoutTailBytes` or `stderrTailBytes` to keep only the end of that stream instead of applying its limit. The retained text has complete UTF-8 characters. The result then has `stdoutTruncated` or `stderrTruncated`.
 
 On POSIX systems, cancellation and timeout terminate the child process group. Invalid command, argument, and working-directory values cause failure before a child starts.
 

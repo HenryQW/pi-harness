@@ -29,7 +29,6 @@ async function loadCurrentPullRequest(
 import {
 	applyRulesetBypass,
 	deriveNamedPullRequestVerdict,
-	derivePullRequestNextStep,
 	isRulesetBypassCandidate,
 	type PullRequestTarget,
 } from "../extensions/pr-routing.ts";
@@ -2039,7 +2038,6 @@ test("routes only diagnosable failed GitHub Actions checks through the CI fixer"
 		const loaded = await loadCurrentPullRequest(pi, context);
 		assert.ok(loaded);
 		assert.equal(loaded.conditions.ci, "failure");
-		assert.equal(derivePullRequestNextStep(loaded), "fix-ci");
 	});
 
 	for (const candidate of [
@@ -2059,7 +2057,6 @@ test("routes only diagnosable failed GitHub Actions checks through the CI fixer"
 			const loaded = await loadCurrentPullRequest(pi, context);
 			assert.ok(loaded);
 			assert.equal(loaded.conditions.ci, "failure-blocked");
-			assert.equal(derivePullRequestNextStep(loaded), "none");
 		});
 	}
 });
@@ -2365,7 +2362,6 @@ test("derives the opt-in Codex review gate from reactions, the current-head summ
 	const blocked = await loadCurrentPullRequest(findings.pi, findings.context);
 	assert.equal(blocked?.conditions.unresolvedThreads, 4);
 	assert.deepEqual(blocked?.conditions.codex, { status: "complete", findings: 1 });
-	assert.ok(blocked && derivePullRequestNextStep({ ...blocked, local: { worktree: "clean", head: "equal" } }) === "sweep");
 	assert.match(findings.calls.find(({ args }) => args.some((arg) => arg.includes("reviewThreads")))?.args.join(" ") ?? "", /comments\(first:1\)/);
 
 	const invalid = harness({ codexReactions: [{ content: "eyes", user: "chatgpt-codex-connector[bot]" }] });

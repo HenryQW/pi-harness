@@ -66,10 +66,15 @@ export async function runChecked(
 ): Promise<ExecResult> {
 	const result = await exec(command, args, options);
 	if (result.killed || !allowedCodes.includes(result.code)) {
-		const detail = result.stderr.trim() || result.stdout.trim() || (result.killed ? "command was killed" : `exit code ${result.code}`);
-		throw new Error(`${[command, ...args].join(" ")} failed: ${detail}`);
+		throw new Error(`${[command, ...args].join(" ")} failed: ${failureDetail(result) || (result.killed ? "command was killed" : `exit code ${result.code}`)}`);
 	}
 	return result;
+}
+
+/** The failed command's stderr, else its stdout; names an omitted start when only the end of the stream was kept. */
+export function failureDetail(result: ExecResult): string {
+	const [text, truncated] = result.stderr.trim() ? [result.stderr.trim(), result.stderrTruncated] : [result.stdout.trim(), result.stdoutTruncated];
+	return truncated && text ? `[earlier output omitted] ${text}` : text;
 }
 
 /**
