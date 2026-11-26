@@ -1,6 +1,6 @@
 # `@henryqw/pi-magpie`
 
-See the selected Magpie model, its route, and the served account's quota in the Pi footer. Use `/magpie-quota` for full details.
+Select a Magpie model with `/magpie-model`. See its route and the serving account's quota in the Pi footer.
 
 ## Install
 
@@ -12,6 +12,8 @@ Requires Pi 1.5.0 or later. Keep the selected Magpie gateway running. For a loca
 
 ## Use
 
+Run `/magpie-model` to list all available Magpie models. Add part of a model name or route to filter the list, for example `/magpie-model opus`. The picker can show `claude/opus-5.5 [magpie]` for the `vps/claude/opus-5.5` route. Pi uses the full route for requests and thinking level settings. Use `/model` to see all providers.
+
 For a Magpie model, the footer shows the selected model or group and the last route. When the served account matches one subscription card, it shows that account's lowest remaining percentage and reset time. The percentage is the account's allowance, not a group total. With `pi-footer`, the quota appears above the route.
 
 The footer shows `route unavailable` when it cannot match a route to the session. It shows `account unavailable` when it cannot identify one subscription card for the route. It shows `quota unavailable` when the account or its percentage is unavailable. Use `/magpie-quota` to see all cards and windows.
@@ -22,6 +24,7 @@ The extension warns once when a fresh quota window falls below 25 percent. One w
 
 | Surface | Type | Purpose |
 | --- | --- | --- |
+| `/magpie-model` | command | Select a Magpie model for this session. |
 | `/magpie-quota` | command | Show all cards, windows, balances, and reading times. |
 | `/magpie-quota refresh` | command | Ask Magpie for a new quota report and show it. |
 

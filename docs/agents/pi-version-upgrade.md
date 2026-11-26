@@ -72,8 +72,6 @@ If pnpm rejects the target under `minimumReleaseAge`, add the target to `minimum
 
 Add an audit log entry, even when every decision is `none`. Report decisions, workbench skill changes, the target-run result, untested live or interactive behavior, and npm deprecations pending maintainer action.
 
-If you use the local Magpie picker patch, see [Short Magpie labels in the Pi model picker](pi-model-picker-labels.md) after the upgrade.
-
 ## Audit log
 
 Add one entry per audit: the version range, the date, and each `remove` or `change` decision with its changelog item. `none` items need no entry. The last entry's upper version is `BASE`.
