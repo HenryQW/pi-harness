@@ -156,6 +156,27 @@ test("a busy session keeps the digest pending and an empty result updates it wit
 	assert.equal(app.sent.length, 2);
 });
 
+test("a changed digest sends only new lines, and a new turn with the same text is new", async (t) => {
+	const app = await harness(t);
+	await app.configure();
+	const question = { kind: "question", repo: "Owner/name", number: 5, text: "Which branch?", turn: "a.jsonl:1" };
+	const done = { kind: "done", repo: "Owner/name", number: 7, text: "Added it.", turn: "b.jsonl:4" };
+	const result = (digest: string, items: unknown[]) => () => success({ digest, items, failures: [] });
+	app.respond = result("one", [question]);
+	await app.emit("session_start");
+	app.respond = result("two", [question, done]);
+	await app.advance();
+	app.respond = result("three", [{ ...question, turn: "c.jsonl:9" }, done]);
+	await app.advance();
+	app.respond = result("four", [done]);
+	await app.advance();
+	assert.deepEqual(app.sent.map(([message]) => message.content), [
+		"question Owner/name#5: Which branch?",
+		"done Owner/name#7: Added it.",
+		"question Owner/name#5: Which branch?",
+	]);
+});
+
 test("failed, killed, malformed and invalid ticks notify once per distinct error and keep the last digest", async (t) => {
 	const app = await harness(t);
 	await app.configure();

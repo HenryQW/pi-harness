@@ -119,7 +119,7 @@ export function gateDecision(role: Role, toolName: string, input: Record<string,
 const line = Type.String({ pattern: "^[^\\r\\n]*$" });
 const tickResult = Type.Object({
 	digest: Type.String(),
-	items: Type.Array(Type.Object({ kind: line, repo: line, number: Type.Integer(), text: line })),
+	items: Type.Array(Type.Object({ kind: line, repo: line, number: Type.Integer(), text: line, turn: Type.Optional(line) })),
 	failures: Type.Array(Type.Object({ step: line, repo: line, number: Type.Integer(), message: line })),
 });
 
@@ -174,6 +174,8 @@ export function registerBouncer(pi: ExtensionAPI): void {
 		}
 		const { tick, intervalMs } = config.value;
 		let lastDigest: string | undefined;
+		// The keys of the last accepted result. A wake sends only the lines that are not in it.
+		let seen = new Set<string>();
 		const reported = new Set<string>();
 		const notify = (message: string, detail: string) => {
 			if (session !== current || !ctx.hasUI || reported.has(detail)) return;
@@ -197,15 +199,19 @@ export function registerBouncer(pi: ExtensionAPI): void {
 					return;
 				}
 				if (details.digest === lastDigest) return;
-				if (details.items.length + details.failures.length > 0) {
+				const lines = new Map([
+					...details.items.map(({ kind, repo, number, text, turn }) =>
+						[JSON.stringify([kind, repo, number, text, turn ?? null]), `${kind} ${repo}#${number}: ${text}`] as const),
+					...details.failures.map(({ step, repo, number, message }) =>
+						[JSON.stringify(["failure", step, repo, number, message]), `${step} failed for ${repo}#${number}: ${message}`] as const),
+				]);
+				const fresh = [...lines].filter(([key]) => !seen.has(key)).map(([, text]) => text);
+				if (fresh.length > 0) {
 					if (!ctx.isIdle()) return;
-					const content = [
-						...details.items.map(({ kind, repo, number, text }) => `${kind} ${repo}#${number}: ${text}`),
-						...details.failures.map(({ step, repo, number, message }) => `${step} failed for ${repo}#${number}: ${message}`),
-					].join("\n");
-					pi.sendMessage({ customType: "bouncer", content, display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
+					pi.sendMessage({ customType: "bouncer", content: fresh.join("\n"), display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
 				}
 				lastDigest = details.digest;
+				seen = new Set(lines.keys());
 			} catch (error) {
 				notify("Could not run the Bouncer tick.", String(error));
 			}

@@ -204,12 +204,14 @@ The Bouncer runs the tick immediately and then at each interval. It skips an int
 ```json
 {
   "digest": "new-work",
-  "items": [{"kind": "question", "repo": "Owner/name", "number": 5, "text": "Choose a base branch"}],
+  "items": [{"kind": "question", "repo": "Owner/name", "number": 5, "text": "Choose a base branch", "turn": "session.jsonl:a1b2c3d4"}],
   "failures": [{"step": "read", "repo": "Owner/name", "number": 6, "message": "Could not read the issue"}]
 }
 ```
 
-Use a string digest that changes when the results change. Use integer issue numbers and one-line item and failure text. A changed digest with items or failures starts a turn when Pi is idle. An empty result only records the digest. Tick execution and output errors appear as notifications in interactive sessions.
+Use a string digest that changes when the results change. Use integer issue numbers and one-line item and failure text. The optional `turn` names the reply that an item comes from.
+
+A changed digest starts a turn when Pi is idle and the result has a line that the last accepted result did not have. The turn message holds only those new lines, so a line that stays the same does not wake Pi again. An item with a new `turn` is a new line, also when its text is the same. A result with no new line only records the digest. Tick execution and output errors appear as notifications in interactive sessions.
 
 | Role | Command gate |
 | --- | --- |
