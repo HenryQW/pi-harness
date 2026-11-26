@@ -141,8 +141,9 @@ export function deriveNamedPullRequestVerdict(
 	if (conditions.mergeability === "pending") wait.push("mergeability pending");
 	if (conditions.ci === "running") wait.push("CI running");
 	if (conditions.codex?.status === "running") wait.push("Codex review of the current head not finished");
-	// Running checks usually leave merge policy BLOCKED, so the policy gate applies only without a wait reason.
-	if (conditions.policy === "pending" && !wait.length) block.push("merge policy not satisfied");
+	// Running checks or pending mergeability usually leave merge policy BLOCKED, so the policy gate waits for them.
+	// A running Codex review is not a GitHub check, so it never explains a BLOCKED policy.
+	if (conditions.policy === "pending" && conditions.ci !== "running" && conditions.mergeability !== "pending") block.push("merge policy not satisfied");
 	if (block.length) return { verdict: "block", reasons: [...block, ...wait] };
 	return wait.length ? { verdict: "wait", reasons: wait } : { verdict: "ready", reasons: [] };
 }

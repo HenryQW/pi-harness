@@ -1381,7 +1381,7 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_git_pr",
 		label: "Create or Update PR",
-		description: "Start a guarded PR workflow in this session. Default scope publication permits only authorized creation or local publication. Scope update-branch requires an explicit conflict/base-update order and permits only bounded refresh, one base update and its checked publication, then stop. This scope never creates, links, syncs, publishes unrelated local work, repairs feedback/CI, or merges the PR. Scope lifecycle requires authorization to bring the PR to merge-ready: it also runs feedback sweeps, CI repair, base updates, and CI/review waits, then stops with a reason. No scope merges the PR. base must match the current PR or creation base. allowUpstream needs explicit repository-local upstream consent and is not for update-branch. Read git-pr guidance first.",
+		description: "Start a guarded PR workflow in this session. Default scope publication permits only authorized creation or local publication. Scope update-branch requires an explicit conflict/base-update order and permits only bounded refresh, one base update and its checked publication, then stop. This scope never creates, links, syncs, publishes unrelated local work, repairs feedback/CI, or merges the PR. Scope lifecycle requires authorization to bring the PR to merge-ready: it also runs feedback sweeps, CI repair, base updates, and CI/review waits, then stops with a reason. Without the agentMerge setting, no scope merges the PR. With agentMerge, scope lifecycle merges a ready PR without confirmation. base must match the current PR or creation base. allowUpstream needs explicit repository-local upstream consent and is not for update-branch. Read git-pr guidance first.",
 		parameters: PublicationParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
@@ -1442,7 +1442,7 @@ export default function pullRequestExtension(
 	pi.registerTool({
 		name: "pi_pr_merge",
 		label: "Merge Named PR",
-		description: "Merge one ready pull request in this repository's origin by number at headOid from pi_pr_status, after the user confirms in this session. Refuses when the PR is not ready, its head changed, or no interactive UI is available. The confirmation names any ruleset bypass that the merge uses. Never runs local checkout checks.",
+		description: "Merge one ready pull request in this repository's origin by number at headOid from pi_pr_status, after the user confirms in this session. With the agentMerge setting, it merges a ready PR without confirmation and without an interactive UI. Refuses when the PR is not ready, its head changed, or confirmation is needed and no interactive UI is available. The confirmation names any ruleset bypass that the merge uses. Never runs local checkout checks.",
 		parameters: NamedMergeParameters,
 		executionMode: "sequential",
 		exposure: "model-only",
@@ -1456,8 +1456,9 @@ export default function pullRequestExtension(
 			const refused = (reason: string) => toolResult({ merged: false, reason, status });
 			if (status.verdict !== "ready") return refused(`PR #${current.number} is not ready`);
 			if (current.head.oid !== raw.headOid) return refused(`PR #${current.number} head is ${current.head.oid}, not the requested ${raw.headOid}`);
-			if (!ctx.hasUI) return refused(`PR #${current.number} merge needs confirmation in an interactive session`);
-			const confirmed = await ctx.ui.confirm(
+			if (!policy.agentMerge && !ctx.hasUI) return refused(`PR #${current.number} merge needs confirmation in an interactive session`);
+			// agentMerge replaces the confirmation; the fresh readiness check below still runs.
+			const confirmed = policy.agentMerge || await ctx.ui.confirm(
 				`Merge PR #${current.number}?`,
 				`${current.url.href}\nHead ${current.head.oid.slice(0, 12)} into ${current.base.ref} with ${policy.mergeMethod}.` +
 					(status.bypass ? `\nUses the ruleset bypass for ruleset ${status.bypass.rulesets.map(({ id }) => id).join(", ")} (${status.bypass.reason}).` : ""),

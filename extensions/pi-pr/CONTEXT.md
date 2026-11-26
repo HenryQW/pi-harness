@@ -99,7 +99,7 @@ An explicit user conflict/base-update order that permits bounded refresh and one
 _Avoid_: Full lifecycle authorization, publication-only scope
 
 **Lifecycle authority**:
-A user instruction to bring the pull request to merge-ready. It permits each PR next step except the merge, in a session with or without a user interface, and stops with a reason. The merge always needs its own confirmation.
+A user instruction to bring the pull request to merge-ready. It permits each PR next step except the merge, in a session with or without a user interface, and stops with a reason. The merge needs its own confirmation unless `agentMerge` is set.
 _Avoid_: Merge authorization, automatic merge
 
 **Live conflict context**:
@@ -115,7 +115,7 @@ Evidence-based repair of a failed GitHub Actions job on the exact PR head, with 
 _Avoid_: Unbounded CI watcher, automatic retry, rerun loop
 
 **PR merge workflow**:
-A merge of the exact confirmed PR head after explicit user confirmation and a fresh readiness check. It does not enable auto-merge or include branch or worktree cleanup.
+A merge of the exact confirmed PR head after explicit user confirmation, or with `agentMerge` without it, and a fresh readiness check. It does not enable auto-merge or include branch or worktree cleanup.
 _Avoid_: Unchecked merge, auto-merge, branch cleanup, worktree completion
 
 ### Conflict resolution

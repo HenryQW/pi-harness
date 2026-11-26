@@ -4,8 +4,8 @@ import { createConfigStore, field, parsers } from "@henryqw/pi-config-store";
 export type PrCheck = { command: string; args: string[] };
 export type MergeMethod = "squash" | "merge" | "rebase";
 const MERGE_METHODS: readonly MergeMethod[] = ["squash", "merge", "rebase"];
-export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod; codexReview: boolean };
-export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash", codexReview: false };
+export type PrPolicy = { maxPublicationCycles: number; maxRepairAttempts: number; ciPollSeconds: number; ciWaitMinutes: number; checkTimeoutMinutes: number; mergeMethod: MergeMethod; codexReview: boolean; agentMerge: boolean };
+export const DEFAULT_PR_POLICY: PrPolicy = { maxPublicationCycles: 3, maxRepairAttempts: 3, ciPollSeconds: 30, ciWaitMinutes: 10, checkTimeoutMinutes: 10, mergeMethod: "squash", codexReview: false, agentMerge: false };
 /** Node replaces a timer delay above 2^31-1 ms with 1 ms, which would turn a long poll into a tight loop. */
 const MAX_CI_POLL_SECONDS = 2_147_483;
 const MAX_CHECK_TIMEOUT_MINUTES = 35_791;
@@ -25,6 +25,8 @@ export function createPrPolicyStore(agentDir?: string) {
 			checkTimeoutMinutes: field(parsers.integer({ min: 1, max: MAX_CHECK_TIMEOUT_MINUTES }), defaults.checkTimeoutMinutes),
 			mergeMethod: field(parsers.oneOf(MERGE_METHODS), defaults.mergeMethod),
 			codexReview: field(parsers.boolean(), defaults.codexReview),
+			// Lets a model-started entry merge a ready PR without the user's confirmation; `/pr` still asks.
+			agentMerge: field(parsers.boolean(), defaults.agentMerge),
 		},
 	});
 }

@@ -40,7 +40,7 @@ type WorkflowLaunchAction = "prepare" | "inspect" | "rebase" | "start" | "resume
 type WorkflowReservationResult = { runId: string; action: WorkflowLaunchAction };
 
 type PrCommandPi = Pick<ExtensionAPI, "exec" | "getCommands" | "sendUserMessage">;
-/** A model-started entry. Scope `lifecycle` runs every `/pr` route except the merge. */
+/** A model-started entry. Scope `lifecycle` runs every `/pr` route except the merge, which it runs only with `agentMerge`. */
 export type PublicationRequest = { base?: string; allowUpstream: boolean; scope?: "publication" | "update-branch" | "lifecycle" };
 
 export type PrCommandInvocation = ((nextStep: NextStep) => void) & {
@@ -151,7 +151,8 @@ function noActionNotification(pullRequest: CurrentPullRequest): { message: strin
 		return { message: `PR #${pullRequest.number} has a failed CI check that cannot run the CI fix workflow`, type: "warning" };
 	}
 	if (pullRequest.conditions.ci === "running") {
-		return { message: `PR #${pullRequest.number} is waiting for CI`, type: "warning" };
+		// Routing stops instead of waiting when a review is also pending, so name both.
+		return { message: `PR #${pullRequest.number} is waiting for ${pullRequest.conditions.review === "pending" ? "CI and review" : "CI"}`, type: "warning" };
 	}
 	if (pullRequest.conditions.review === "pending") {
 		return { message: `PR #${pullRequest.number} is waiting for review`, type: "warning" };
@@ -317,8 +318,11 @@ export function createPrCommandHandler(
 			if ((nextStep === "link-branch" || nextStep === "create" && discovery.kind === "none" && discovery.creationTarget.provenance === "inferred") && !publication.allowUpstream) {
 				throw new Error("Publication needs repository-local upstream configuration; ask for permission, then set allowUpstream: true");
 			}
-			if (!lifecycle && !["create", "publish-work", "sync-local", "link-branch", "none"].includes(nextStep)) {
-				nextStep = stop(`Create/update authorization stops before ${nextStep}${discovery.kind === "current" ? `: ${discovery.pullRequest.url.href}` : ""}; the lifecycle scope or /pr continues only when the user authorized that work`, "info");
+			if (!lifecycle && !["create", "publish-work", "sync-local", "link-branch", "blocked", "none"].includes(nextStep)) {
+				const reason = `Create/update authorization stops before ${nextStep}${discovery.kind === "current" ? `: ${discovery.pullRequest.url.href}` : ""}; the lifecycle scope or /pr continues only when the user authorized that work`;
+				// Return here: the generic no-action notice below would add a second, misleading stop reason.
+				onRouteResolved("none");
+				return stop(reason, "info");
 			}
 		}
 		onRouteResolved(nextStep);
@@ -368,7 +372,8 @@ export function createPrCommandHandler(
 			}
 			await delay(refreshDelayMs, undefined, { signal: ctx.signal });
 			onRouteResolved.assertCurrent();
-			return await handle("", ctx, onRouteResolved, undefined, refreshes + 1);
+			// Keep the wait state, so a wait interrupted by pending mergeability does not announce itself again.
+			return await handle("", ctx, onRouteResolved, undefined, refreshes + 1, waiting);
 		}
 		if (nextStep === "wait-ci" || nextStep === "wait-review") {
 			if (discovery.kind !== "current") throw new Error("/pr wait failed: pull request is unavailable");
@@ -396,8 +401,15 @@ export function createPrCommandHandler(
 			if (discovery.kind !== "current") throw new Error("/pr merge failed: pull request is unavailable");
 			const current = discovery.pullRequest;
 			const mergeMethod = onRouteResolved.run.policy.mergeMethod;
-			// A model-started lifecycle never merges; the user confirms a merge through /pr or pi_pr_merge.
-			if (lifecycle) return stop(`PR #${current.number} is merge-ready at head ${current.head.oid}; the lifecycle scope never merges, and a merge needs the user's confirmation`, "info");
+			// A model-started lifecycle merges only with agentMerge; otherwise the user confirms through /pr or pi_pr_merge.
+			if (lifecycle) {
+				if (!onRouteResolved.run.policy.agentMerge) {
+					return stop(`PR #${current.number} is merge-ready at head ${current.head.oid}; the lifecycle scope merges only with agentMerge, so a merge needs the user's confirmation`, "info");
+				}
+				await mergePullRequest(pi, ctx, current, load, needsFeedback, mergeMethod);
+				stop(`PR #${current.number} merged at head ${current.head.oid} into ${current.base.ref} with ${mergeMethod}, as agentMerge permits`, "info");
+				return "merge";
+			}
 			if (!ctx.hasUI) return stop(`PR #${current.number} is merge-ready; merge needs confirmation in an interactive session`, "info");
 			const confirmed = await ctx.ui.confirm(
 				`Merge PR #${current.number}?`,

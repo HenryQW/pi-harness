@@ -18,7 +18,7 @@ test("PR policy loads valid limits and replaces each invalid or unknown key with
 	};
 	assert.deepEqual(store.loadSync(), { status: "ok", source: "missing", value: DEFAULT_PR_POLICY, issues: [] });
 	mkdirSync(dirname(store.path), { recursive: true });
-	for (const policy of [{ maxPublicationCycles: 1 }, { mergeMethod: "rebase" }, { ciPollSeconds: 2147483 }, { checkTimeoutMinutes: 35791 }, { codexReview: true }, { ciWaitMinutes: 0, ciPollSeconds: 5 }]) {
+	for (const policy of [{ maxPublicationCycles: 1 }, { mergeMethod: "rebase" }, { ciPollSeconds: 2147483 }, { checkTimeoutMinutes: 35791 }, { codexReview: true }, { agentMerge: true }, { ciWaitMinutes: 0, ciPollSeconds: 5 }]) {
 		assert.deepEqual(load(JSON.stringify(policy)), { value: { ...DEFAULT_PR_POLICY, ...policy }, issues: [] });
 	}
 	for (const [key, value] of [["maxRepairAttempts", 0], ["ciPollSeconds", 0], ["ciPollSeconds", 2147484], ["ciWaitMinutes", -1], ["checkTimeoutMinutes", 0], ["checkTimeoutMinutes", 35792], ["mergeMethod", "SQUASH"], ["mergeMethod", 1], ["maxPublicationCycles", 1.5], ["maxRepairAttempts", "3"], ["codexReview", "true"], ["codexReview", null]] as const) {

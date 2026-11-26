@@ -1725,6 +1725,43 @@ test("named PR merge requires a ready exact head, UI, and confirmation before th
 	assert.ok(app.execCalls[1]!.args.includes(`expectedHeadOid=${head}`));
 });
 
+test("named PR merge with agentMerge merges a ready bypass PR without UI or confirmation, and still refuses a not-ready PR", async () => {
+	const current = currentPullRequest();
+	let codexRunning = true;
+	const app = harness({
+		async load() { return { kind: "inactive" }; },
+		policy: { agentMerge: true },
+		async loadNamedPullRequest() {
+			return {
+				id: current.id, number: 42, url: current.url, host: "github.com", lifecycle: "open",
+				conditions: { ...current.conditions, review: "pending", policy: "pending", ...(codexRunning ? { codex: { status: "running", findings: 0 } } as const : {}) },
+				base: current.base, head: current.head, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", reviewDecision: "REVIEW_REQUIRED",
+				checks: [{ name: "test", outcome: "success" }], unresolvedThreads: { blocking: 0, other: 0 },
+			};
+		},
+		async readRulesetBypass() {
+			return {
+				rulesets: [{ id: 25064846, name: "main", currentUserCanBypass: "pull_requests_only", allowedMergeMethods: ["squash"], unverifiedRules: [] }],
+				requiredChecks: [{ context: "test", integrationId: 15368, outcome: "success" }], classicProtection: false, ref: "main",
+			};
+		},
+		exec(command, args) {
+			if (command !== "gh" || !args.some((arg) => arg.includes("mergePullRequest("))) throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+			return execResult(JSON.stringify({ data: { mergePullRequest: { pullRequest: { id: current.id, state: "MERGED" } } } }));
+		},
+	});
+	const base = app.context();
+	const ctx = { ...base, hasUI: false, ui: { ...base.ui, async confirm() { throw new Error("agentMerge must not ask"); } } } as ExtensionContext;
+	const waiting = (await app.callTool("pi_pr_merge", { number: 42, headOid: current.head.oid }, ctx)).details as { merged: boolean; reason: string };
+	assert.deepEqual([waiting.merged, waiting.reason], [false, "PR #42 is not ready"]);
+	assert.equal(app.execCalls.length, 0);
+	codexRunning = false;
+	const merged = (await app.callTool("pi_pr_merge", { number: 42, headOid: current.head.oid }, ctx)).details as { merged: boolean };
+	assert.equal(merged.merged, true);
+	assert.equal(app.execCalls.length, 1);
+	assert.ok(app.execCalls[0]!.args.includes(`expectedHeadOid=${current.head.oid}`));
+});
+
 test("feedback record, commit, resolution, and finalization require no UI confirmation", async () => {
 	const calls: string[] = [];
 	const guard = { epoch: 1, runId: "sweep", generation: 1, fingerprint: "a".repeat(64) };
@@ -3759,6 +3796,19 @@ test("agent PR entry checks base and upstream consent before reservation", async
 	}
 });
 
+test("agent publication entry reports a discovery blocker, not a scope stop", async () => {
+	const app = harness({ load: async () => ({ kind: "blocked", issue: { kind: "target-invalid" } }) as never, useDefaultCommandHandler: true,
+		canonicalWorktree: async () => "/repo" });
+	const ctx = app.context();
+	try {
+		await app.start(ctx);
+		const details = (await app.callTool("pi_git_pr", {}, ctx)).details as { nextStep: string; blocker?: string; reason?: string };
+		assert.equal(details.nextStep, "blocked");
+		assert.ok(details.blocker);
+		assert.doesNotMatch(details.reason ?? "", /authorization stops before/);
+	} finally { await app.shutdown(ctx); }
+});
+
 for (const scenario of ["merge", "fix-ci", "update-branch", "sweep-recovery"] as const) test(`agent PR entry stops before ${scenario}`, async () => {
 	const pr = currentPullRequest({ conditions: { ci: scenario === "fix-ci" ? "failure" : "success", conflict: scenario === "update-branch" } });
 	if (scenario === "sweep-recovery") pr.local.worktree = "dirty";
@@ -3777,7 +3827,7 @@ for (const scenario of ["merge", "fix-ci", "update-branch", "sweep-recovery"] as
 		const { reason, ...rest } = result.details as { reason: string };
 		assert.deepEqual(rest, { nextStep: "none", url: pr.url.href });
 		assert.ok(reason.startsWith(`Create/update authorization stops before ${scenario === "sweep-recovery" ? "sweep" : scenario}: `), reason);
-		assert.match(app.notifications[0]!.message, /authorization stops before/);
+		assert.deepEqual(app.notifications.map(({ message }) => message), [reason], "one stop notice, no generic no-action warning");
 		assert.equal(app.execCalls.length, 0);
 	} finally { await app.shutdown(ctx); }
 });
@@ -3813,7 +3863,7 @@ test("lifecycle scope repairs CI in a model-started run, then stops before the m
 		const stopped = await app.beforeSettle(ctx) as { continue: boolean; entries: Array<{ customType: string; content: string }> };
 		assert.equal(stopped.continue, true);
 		assert.deepEqual(stopped.entries.map(({ customType }) => customType), ["pi-pr-stop"]);
-		assert.match(stopped.entries[0]!.content, /stopped after fix-ci: PR #42 is merge-ready at head b{40}; the lifecycle scope never merges/);
+		assert.match(stopped.entries[0]!.content, /stopped after fix-ci: PR #42 is merge-ready at head b{40}; the lifecycle scope merges only with agentMerge/);
 
 		// That turn can start a fresh entry; on the ready PR it returns the same reason in the tool result.
 		const ready = (await app.callTool("pi_git_pr", { scope: "lifecycle" }, ctx)).details as { nextStep: string; reason: string };
