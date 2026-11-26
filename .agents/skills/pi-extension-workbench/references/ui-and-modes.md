@@ -69,7 +69,12 @@ flowchart LR
   B --> C[Supported terminal shows blocked status]
 ```
 
-Standard dialogs already report this status. Prefer native dialog handling over
+Standard dialogs already report this status: `confirm()` reports `permission`;
+`select()` and `input()` report `question`. In Pi 1.6.1 and later, pass
+`blockedKind` in their options when the dialog asks for something else, for
+example `ctx.ui.select(title, options, { blockedKind: "permission" })` for a
+select that approves an action. Prefer a standard dialog with `blockedKind` to a
+custom component that only changes the kind. Prefer native dialog handling over
 custom stacking or editor-replacement workarounds. This terminal status does not
 replace application-specific event-bus notifications or authorization checks;
 verify their consumers before removing a bridge.
