@@ -270,8 +270,9 @@ test("shows the routed physical model under a virtual selection", async () => {
 	footer.dispose();
 });
 
-test("shows the selected model with its provider", async () => {
+test("shows provider names and shortens direct Magpie relay labels", async () => {
 	const { start } = setupFooter();
+	const statuses = new Map<string, string>();
 	let model: { id: string; provider: string } | undefined = { id: "deepseek-v4.1-flash", provider: "opencode-go" };
 	const factory = await start({
 		mode: "tui",
@@ -284,7 +285,7 @@ test("shows the selected model with its provider", async () => {
 	const footer = factory(
 		{ requestRender() {} },
 		{ fg: (_color, text) => text },
-		{ getGitBranch: () => undefined, getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
+		{ getGitBranch: () => undefined, getExtensionStatuses: () => statuses, onBranchChange: () => () => {} },
 	);
 	const modelText = () => stripTerminalSequences(footer.render(100)[1]!).replace(/^.* {2}/, "");
 	assert.equal(modelText(), "opencode-go/deepseek-v4.1-flash • high");
@@ -293,6 +294,17 @@ test("shows the selected model with its provider", async () => {
 	assert.equal(modelText(), "deepseek/deepseek-v4.1-flash • high");
 	model = undefined;
 	assert.equal(modelText(), "no-model • high");
+	model = { provider: "magpie", id: "vps/claude/opus-5.5" };
+	assert.equal(modelText(), "claude/opus-5.5 • high");
+	statuses.set("magpie-model", "route?");
+	assert.equal(modelText(), "claude/opus-5.5 · route? • high");
+	statuses.set("magpie-model", "vps/claude/opus-5.5 → claude/sonnet-5.5 fallback(1)");
+	assert.equal(modelText(), "claude/opus-5.5 → claude/sonnet-5.5 fallback(1) • high");
+	statuses.set("magpie-model", "magpie/vps/claude/opus-5.5 #3");
+	assert.equal(modelText(), "claude/opus-5.5 #3 • high");
+	statuses.clear();
+	model = { provider: "magpie", id: "vps/group/fast" };
+	assert.equal(modelText(), "magpie/vps/group/fast • high");
 	footer.dispose();
 });
 
