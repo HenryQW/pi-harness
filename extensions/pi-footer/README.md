@@ -1,6 +1,6 @@
 # `@henryqw/pi-footer`
 
-Keep footer identity, model usage, agent-work time, and extension status visible in Pi. Enable the footer and open commands independently.
+Keep footer identity, model usage, agent-work time, and extension status visible in Pi. Fold long tool rows so agent replies stay on screen. Enable the footer, tool rows, and open commands independently.
 
 ![Pi footer showing repository, branch, quota, usage, model, and extension status](./example.png)
 
@@ -10,7 +10,7 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 pi install npm:@henryqw/pi-footer
 ```
 
-Both entry points load by default. To load only one, keep `extensions/footer.ts` (the footer) or `extensions/open.ts` (the open commands) with `pi config` or the package `extensions` filter in `settings.json`.
+All three entry points load by default. To load only some, keep `extensions/footer.ts` (the footer), `extensions/tool-rows.ts` (tool rows), or `extensions/open.ts` (the open commands) with `pi config` or the package `extensions` filter in `settings.json`.
 
 ## Works with
 
@@ -30,6 +30,7 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 | Footer | ui | Shows footer identity, usage, model, agent-work time, and extension statuses to the user. |
 | `/open` | command | Opens the current directory for the user: runs `<command> <current-working-directory>`. |
 | `/set-open-in <command>` | command | Sets the user's open command, such as `cursor --reuse-window`. |
+| `/tool-rows [group\|line\|off]` | command | Sets and saves the tool-row mode. Without an argument, shows the current mode. |
 
 ### Footer lines
 
@@ -46,6 +47,20 @@ The model label includes its provider to distinguish models that several provide
 Virtual models show the latest successful physical model and thinking level after an arrow: `router/auto • high → openai-codex/gpt-5.6-luna • medium`.
 
 Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after completion. Middle dots separate statuses.
+
+### Tool rows
+
+Tool rows fold only in the TUI. The default mode is `off`, so the rows stay as Pi draws them.
+
+| Mode | Collapsed tool rows |
+| --- | --- |
+| `group` | One summary line for all tool calls between a user message and the next agent text, such as `▸ 4 tools: bash ×3, read · skills: git-pr · ↑ 1.5k ↓ 340 · 1 failed`. The `Thinking...` line of a hidden thinking block also disappears. |
+| `line` | The first line of each finished call. A running or failed call keeps its full row. |
+| `off` | Pi's own rows. |
+
+The summary line shows the skills whose `SKILL.md` file the agent read, and the input and output tokens of the messages that made the calls. The footer counts tokens the same way. A running call shows `running <tool>`.
+
+Press the tool-expansion key (`app.tools.expand`, `Ctrl+O` by default) to show every row in full. To hide thinking blocks, set `hideThinkingBlock` in Pi settings or press `Ctrl+T`.
 
 ### Git state
 
@@ -70,11 +85,13 @@ Package-owned paths:
 
 - `~/.pi/agent/config/pi-footer/config.json`: footer colors.
 - `~/.pi/agent/config/pi-open-in/config.json`: open command.
+- `~/.pi/agent/config/pi-tool-rows/config.json`: tool-row mode.
 
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
 | `colors` | Footer-owned colors by role. | Object mapping roles to theme tokens, `#RGB`, `#RRGGBB`, `oklch(...)`, `okhsl(...)`, or ANSI indices `0` to `255`. | Built-in colors. |
 | `command` | Command for `/open`. | Non-empty string. | `"code"` |
+| `mode` | Tool-row mode. | `"group"`, `"line"`, or `"off"`. | `"off"` |
 
 Colors load at session start; run `/reload` after edits. A role with a missing or invalid color keeps its built-in color; other roles are not affected. A file problem gives all built-in colors. The footer never writes the colors file. For the shared rules, see [Config files](https://pi.henry.wang/overview#config-files).
 
@@ -115,6 +132,10 @@ Neither function shows notifications. For `code -n` and `code --new-window`, `co
 ## Limits and recovery
 
 Open commands split on whitespace. Quoting and tokens with spaces are unsupported; use a wrapper script for executable paths with spaces.
+
+The tool-row mode loads at session start. Only `/tool-rows` writes the file. An invalid `mode` or a file problem gives `off`, and `/tool-rows` refuses to write until you fix the file.
+
+Tool rows replace Pi's row frame with an identical frame, so a folded row can take no lines. Another extension that also changes tool rows can conflict; set `off` to restore Pi's rows.
 
 `/open` reads config on each run. Only `/set-open-in` writes the file. An invalid `command` or a file problem uses `code`, and `/open` reports the problem. Fix the file or run `/set-open-in <command>`.
 

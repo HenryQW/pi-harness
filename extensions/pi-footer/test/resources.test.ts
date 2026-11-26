@@ -6,11 +6,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
-test("native package filters load the footer and open commands independently", async (t) => {
+test("native package filters load the footer, tool rows, and open commands independently", async (t) => {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-footer-resources-"));
 	t.after(() => rm(agentDir, { recursive: true, force: true }));
 	const source = fileURLToPath(new URL("../", import.meta.url));
-	for (const selected of [undefined, "open", "footer"]) {
+	for (const selected of [undefined, "open", "footer", "tool-rows"]) {
 		const loader = new DefaultResourceLoader({
 			cwd: agentDir,
 			agentDir,
@@ -26,8 +26,8 @@ test("native package filters load the footer and open commands independently", a
 		const { extensions, errors } = loader.getExtensions();
 		assert.deepEqual(errors, []);
 		assert.deepEqual(extensions.map((extension) => basename(extension.path)).sort(),
-			selected ? [`${selected}.ts`] : ["footer.ts", "open.ts"]);
+			selected ? [`${selected}.ts`] : ["footer.ts", "open.ts", "tool-rows.ts"]);
 		assert.deepEqual(extensions.flatMap((extension) => [...extension.commands.keys()]).sort(),
-			selected === "footer" ? [] : ["open", "set-open-in"]);
+			{ footer: [], open: ["open", "set-open-in"], "tool-rows": ["tool-rows"] }[selected ?? ""] ?? ["open", "set-open-in", "tool-rows"]);
 	}
 });
