@@ -1,7 +1,7 @@
 {
   "name": "@henryqw/pi-magpie",
-  "version": "0.3.1",
-  "description": "Show Magpie provider quota in Pi.",
+  "version": "0.4.0",
+  "description": "Select Magpie models and show provider quota in Pi.",
   "keywords": ["pi-package", "pi", "magpie", "quota"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit --allowImportingTsExtensions --target ES2023 --module NodeNext --moduleResolution NodeNext --skipLibCheck extensions/*.ts test/*.test.ts",
     "pack:check": "npm pack --dry-run"
   },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "^1.5.0" },
-  "devDependencies": { "@earendil-works/pi-coding-agent": "1.5.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "^1.5.0", "@earendil-works/pi-tui": "^1.5.0" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "1.5.0", "@earendil-works/pi-tui": "1.5.0" },
   "repository": { "type": "git", "url": "git+https://github.com/HenryQW/pi-harness.git", "directory": "extensions/pi-magpie" },
   "bugs": { "url": "https://github.com/HenryQW/pi-harness/issues" },
   "publishConfig": { "access": "public" },

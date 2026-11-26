@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import modelPicker from "./model-picker.ts";
 
 const instanceId = randomUUID();
 export const sessionKey = (session: string) => `${session}-${instanceId}`;
@@ -307,6 +308,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("magpie-model", undefined);
 		}
 	});
+	modelPicker(pi);
 	pi.registerCommand("magpie-quota", {
 		description: "Show Magpie quota details or refresh them",
 		handler: async (args, ctx) => {

@@ -1,6 +1,6 @@
 # Pi Magpie
 
-Pi Magpie shows readings from Magpie in a Pi session.
+Pi Magpie lets users select Magpie models and see quota readings in a Pi session.
 
 ## Language
 

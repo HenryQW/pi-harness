@@ -22,7 +22,7 @@ function harness(exec?: (...args: any[]) => any) {
 	let command!: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const statuses: (string | undefined)[] = [], models: (string | undefined)[] = [], notices: string[] = [];
 	const ctx = { hasUI: true, model: { provider: "magpie", id: "auto/main", baseUrl: "http://127.0.0.1:3425/v1" }, sessionManager: { getSessionId: () => "pi-session" }, ui: { setStatus: (key: string, value?: string) => { assert.ok(key === "magpie-quota" || key === "magpie-model"); (key === "magpie-quota" ? statuses : models).push(value); }, notify: (value: string) => notices.push(value) } } as unknown as ExtensionContext;
-	extension({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (_: string, options: { handler: typeof command }) => { command = options.handler; }, exec: exec ?? (async () => ({ code: 0, stdout: JSON.stringify({ running: true, url: "http://127.0.0.1:3425" }) })) } as unknown as ExtensionAPI);
+	extension({ on: (name: string, handler: Function) => events.set(name, handler), registerCommand: (name: string, options: { handler: typeof command }) => { if (name === "magpie-quota") command = options.handler; }, exec: exec ?? (async () => ({ code: 0, stdout: JSON.stringify({ running: true, url: "http://127.0.0.1:3425" }) })) } as unknown as ExtensionAPI);
 	return { events, command: (args: string) => command(args, ctx), ctx, statuses, models, notices };
 }
 const route = { id: 123, asked: "auto/main", model: "codex/gpt", served: "gpt-v2", tries: [{ model: "other/model", fail: "secret" }, { model: "codex/gpt" }], done: true, status: 200 };
