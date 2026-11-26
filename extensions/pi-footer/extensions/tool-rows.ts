@@ -1,7 +1,7 @@
-import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Text, stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
-import { formatTokens } from "./footer.ts";
+import { formatTokens } from "./format-tokens.ts";
 import { createToolRowsConfigStore, TOOL_ROW_MODES, type ToolRowMode } from "./tool-rows-config.ts";
 
 const FALLBACK_PREVIEW_LINES = 10;
@@ -21,9 +21,6 @@ class Framed extends Container {
 	}
 }
 
-// Visible text only: drops SGR colors and OSC 8 links.
-const stripAnsi = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
-
 class Clip implements Component {
 	readonly inner: Component;
 	constructor(inner: Component) {
@@ -31,7 +28,7 @@ class Clip implements Component {
 	}
 	render(width: number): string[] {
 		// Some calls (edit) start with a blank line, so keep the first line that has visible text.
-		const lines = this.inner.render(width).filter((line) => visibleWidth(line.trimEnd()) > 0 && stripAnsi(line).trim());
+		const lines = this.inner.render(width).filter((line) => stripTerminalSequences(line).trim());
 		if (lines.length === 0) return [];
 		// Drop the background padding before the marker, so it sits after the text and not at the right edge.
 		const first = lines[0]!.replace(/ +((?:\x1b\[[0-9;]*m)*)$/, "$1");
@@ -42,23 +39,34 @@ class Clip implements Component {
 	}
 }
 
-class Hidden extends Container {}
+class Hidden implements Component {
+	readonly inner: Component | undefined;
+	constructor(inner?: Component) {
+		this.inner = inner;
+	}
+	render(): string[] {
+		return [];
+	}
+	invalidate(): void {
+		this.inner?.invalidate();
+	}
+}
 
 class Summary implements Component {
-	readonly text: string;
-	constructor(text: string) {
+	readonly text: () => string;
+	constructor(text: () => string) {
 		this.text = text;
 	}
 	render(width: number): string[] {
-		return [truncateToWidth(this.text, width, "…")];
+		return [truncateToWidth(this.text(), width, "…")];
 	}
 	invalidate(): void {}
 }
 
 function unwrap(component: Component | undefined): Component | undefined {
 	let current = component;
-	while (current instanceof Framed || current instanceof Clip) current = current.inner;
-	return current instanceof Hidden || current instanceof Summary ? undefined : current;
+	while (current instanceof Framed || current instanceof Clip || current instanceof Hidden) current = current.inner;
+	return current instanceof Summary ? undefined : current;
 }
 
 type RowState = "running" | "done" | "failed";
@@ -70,8 +78,6 @@ interface Group {
 	/** Token usage of the assistant messages that made the calls, counted as the footer counts it. */
 	input: number;
 	output: number;
-	refresh?: () => void;
-	queued: boolean;
 }
 
 type Theme = {
@@ -81,7 +87,7 @@ type Theme = {
 };
 type KeyHint = (keybinding: "app.tools.expand", description: string) => string;
 
-function summaryLine(group: Group, theme: Theme, pad: number, keyHint: KeyHint): Summary {
+function summaryLine(group: Group, theme: Theme, pad: number, keyHint: KeyHint): string {
 	const rows = [...group.rows.values()];
 	const counts = new Map<string, number>();
 	for (const row of rows) counts.set(row.name, (counts.get(row.name) ?? 0) + 1);
@@ -94,7 +100,7 @@ function summaryLine(group: Group, theme: Theme, pad: number, keyHint: KeyHint):
 	if (failed > 0) text += theme.fg("error", ` · ${failed} failed`);
 	if (running) text += theme.fg("accent", ` · running ${running.name}`);
 	text += theme.fg("dim", " · ") + keyHint("app.tools.expand", "to expand");
-	return new Summary(" ".repeat(pad) + text);
+	return " ".repeat(pad) + text;
 }
 
 function skillName(toolName: string, args: unknown): string | undefined {
@@ -103,7 +109,11 @@ function skillName(toolName: string, args: unknown): string | undefined {
 }
 
 type Usage = { input: number; output: number };
-type AssistantContent = ReadonlyArray<{ type: string; id?: string; name?: string; arguments?: unknown }>;
+type AssistantContent = ReadonlyArray<
+	| { type: "text"; text: string }
+	| { type: "toolCall"; id: string; name: string; arguments: unknown }
+	| { type: "thinking" }
+>;
 
 function resultText(result: { content?: ReadonlyArray<{ type: string; text?: string }> }): string {
 	return (result.content ?? [])
@@ -116,11 +126,16 @@ function resultText(result: { content?: ReadonlyArray<{ type: string; text?: str
 export default function toolRowsExtension(pi: ExtensionAPI): void {
 	const store = createToolRowsConfigStore();
 	registerConfigReporting(pi, [store]);
-	let mode: ToolRowMode = "off";
+	// Pi can resolve renderers before session_start while it reloads the transcript.
+	const loaded = store.loadSync();
+	let mode: ToolRowMode = loaded.status === "ok" ? loaded.value.mode : "off";
+	let pendingCalls = mode === "group" ? new Map<string, () => void>() : undefined;
 
-	const newGroup = (): Group => ({ rows: new Map(), skills: new Set(), input: 0, output: 0, queued: false });
+	const newGroup = (): Group => ({ rows: new Map(), skills: new Set(), input: 0, output: 0 });
 	const groupOf = new Map<string, Group>();
 	let current = newGroup();
+	let manager: ExtensionContext["sessionManager"] | undefined;
+	let observedLeaf: string | null = null;
 
 	const join = (id: string, name: string, args: unknown): Group => {
 		let group = groupOf.get(id);
@@ -135,74 +150,103 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 	};
 
 	// A message's usage counts once, in the group of its first tool call; a reply without tools counts nowhere.
-	const count = (content: AssistantContent, usage: Usage | undefined): Group | undefined => {
+	const recordMessage = (content: AssistantContent, usage: Usage | undefined, restored = false) => {
 		let first: Group | undefined;
 		for (const part of content) {
-			if (part.type === "toolCall" && part.id && part.name) first ??= join(part.id, part.name, part.arguments);
+			if (part.type === "text" && restored && part.text.trim()) current = newGroup();
+			if (part.type !== "toolCall") continue;
+			const group = join(part.id, part.name, part.arguments);
+			first ??= group;
 		}
 		if (first && usage) {
 			first.input += usage.input;
 			first.output += usage.output;
 		}
-		return first;
 	};
 
-	// The summary line lives in the group's first row, so a change in a later row redraws the first row.
-	const refreshLater = (group: Group) => {
-		if (group.queued || !group.refresh) return;
-		group.queued = true;
-		queueMicrotask(() => {
-			group.queued = false;
-			group.refresh?.();
-		});
+	const setState = (id: string, state: RowState) => {
+		const row = groupOf.get(id)?.rows.get(id);
+		if (row) row.state = state;
 	};
 
-	const rebuild = (ctx: ExtensionContext) => {
+	const grouping = (ctx: ExtensionContext) => ctx.mode === "tui" && mode === "group";
+	const rebuild = () => {
+		if (!manager) return;
+		observedLeaf = manager.getLeafId();
 		groupOf.clear();
 		current = newGroup();
-		for (const entry of ctx.sessionManager.getBranch()) {
+		for (const entry of manager.buildContextEntries()) {
 			if (entry.type !== "message") continue;
 			const message = entry.message;
 			if (message.role === "user") current = newGroup();
-			if (message.role !== "assistant") continue;
-			if (message.content.some((part) => part.type === "text" && part.text.trim())) current = newGroup();
-			count(message.content, message.usage);
-			for (const part of message.content) {
-				if (part.type === "toolCall") groupOf.get(part.id)!.rows.get(part.id)!.state = "done";
+			if (message.role === "assistant") {
+				recordMessage(message.content, message.usage, true);
+				for (const part of message.content) {
+					if (part.type === "toolCall") {
+						setState(part.id, message.stopReason === "error" || message.stopReason === "aborted" ? "failed" : "done");
+					}
+				}
 			}
+			if (message.role === "toolResult") setState(message.toolCallId, message.isError ? "failed" : "done");
 		}
 	};
 
-	const apply = (ctx: ExtensionContext) => {
-		// An empty label hides the "Thinking..." line of a hidden thinking block, so group mode leaves no trace.
-		ctx.ui.setHiddenThinkingLabel(mode === "group" ? "" : undefined);
-		// Toggling the expansion state twice makes Pi redraw every tool row.
-		const expanded = ctx.ui.getToolsExpanded();
-		ctx.ui.setToolsExpanded(!expanded);
-		ctx.ui.setToolsExpanded(expanded);
+	// Boundary hooks can append compactions without emitting session_compact.
+	const observeNewEntries = () => {
+		if (!manager) return;
+		const leaf = manager.getLeafId();
+		for (let id = leaf; id && id !== observedLeaf;) {
+			const entry = manager.getEntry(id);
+			if (entry?.type === "compaction") {
+				rebuild();
+				return;
+			}
+			id = entry?.parentId ?? null;
+		}
+		observedLeaf = leaf;
 	};
 
-	const restart = async (_event: unknown, ctx: ExtensionContext) => {
-		const loaded = store.loadSync();
-		mode = loaded.status === "ok" ? loaded.value.mode : "off";
-		rebuild(ctx);
-		if (ctx.hasUI) apply(ctx);
-	};
-	pi.on("session_start", restart);
-	pi.on("session_tree", restart);
+	pi.on("session_start", (_event, ctx) => {
+		const calls = pendingCalls;
+		pendingCalls = undefined;
+		if (!grouping(ctx)) return;
+		manager = ctx.sessionManager;
+		rebuild();
+		for (const invalidate of calls?.values() ?? []) invalidate();
+		ctx.ui.setHiddenThinkingLabel("");
+	});
+	pi.on("session_tree", rebuild);
+	pi.on("session_compact", rebuild);
 
-	// Extensions get each event before the interface draws it, so a boundary is in place before the next tool row exists.
-	pi.on("message_start", async (event) => {
+	// Pi dispatches these events before drawing the corresponding rows.
+	pi.on("message_start", (event, ctx) => {
+		if (!grouping(ctx)) return;
+		observeNewEntries();
 		if (event.message.role === "user") current = newGroup();
 	});
-	pi.on("message_end", async (event) => {
-		if (event.message.role !== "assistant") return;
-		const group = count(event.message.content, event.message.usage);
-		if (group) refreshLater(group);
+	pi.on("message_end", (event, ctx) => {
+		if (!grouping(ctx) || event.message.role !== "assistant") return;
+		const message = event.message;
+		recordMessage(message.content, message.usage);
+		if (message.stopReason !== "aborted" && message.stopReason !== "error") return;
+		for (const part of message.content) {
+			if (part.type === "toolCall") setState(part.id, "failed");
+		}
 	});
-	pi.on("message_update", async (event) => {
+	pi.on("message_update", (event, ctx) => {
+		if (!grouping(ctx)) return;
 		const update = event.assistantMessageEvent;
 		if (update.type === "text_end" && update.content.trim()) current = newGroup();
+		if (update.type === "toolcall_start" || update.type === "toolcall_end") {
+			const part = update.partial.content[update.contentIndex];
+			if (part?.type === "toolCall") join(part.id, part.name, part.arguments);
+		}
+	});
+	pi.on("tool_execution_start", (event, ctx) => {
+		if (grouping(ctx) && !event.parentToolCallId) join(event.toolCallId, event.toolName, event.args);
+	});
+	pi.on("tool_execution_end", (event, ctx) => {
+		if (grouping(ctx)) setState(event.toolCallId, event.isError ? "failed" : "done");
 	});
 
 	pi.registerCommand("tool-rows", {
@@ -216,16 +260,24 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (!(TOOL_ROW_MODES as readonly string[]).includes(next)) throw new Error("Usage: /tool-rows group|line|off");
+			const reload = ctx.mode === "tui" && next !== mode;
+			if (reload && !ctx.isIdle()) throw new Error("Wait for Pi to finish before changing the tool-row mode.");
 			// update() refuses a file with issues, so a bad file is never overwritten.
-			await store.update(() => ({ mode: next as ToolRowMode }));
-			mode = next as ToolRowMode;
-			apply(ctx);
-			ctx.ui.notify(`Tool rows: ${mode}.`, "info");
+			const saved = await store.update(() => ({ mode: next as ToolRowMode }));
+			ctx.ui.notify(`Tool rows: ${saved.mode}.`, "info");
+			// Pi picks the renderer when it creates a row. Reload to apply the mode to existing rows.
+			if (reload) {
+				await ctx.reload();
+				return;
+			}
+			mode = saved.mode;
 		},
 	});
 
 	pi.registerToolRenderer((toolName, next) => {
 		const base = next();
+		if (mode === "off") return base;
+		observeNewEntries();
 		const selfFramed = base?.renderShell === "self";
 		const frame = (
 			inner: Component,
@@ -254,31 +306,30 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 						? base.renderCall(args, theme, { ...context, lastComponent })
 						: new Text(`${theme.fg("toolTitle", theme.bold(toolName))} ${theme.fg("muted", JSON.stringify(args))}`, 0, 0);
 
-				if (mode === "group") {
-					const group = join(context.toolCallId, toolName, args);
-					const row = group.rows.get(context.toolCallId)!;
-					const state: RowState = context.isPartial ? "running" : context.isError ? "failed" : "done";
-					const leader = group.rows.keys().next().value === context.toolCallId;
-					if (row.state !== state || row.name !== toolName) {
-						row.state = state;
-						row.name = toolName;
-						if (!leader) refreshLater(group);
-					}
-					if (leader) group.refresh = context.invalidate;
-					if (!context.expanded) return leader ? summaryLine(group, theme, context.outputPad, context.keyHint) : new Hidden();
+				if (pendingCalls) {
+					pendingCalls.set(context.toolCallId, context.invalidate);
+					return frame(baseCall(), theme, context, true);
+				}
+				const group = groupOf.get(context.toolCallId);
+				if (group && !context.expanded) {
+					return group.rows.keys().next().value === context.toolCallId
+						? new Summary(() => summaryLine(group, theme, context.outputPad, context.keyHint))
+						: new Hidden();
 				}
 				const clip = mode === "line" && !context.expanded && !context.isPartial && !context.isError;
 				return frame(clip ? new Clip(baseCall()) : baseCall(), theme, context, true);
 			},
 			renderResult(result, options, theme, context) {
-				if (mode === "group" && !context.expanded) return new Hidden();
-				if (mode === "line" && !context.expanded && !context.isPartial && !context.isError) {
-					return frame(new Hidden(), theme, context, false);
-				}
+				const foldedGroup = !context.expanded && groupOf.has(context.toolCallId);
+				const foldedLine = mode === "line" && !context.expanded && !context.isPartial && !context.isError;
 				const lastComponent = unwrap(context.lastComponent);
-				if (base?.renderResult) {
-					return frame(base.renderResult(result, options, theme, { ...context, lastComponent }), theme, context, false);
-				}
+				// Give the base renderer the final result even when folded so it can stop its redraw timer.
+				const baseResult = !foldedGroup || !context.isPartial
+					? base?.renderResult?.(result, options, theme, { ...context, lastComponent })
+					: lastComponent;
+				if (foldedGroup) return new Hidden(baseResult);
+				if (foldedLine) return frame(new Hidden(baseResult), theme, context, false);
+				if (baseResult) return frame(baseResult, theme, context, false);
 				const lines = resultText(result).split("\n");
 				const shown = options.expanded ? lines : lines.slice(0, FALLBACK_PREVIEW_LINES);
 				let text = shown.map((line) => theme.fg("toolOutput", line)).join("\n");

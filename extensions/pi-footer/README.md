@@ -6,11 +6,19 @@ Keep footer identity, model usage, agent-work time, and extension status visible
 
 ## Install
 
+This package requires Pi 1.5.0 or later in the 1.x series.
+
 ```bash
 pi install npm:@henryqw/pi-footer
 ```
 
-All three entry points load by default. To load only some, keep `extensions/footer.ts` (the footer), `extensions/tool-rows.ts` (tool rows), or `extensions/open.ts` (the open commands) with `pi config` or the package `extensions` filter in `settings.json`.
+All three entry points load by default. Use `pi config` or the package `extensions` filter in `settings.json` to select the entries you need.
+
+| Entry point | Features |
+| --- | --- |
+| `extensions/footer.ts` | Footer. |
+| `extensions/open.ts` | Open commands. |
+| `extensions/tool-rows.ts` | Tool-row folding. |
 
 ## Works with
 
@@ -50,7 +58,9 @@ Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after
 
 ### Tool rows
 
-Tool rows fold only in the TUI. The default mode is `off`, so the rows stay as Pi draws them.
+The default mode is `off`, so the terminal user interface (TUI) shows Pi's own rows.
+
+Run `/tool-rows group` or `/tool-rows line` when Pi is idle. A mode change reloads Pi extensions and redraws the transcript.
 
 | Mode | Collapsed tool rows |
 | --- | --- |
@@ -60,7 +70,9 @@ Tool rows fold only in the TUI. The default mode is `off`, so the rows stay as P
 
 The summary line shows the skills whose `SKILL.md` file the agent read, and the input and output tokens of the messages that made the calls. The footer counts tokens the same way. A running call shows `running <tool>`.
 
-Press the tool-expansion key (`app.tools.expand`, `Ctrl+O` by default) to show every row in full. To hide thinking blocks, set `hideThinkingBlock` in Pi settings or press `Ctrl+T`.
+Press the tool-expansion key (`app.tools.expand`, `Ctrl+O` by default) to show every row in full. Pi can still display inline images in folded rows.
+
+To hide thinking blocks, set `hideThinkingBlock` in Pi settings or press `Ctrl+T`.
 
 ### Git state
 
