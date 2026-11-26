@@ -193,6 +193,31 @@ All parameters must be non-empty strings:
 
 After validation, the tool runs `herdr worktree create --cwd <primary-repository> --branch <branch> --base <local-main-commit> --label <label> --no-focus`. The `--branch` option sets the new branch name; `--label` sets the workspace label. The base is the verified local `main` commit, not the selected checkout's `HEAD`. It starts Pi without session arguments. It submits `herdr agent prompt <agentName> <prompt> --wait --until working --timeout 30000`, with the prompt as one argument, not a shell command or file. The result includes workspace ID, tab, pane, branch, checkout path, and agent name.
 
+### Bouncer
+
+Start Pi with `PI_BOUNCER=1 pi` to run the Bouncer. Otherwise, branches named `bouncer/<issue>-<slug>` or `bouncer/<issue>` select the Bartender role. The issue number must contain only digits. All other sessions run without the Bouncer timer or command gate.
+
+Set `tick` in `~/.pi/agent/config/pi-herdr-tools/bouncer.json` to the absolute path of an executable file. Set the optional `intervalMs` to an integer of at least 5000 milliseconds. The default is 60000 milliseconds. The Bouncer reads only these two keys at session start. If the file is missing or invalid, Pi shows an error in interactive sessions and starts no timer.
+
+The Bouncer runs the tick immediately and then at each interval. It skips an interval while a tick runs. Shutdown waits for the active tick. Each tick gets `--json` and has a 120-second limit. The script must print one JSON object to standard output.
+
+```json
+{
+  "digest": "new-work",
+  "items": [{"kind": "question", "repo": "Owner/name", "number": 5, "text": "Choose a base branch"}],
+  "failures": [{"step": "read", "repo": "Owner/name", "number": 6, "message": "Could not read the issue"}]
+}
+```
+
+Use a string digest that changes when the results change. Use integer issue numbers and one-line item and failure text. A changed digest with items or failures starts a turn when Pi is idle. An empty result only records the digest. Tick execution and output errors appear as notifications in interactive sessions.
+
+| Role | Command gate |
+| --- | --- |
+| Bouncer | Asks for confirmation of the exact `bash` command for `git push`, `gh pr create`, or `gh pr merge`. Without a user interface, the gate blocks those calls. |
+| Bartender | Blocks `herdr_handoff`, `git push`, and all `gh` commands in `bash`. |
+
+The gate checks direct tool calls for common mistakes. Aliases, scripts, `eval`, and shell commands entered by the user can bypass it.
+
 ### Side questions
 
 With a conversation open, run `/btw Why is this test failing?`, then submit the draft. Exact first words `ask`, `config`, `merge`, and `help` select subcommands; other input is a question.
