@@ -6,6 +6,7 @@ import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { createOpenInConfigStore } from "./open-in-config.ts";
 import { configuredOpenUri } from "./open.ts";
 import { createFooterConfigStore, paintFooter } from "./footer-config.ts";
+import { formatTokens } from "./format-tokens.ts";
 
 const THINKING_COLORS = {
 	minimal: 46,
@@ -37,12 +38,6 @@ function subagentBackgroundUsage(details: unknown): CountedUsage | undefined {
 	const total = usage?.cost?.total;
 	if (!isNonNegativeNumber(usage?.input) || !isNonNegativeNumber(usage.output) || !isNonNegativeNumber(total)) return;
 	return { input: usage.input, output: usage.output, cost: { total } };
-}
-
-function formatTokens(count: number): string {
-	if (count < 1_000) return `${count}`;
-	if (count < 1_000_000) return `${(count / 1_000).toFixed(1)}k`;
-	return `${(count / 1_000_000).toFixed(1)}M`;
 }
 
 function formatDuration(milliseconds: number): string {
