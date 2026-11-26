@@ -397,7 +397,11 @@ export default function footerExtension(pi: ExtensionAPI): void {
 					};
 					const magpieModel = ctx.model?.provider === "magpie" ? sanitizeStatus(extensionStatuses.get("magpie-model") ?? "") : "";
 					const selectedModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no-model";
-					const selected = paintFooter(theme, footerColors.model, "dim", magpieModel === "route?" ? `${selectedModel} · route?` : magpieModel || selectedModel) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
+					let modelLabel = magpieModel === "route?" ? `${selectedModel} · route?` : magpieModel || selectedModel;
+					if (selectedModel.startsWith("magpie/vps/") && !selectedModel.startsWith("magpie/vps/group/")) {
+						modelLabel = modelLabel.replace(/^(?:magpie\/)?vps\//, "");
+					}
+					const selected = paintFooter(theme, footerColors.model, "dim", modelLabel) + sep(" • ") + thinkingText(String(ctx.thinkingLevel ?? "off"));
 					// Under a virtual selection, show where the latest request went, as Pi's own footer does.
 					const model = ctx.model?.api === VIRTUAL_MODEL_API && routed
 						? selected + sep(" → ") + paintFooter(theme, footerColors.model, "dim", routed.model) + (routed.thinkingLevel ? sep(" • ") + thinkingText(routed.thinkingLevel) : "")

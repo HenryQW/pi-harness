@@ -41,7 +41,7 @@ Start a Pi TUI session to see the footer. Run `/open` to open the current direct
 
 Token and cost totals include native usage entries, reported tool usage, and completed background workflow entries from a retired subagent install. Response throughput measures output tokens per second from first to last streamed content. Non-streamed or instantaneous responses show `—`. Other unavailable values show `—` without a percent sign.
 
-The model name includes its provider, so one model ID that several providers serve stays distinguishable: `opencode-go/deepseek-v4.1-flash • high`. A missing model shows `no-model`. When a Magpie route is unknown, the selected model shows with `route?`.
+The model label includes its provider to distinguish models that several providers serve. Direct Magpie models on `vps/` omit the relay prefix in the footer. For example, `magpie/vps/claude/opus-5.5` shows as `claude/opus-5.5`. A missing model shows `no-model`. When a Magpie route is unknown, the selected model shows with `route?`.
 
 Virtual models show the latest successful physical model and thinking level after an arrow: `router/auto • high → openai-codex/gpt-5.6-luna • medium`.
 
