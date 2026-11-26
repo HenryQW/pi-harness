@@ -47,6 +47,17 @@ _Avoid_: failed clone, cleanup failure
 The explicit end of a task that removes its linked checkout and closes its Herdr workspace tabs. Forced completion permits loss of uncommitted work and removal while other workspaces still use the checkout. It never bypasses managed-command ownership or active checkout admission.
 _Avoid_: Pi exit, implicit forced cleanup
 
+### Bouncer
+
+**Bouncer**:
+A Pi session selected by `PI_BOUNCER=1` that polls an executable tick and asks for approval of pushes, pull request creation, and merges in `bash`.
+
+**Bartender**:
+A Pi session selected by a `bouncer/<issue>` or `bouncer/<issue>-<slug>` branch. Its tool gate blocks handoffs, pushes, and the GitHub command line.
+
+**Tick digest**:
+The script-provided string used to decide whether the latest items or failures can wake the Bouncer.
+
 ### Side questions
 
 **Main**:

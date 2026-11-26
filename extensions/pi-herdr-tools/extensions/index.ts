@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { registerBouncer } from "../internal/bouncer.ts";
 import registerBtwExtension, { BTW_TASK } from "../internal/btw.ts";
 import herdrCloneExtension from "../internal/clone-tab.ts";
 import herdrDoneExtension from "../internal/done.ts";
@@ -18,6 +19,7 @@ export default async function herdrToolsExtension(pi: ExtensionAPI): Promise<voi
 	herdrDoneExtension(pi, (checkout, operation) => commands.guardRemoval(checkout, operation),
 		(checkout, ctx, check) => commands.recoverRemoval(checkout, ctx, check));
 	herdrHandoffExtension(pi);
+	registerBouncer(pi);
 	registerDialogStatus(pi);
 }
 
