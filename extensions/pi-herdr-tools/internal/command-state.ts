@@ -30,7 +30,9 @@ export interface CommandInventory {
 }
 export const terminal = (state: CommandState) => ["succeeded", "failed", "cancelled", "timeout", "output_limit"].includes(state);
 export class CommandRemovalBlocked extends Error {}
-export class CommandStoreBusy extends Error {}
+export class CommandStoreBusy extends Error {
+	readonly code = "ELOCKED";
+}
 export function assertCommandRemovalAllowed(jobs: readonly Job[]): void {
 	if (jobs.some((job) => !terminal(job.state) && !job.released)) throw new CommandRemovalBlocked("Active or unknown background commands block worktree removal, including forced completion. Inspect /commands.");
 }
@@ -127,7 +129,7 @@ export async function withCommandRemovalGuard<T>(root: string, checkout: string,
 	} catch (error) {
 		// The lock helper also reports ELOCKED for a legacy directory, which cannot clear by waiting.
 		if (entered || !(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "ELOCKED" || (error.cause as NodeJS.ErrnoException | undefined)?.code === "EISDIR") throw error;
-		throw new CommandStoreBusy("Command store is busy. Run /done again when the other operation finishes.", { cause: error });
+		throw new CommandStoreBusy(error.message, { cause: error });
 	}
 }
 export async function readPublishedSpec(root: string, dir: string): Promise<JobSpec> {

@@ -145,11 +145,13 @@ export default function herdrDoneExtension(pi: ExtensionAPI,
 						if (removalStarted || !(error instanceof CommandStoreBusy)) throw error;
 						deadline ??= performance.now() + 1_000;
 						const wait = Math.min(50, deadline - performance.now());
-						if (wait <= 0) throw error;
-						// Retry from the beginning after the checkout lock has been released.
-						await delay(wait);
-						check();
-						if (performance.now() >= deadline) throw error;
+						if (wait > 0) {
+							// Retry from the beginning after the checkout lock has been released.
+							await delay(wait);
+							check();
+							if (performance.now() < deadline) continue;
+						}
+						throw new Error("Command store is busy. Run /done again when the other operation finishes.", { cause: error });
 					}
 				}
 			};
