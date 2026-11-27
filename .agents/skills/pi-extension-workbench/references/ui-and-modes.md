@@ -42,6 +42,8 @@ unavailable, unless an explicit safe non-UI policy authorizes it. Do not use
   keys. Custom component factories receive a keybinding manager: use it for
   matching and key lookup; imported `rawKeyHint()` can format a literal key.
   Extend `CustomEditor`, forward unowned input, and compose with prior factories.
+  In Pi 1.7, an editor subclass can use the protected `confirmAutocomplete()`
+  to apply the selected suggestion with the same rules as `tui.select.confirm`.
 - Markdown transformers receive optional persisted `messageId` and `timestamp`
   fields; both are undefined during live rendering. In Pi 1.5.1 and later, the
   optional `messageTypes` selects surfaces: defaults are user, assistant, and

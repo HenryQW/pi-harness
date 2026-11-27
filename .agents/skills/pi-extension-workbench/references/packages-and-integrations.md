@@ -43,6 +43,7 @@ check its lockfile, scripts, and documented support policy.
 | Register session Model Context Protocol (MCP) servers | `registerMcpServer` / `unregisterMcpServer` | `docs/extensions.md`: MCP Servers; `docs/mcp.md` |
 | Route requests across models | `registerVirtualModel` | `docs/virtual-models.md` |
 | Inspect effective model configuration / classifier image input | Model registry / `models.classify()` | `docs/models-configuration.md`; `docs/models.md`; `docs/codemode.md` |
+| Generate or edit images in codemode | `models.generateImages()` | `docs/codemode.md` |
 | Proxy/auth/catalog or custom streaming | `registerProvider` | `docs/custom-provider.md` |
 | Observe/adjust provider HTTP traffic | Provider request/headers/response events | `examples/extensions/provider-payload.ts` |
 
@@ -53,6 +54,15 @@ MCP registrations are session/runtime-local;
 register again on load and honor configured server overrides. Pass cancellation
 to network input/output operations. Never log credentials, authorization headers,
 or provider secrets.
+
+Pi 1.7 adds Radius image generation and lets codemode pass `aspectRatio` and
+`size` to `models.generateImages()`. Check the result's `stopReason` before you
+use its output. Check which options the selected provider and model accept.
+
+Pi 1.7 preserves the GitHub Copilot prompt cache across thinking-level changes
+on supported Claude 5.x and GPT-6 models. Supported Claude 5.x models also keep
+the cache across tool changes. Copilot Claude models support native cache
+warming. Check model metadata and `docs/settings.md` before you add cache logic.
 
 Native `oauth.clientRegistration` defaults to `auto`: use a Client ID Metadata
 Document when supported for public clients, else dynamic registration. A custom
@@ -75,6 +85,9 @@ Inspect extension startup code first. Isolation below removes ambient resources
 and Pi startup networking; it is not a sandbox and cannot stop extension code
 from accessing files, credentials, or the network. Skip unsafe side effects and
 report the untested path. Verify flags with installed `pi --help` when they differ.
+
+Pi 1.7 reports invalid `models.json` as a startup warning across modes. Code that
+calls `createAgentSessionServices()` can read this warning from `diagnostics`.
 
 Set `EXTENSION` to the absolute inspected entry point. Run this in one shell call:
 
