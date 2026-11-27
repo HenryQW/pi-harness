@@ -14,6 +14,7 @@ HERDR_MIN_VERSION="0.7.4"
 
 # BEGIN GENERATED EXTENSIONS
 EXTENSIONS='
+@henryqw/pi-1password
 @henryqw/pi-add-dir
 @henryqw/pi-advisor
 @henryqw/pi-ask-question

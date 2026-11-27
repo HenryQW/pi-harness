@@ -51,7 +51,7 @@ Some settings disable a feature when they are invalid, and do not use a default.
 
 Each row shows an active extension. A filled square marks a **direct** runtime or peer dependency on the package above its column. Empty rows have no internal dependencies. Column counts show how many extensions depend directly on that package.
 
-![Matrix showing 19 direct internal dependency edges across 19 active Pi extensions and five dependency packages; Pi Herdr Tools uses Pi Herdr for guarded checkout-scoped command recovery; the matrix excludes deprecated extensions; package manifests specify version requirements](./docs/extension-dependencies.svg)
+![Matrix showing 20 direct internal dependency edges across 20 active Pi extensions and five dependency packages; Pi Herdr Tools uses Pi Herdr for guarded checkout-scoped command recovery; the matrix excludes deprecated extensions; package manifests specify version requirements](./docs/extension-dependencies.svg)
 
 The matrix excludes development and transitive dependencies, deprecated extensions, and `@deprecated/`.
 

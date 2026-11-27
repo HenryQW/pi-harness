@@ -6,6 +6,7 @@ Each context defines package-specific language and its boundary. Contexts are ad
 
 | Context | Domain glossary | Scope |
 | --- | --- | --- |
+| `pi-1password` | [Pi 1Password](extensions/pi-1password/CONTEXT.md) | Approval Mac selection, metadata lists, granted actions, and the `op` skill |
 | `pi-add-dir` | [Pi Add Dir](extensions/pi-add-dir/CONTEXT.md) | External instructions, Skills, file search, and directory scope |
 | `pi-advisor` | [Pi Advisor](extensions/pi-advisor/CONTEXT.md) | Opt-in second-model Review of a settled Run, graded Notes, and one Blocker Follow-up |
 | `pi-ask-question` | [Pi Ask Question](extensions/pi-ask-question/CONTEXT.md) | Explicit predefined or custom user answers |

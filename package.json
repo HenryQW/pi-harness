@@ -32,10 +32,12 @@
       "./extensions/pi-undo/extensions/undo.ts",
       "./extensions/pi-goal/extensions/goal.ts",
       "./extensions/pi-advisor/extensions/advisor.ts",
-      "./extensions/pi-rtk-test/extensions/rtk-test.ts"
+      "./extensions/pi-rtk-test/extensions/rtk-test.ts",
+      "./extensions/pi-1password/extensions/1password.ts"
     ],
     "skills": [
-      "./extensions/pi-pr/skills"
+      "./extensions/pi-pr/skills",
+      "./extensions/pi-1password/skills"
     ]
   },
   "scripts": {
