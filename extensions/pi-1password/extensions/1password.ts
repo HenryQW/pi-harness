@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { isIP } from "node:net";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import { Type } from "typebox";
-import { forward, isActionName, localApproval, opArgs, parseProbe, probeOutput, probeScript, runOp, socketPath } from "../src/bridge.mjs";
+import { forward, isActionName, localApproval, opArgs, parseProbe, prepareSocketDirectory, probeOutput, probeScript, runOp, socketPath } from "../src/bridge.mjs";
 
 const extensionId = "pi-1password";
 const profileId = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
@@ -15,6 +18,23 @@ const remoteProbe = `/bin/sh -c '${probeScript.replaceAll("'", "'\\''")}'`;
 type Machine = { id: string; label: string; target: string; enabled: boolean };
 type ApprovalMachine = Machine & { identity: string };
 type Selection = { kind: "local"; executable: string } | { kind: "remote"; machine: ApprovalMachine; socket: string };
+
+async function approvalSocket(targets: Record<string, { socket: string | null }>, id: string) {
+	const override = Object.hasOwn(targets, id) ? targets[id].socket : null;
+	if (override) return { path: override, managed: false };
+	const name = createHash("sha256").update(id).digest().subarray(0, 16).toString("base64url");
+	const candidate = join(await realpath(homedir()), ".pi-1password", `${name}.sock`);
+	let path: string;
+	try {
+		path = socketPath(candidate);
+	} catch (error) {
+		throw new Error(`Set targets.${id}.socket to a short absolute path in a private directory.`, { cause: error });
+	}
+	if (Object.values(targets).some(({ socket }) => socket === path)) {
+		throw new Error("The default approval socket is assigned to another Mac. Use distinct socket paths.");
+	}
+	return { path, managed: true };
+}
 
 function validTarget(target: string) {
 	if (target.startsWith("ssh://")) {
@@ -92,7 +112,7 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 		if (loaded.status !== "ok" || loaded.issues.length) throw new Error(`Fix ${store.path} before using 1Password.`);
 		const { id, target, identity } = selection.machine;
 		const profile = (await listMachines(probe)).find((machine) => machine.id === id && machine.enabled);
-		if (profile?.target !== target || loaded.value.targets[id]?.socket !== selection.socket) {
+		if (profile?.target !== target || (await approvalSocket(loaded.value.targets, id)).path !== selection.socket) {
 			throw new Error("The selected approval route changed. Select it again with /1password.");
 		}
 		return forward(selection.socket, input, signal, identity);
@@ -126,15 +146,10 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 			const matches = exact ? [exact] : requested ? profiles.filter(({ label }) => label === requested) : profiles;
 			if (requested && matches.length > 1) throw new Error("Several Herdr machines use this label. Select the profile ID from /1password.");
 			const machines = await eligibleMachines(probe, matches);
-			const loaded = store.loadSync();
-			reporter.report(ctx, store, loaded);
-			if (loaded.status !== "ok" || loaded.issues.length) throw new Error(`Fix ${store.path} before selecting an approval Mac.`);
-			const { targets } = loaded.value;
 			const options = new Map<string, ApprovalMachine | "local">();
 			if (local) options.set("local", "local");
 			for (const machine of machines) {
-				const needsSocket = Object.hasOwn(targets, machine.id) ? "" : " - socket setup required";
-				options.set(`${machine.label} (${machine.id})${needsSocket}`, machine);
+				options.set(`${machine.label} (${machine.id})`, machine);
 			}
 			let choice: ApprovalMachine | "local" | undefined;
 			if (requested) {
@@ -156,10 +171,13 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 				notify("1Password approval: local.");
 				return;
 			}
-			const socket = Object.hasOwn(targets, choice.id) ? targets[choice.id].socket : null;
-			if (!socket) throw new Error(`Configure targets.${choice.id}.socket in ${store.path} and start the approval tunnel on ${choice.label}.`);
+			const loaded = store.loadSync();
+			reporter.report(ctx, store, loaded);
+			if (loaded.status !== "ok" || loaded.issues.length) throw new Error(`Fix ${store.path} before selecting an approval Mac.`);
+			const { path: socket, managed } = await approvalSocket(loaded.value.targets, choice.id);
+			if (managed) await prepareSocketDirectory(socket);
 			selected = { kind: "remote", machine: choice, socket };
-			notify(`1Password approval: ${choice.label}.`);
+			notify(`1Password approval: ${choice.label}. If its approval terminal is closed, run on ${choice.label}:\npi-1password serve YOUR_PI_HOST \\\n  ${socket}\nReplace YOUR_PI_HOST with the Secure Shell address of this Pi host.`);
 		},
 	});
 

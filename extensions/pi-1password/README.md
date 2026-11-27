@@ -27,23 +27,10 @@ The **Pi host** runs your Pi session. The **Approval Mac** runs `op` and display
 
 Both connections need working SSH keys and known host keys. The Pi host must allow reverse Unix socket forwarding.
 
-1. On the Pi host, run `/1password` to find the saved Mac and its profile ID. The picker shows the ID in parentheses.
-2. Create a private directory on the Pi host, under a directory your user controls.
-
-   ```bash
-   mkdir -m 700 "$HOME/.pi-1password"
-   printf '%s\n' "$HOME/.pi-1password/work.sock"
-   ```
-
-3. Add the profile ID in [Config](#config). Use the printed path for `socket`.
-4. In a local terminal on the Approval Mac, start the connection. Replace the host alias and the socket path with your values.
-
-   ```bash
-   pi-1password serve pi-host /home/user/.pi-1password/work.sock
-   ```
-
-5. Keep that terminal open. On the Pi host, run `/1password` and select the Mac.
-6. Ask Pi to list vaults for your account. If 1Password prompts, approve the request on the Approval Mac. Check that the result names the selected Mac.
+1. On the Pi host, run `/1password` and select the Approval Mac. Pi prepares a private socket directory and shows a `pi-1password serve` command.
+2. Open a local terminal on the Approval Mac. Copy the command and replace `YOUR_PI_HOST` with the Secure Shell address or alias for the Pi host.
+3. Run the command and keep that terminal open. It creates the remote socket through the tunnel.
+4. Ask Pi to list vaults for your account. If 1Password prompts, approve the request on the Approval Mac. Check that the result names the selected Mac.
 
 ## Use
 
@@ -92,11 +79,7 @@ An action makes an HTTPS GET request from a remote Approval Mac. It sends one cr
    | `url` | Exact HTTPS destination. Use a service you trust with this credential. |
    | `header` | `bearer` sends `Authorization: Bearer <value>`. `x-api-key` sends `X-API-Key: <value>`. |
 
-3. Start the Approval Terminal with that file. Use the same socket as in [Connect another Mac](#connect-another-mac).
-
-   ```bash
-   pi-1password serve pi-host /home/user/.pi-1password/work.sock --actions-file "$HOME/.config/pi-1password/actions.json"
-   ```
+3. Add `--actions-file "$HOME/.config/pi-1password/actions.json"` to the last line of the `pi-1password serve` command that Pi shows. Run the command in the Approval Terminal.
 
 4. Select the remote Mac with `/1password`. Ask Pi to run `check-service`.
 
@@ -123,9 +106,9 @@ Package-owned path `~/.pi/agent/config/pi-1password/config.json`
 | Name | Description | Values | Default |
 | --- | --- | --- | --- |
 | `targets` | Socket settings by Herdr machine profile ID. | Copy the ID from `/1password` or `herdr machine list --json`. The `--json` flag requests structured output. | Empty |
-| `targets.<id>.socket` | Socket on the Pi host. | Unique absolute path of at most 100 bytes. Use letters, digits, dots, slashes, underscores, and hyphens. | Required |
+| `targets.<id>.socket` | Optional socket path override on the Pi host. | Unique absolute path of at most 100 bytes. Use letters, digits, dots, slashes, underscores, and hyphens. | A path for the selected profile under `~/.pi-1password/` |
 
-For example, use `{"targets":{"example-profile-id":{"socket":"/home/user/.pi-1password/work.sock"}}}` and replace `example-profile-id` with the saved profile ID.
+For example, use `{"targets":{"example-profile-id":{"socket":"/home/user/.pi-1password/work.sock"}}}` and replace `example-profile-id` with the saved profile ID. Create a private directory with mode `0700` for a custom socket.
 
 Edit the file on the Pi host. The next request uses the new values. A config issue blocks requests until you fix it. [Config files](https://pi.henry.wang/overview#config-files)
 
@@ -134,7 +117,9 @@ Edit the file on the Pi host. The next request uses the new values. A config iss
 | What you see | What to check |
 | --- | --- |
 | Mac missing from the picker | Enable its Herdr profile. Check SSH access, macOS, and the signed `op` installation. Discovery needs no account access. |
-| `socket setup required` | Add the socket path under that Mac's profile ID. |
+| `Use a private 0700 directory` | Check the socket directory. It must belong to your user and have mode `0700`. |
+| `without extra access grants` | On macOS, check access grants on the socket directory and its parents. |
+| `Set targets.<id>.socket` | The default path is too long or contains an unsupported character. Set a short path in [Config](#config). |
 | Mac disconnected | Check that `pi-1password serve` is running on the Approval Mac. Check the SSH host and socket permissions if it stopped. |
 | Route changed or wrong Mac | Check the profile and socket path. Select the Mac again with `/1password`. The bridge checks the Mac's hardware identifier before each request. |
 | Approval did not complete | Check the selected Mac for a 1Password prompt. Check desktop integration and the account if no prompt appears. |

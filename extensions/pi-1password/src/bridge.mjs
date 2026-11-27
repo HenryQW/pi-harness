@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { dirname, isAbsolute, normalize } from "node:path";
 import { promisify } from "node:util";
@@ -61,16 +61,47 @@ export function socketPath(value) {
 	return value;
 }
 
+/** @param {string} directory */
+async function checkSocketDirectory(directory) {
+	const stat = await lstat(directory);
+	if (!stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o700) {
+		throw new Error("Use a private 0700 directory owned by your user for the approval socket.");
+	}
+}
+
+/** @param {string} path */
+export async function prepareSocketDirectory(path) {
+	const directory = dirname(socketPath(path));
+	const parents = await checkProtectedAncestors(directory);
+	await checkAccessGrants(parents);
+	try {
+		await mkdir(directory, { mode: 0o700 });
+	} catch (error) {
+		if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+	}
+	await checkSocketDirectory(directory);
+	await checkAccessGrants([directory]);
+}
+
 /** @param {string} path */
 async function checkSocket(path) {
-	const uid = process.getuid?.();
-	const directory = await lstat(dirname(socketPath(path)));
+	const directory = dirname(socketPath(path));
+	await checkSocketDirectory(directory);
+	const parents = await checkProtectedAncestors(directory);
 	const socket = await lstat(path);
-	if (!directory.isDirectory() || directory.uid !== uid || (directory.mode & 0o777) !== 0o700 ||
-		!socket.isSocket() || socket.uid !== uid || (socket.mode & 0o777) !== 0o600) {
-		throw new Error("Use a 0600 approval socket in a private 0700 directory owned by your user.");
+	if (!socket.isSocket() || socket.uid !== process.getuid?.() || (socket.mode & 0o7777) !== 0o600) {
+		throw new Error("Use a 0600 approval socket owned by your user.");
 	}
-	await checkProtectedAncestors(dirname(path));
+	await checkAccessGrants([path, directory, ...parents]);
+}
+
+/** @param {string[]} paths */
+export async function checkAccessGrants(paths) {
+	if (process.platform !== "darwin") return;
+	const access = await probeOutput("/bin/ls", ["-dle", "--", ...paths]);
+	if (!access || /^\s*\d+:.*\ballow\s/m.test(access)) {
+		throw new Error("Use approval files and parent directories without extra access grants.");
+	}
 }
 
 /** @param {string} path */

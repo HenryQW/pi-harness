@@ -7,7 +7,7 @@
 | Pi host | Computer where the Pi session runs. |
 | Approval Mac | Mac where native `op` runs under 1Password desktop integration. |
 | Approval terminal | Foreground terminal that runs `pi-1password serve` on the Approval Mac. 1Password owns its authorization lifetime. |
-| Approval target | The local Mac or a saved Herdr machine with a socket path keyed by its profile ID. |
+| Approval target | The local Mac or a saved Herdr machine with a socket path derived from its profile ID. The user can override the path. |
 | Secret reference | An `op://` identifier that native `op` resolves to a secret value. |
 | Action grant | Approval Mac configuration that binds a name to an account, secret reference, and HTTPS destination. |
 

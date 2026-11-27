@@ -53,16 +53,26 @@ async function serve(host, remoteSocket, actionsFile) {
 			'uid=$(/usr/bin/id -u) || exit 1',
 			`dir='${remoteDir}'`,
 			`socket='${remoteSocket}'`,
+			'darwin=$(/usr/bin/uname -s) || exit 1',
+			'private_access() {',
+			'  [ "$darwin" = Darwin ] || return 0',
+			'  access=$(/bin/ls -dle "$@") || return 1',
+			'  printf "%s\\n" "$access" | /usr/bin/grep -Eq "^[[:space:]]*[[:digit:]]+:.*[[:space:]]allow[[:space:]]"',
+			'  [ "$?" -eq 1 ]',
+			'}',
 			'[ "$(/usr/bin/find "$dir" -prune -type d -user "$uid" -perm 0700 -print)" = "$dir" ] || exit 1',
+			'private_access "$dir" || exit 1',
 			'while [ "$dir" != / ]; do',
 			'  dir=${dir%/*}; dir=${dir:-/}',
 			'  [ "$(/usr/bin/find "$dir" -prune -type d \\( -user 0 -o -user "$uid" \\) \\( -perm -1000 -o \\( ! -perm -020 ! -perm -002 \\) \\) -print)" = "$dir" ] || exit 1',
+			'  private_access "$dir" || exit 1',
 			'done',
 			'[ "$(/usr/bin/find "$socket" -prune -type s -user "$uid" -perm 0600 -print)" = "$socket" ] || exit 1',
 			'inode=$(/bin/ls -id "$socket") || exit 1',
 			'cleanup() { [ "$(/bin/ls -id "$socket" 2>/dev/null)" != "$inode" ] || /bin/rm -f "$socket"; }',
 			"trap cleanup EXIT",
 			"trap 'exit 0' HUP INT TERM",
+			'private_access "$socket" || exit 1',
 			"printf '%s\\n' pi-1password-ready",
 			"/bin/cat >/dev/null",
 		].join("\n");
@@ -81,7 +91,7 @@ async function serve(host, remoteSocket, actionsFile) {
 		const ready = once(lines, "line", { signal: timeout }).then(([line]) => line === "pi-1password-ready");
 		const accepted = await Promise.race([ready, ended]);
 		if (stopping) return;
-		if (!accepted) throw new Error("Secure Shell setup failed. Check the host, private remote directory, and socket permissions.");
+		if (!accepted) throw new Error("Secure Shell setup failed. Check the host, private remote directory, socket permissions, and extra access grants.");
 		server.listen(localSocket);
 		await once(server, "listening");
 		await chmod(localSocket, 0o600);

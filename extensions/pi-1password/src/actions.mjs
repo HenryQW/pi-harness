@@ -3,7 +3,7 @@ import { request } from "node:https";
 import { dirname, isAbsolute, normalize } from "node:path";
 import { debuglog } from "node:util";
 import { createConfigStore, parsers, required } from "@henryqw/pi-config-store";
-import { checkProtectedAncestors, isActionName, probeOutput, runNativeOp, validText } from "./bridge.mjs";
+import { checkAccessGrants, checkProtectedAncestors, isActionName, runNativeOp, validText } from "./bridge.mjs";
 
 /** @param {unknown} value */
 function text(value) {
@@ -47,12 +47,7 @@ export async function loadActions(path, executable) {
 	if (!file.isFile() || file.nlink !== 1 || file.uid !== process.getuid?.() || (file.mode & 0o7777) !== 0o600) {
 		throw new Error("Use a private 0600 action file owned by your user.");
 	}
-	if (process.platform === "darwin") {
-		const access = await probeOutput("/bin/ls", ["-dle", "--", path, ...parents]);
-		if (!access || /^\s*\d+:.*\ballow\s/m.test(access)) {
-			throw new Error("Use an action file and parent directories without extra access grants.");
-		}
-	}
+	await checkAccessGrants([path, ...parents]);
 	const store = createConfigStore({ extensionId: "pi-1password", path, entries: parsers.record(grant, { key(value) {
 		if (!isActionName(value)) throw new Error("Invalid action name.");
 		return value;

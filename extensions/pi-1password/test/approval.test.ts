@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
@@ -20,19 +20,21 @@ const identity = "01234567-89ab-cdef-0123-456789abcdef";
 const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const exec = promisify(execFile);
 
-test("approval requires an explicit selection from Herdr machines with native op", async (t) => {
+test("approval requires an explicit selection and prepares a default socket for an eligible Mac", async (t) => {
 	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-select-"));
 	const configDir = join(dir, "config", "pi-1password");
-	const previous = process.env.PI_CODING_AGENT_DIR;
+	const configPath = join(configDir, "config.json");
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousHome = process.env.HOME;
 	process.env.PI_CODING_AGENT_DIR = dir;
+	process.env.HOME = dir;
 	t.after(async () => {
-		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previous;
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
 		await rm(dir, { recursive: true, force: true });
 	});
-	await mkdir(configDir, { recursive: true });
-	const socket = join(dir, "home.sock");
-	await writeFile(join(configDir, "config.json"), JSON.stringify({ targets: { home: { socket } } }));
 
 	const homeTarget = "ssh://user@personal.example:2222";
 	const profiles = [
@@ -86,7 +88,24 @@ test("approval requires an explicit selection from Herdr machines with native op
 	await assert.rejects(command.handler("Missing op", ctx), /unavailable/);
 	choose = "Personal Mac (home)";
 	await command.handler("", ctx);
-	assert.match(calls.at(-1)!, /1Password approval: Personal Mac/);
+	const status = calls.at(-1)!;
+	assert.match(status, /1Password approval: Personal Mac/);
+	const socket = /^pi-1password serve YOUR_PI_HOST \\\n  (.+)$/m.exec(status)![1];
+	const socketDir = dirname(socket);
+	assert.equal(socketDir, join(dir, ".pi-1password"));
+	assert.equal((await stat(socketDir)).mode & 0o777, 0o700);
+	await assert.rejects(stat(configPath), { code: "ENOENT" });
+	await command.handler("home", ctx);
+	assert.equal(calls.at(-1), status);
+	await chmod(socketDir, 0o1700);
+	await assert.rejects(command.handler("home", ctx), /private 0700 directory/);
+	assert.equal((await stat(socketDir)).mode & 0o7777, 0o1700);
+	await chmod(socketDir, 0o700);
+	if (process.platform === "darwin") {
+		await exec("/bin/chmod", ["+a", "everyone allow search", socketDir]);
+		await assert.rejects(command.handler("home", ctx), /without extra access grants/);
+		await exec("/bin/chmod", ["-N", socketDir]);
+	}
 	await assert.rejects(list, /disconnected/);
 	let runs = 0;
 	const server = approvalServer({ identity, execute: async () => [], actions: new Map([["verify", async () => { runs++; }]]) });
@@ -96,6 +115,13 @@ test("approval requires an explicit selection from Herdr machines with native op
 	await chmod(socket, 0o600);
 	await assert.rejects(action({ action: "verify", reference }), /only an approved/);
 	assert.deepEqual((await action()).content, [{ type: "text", text: "The approved 1Password action completed." }]);
+	const override = join(dir, "home.sock");
+	await mkdir(configDir, { recursive: true });
+	await writeFile(configPath, JSON.stringify({ targets: { home: { socket: override } } }));
+	await assert.rejects(action(), /selected approval route changed/);
+	await command.handler("home", ctx);
+	assert.ok(calls.at(-1)?.includes(`pi-1password serve YOUR_PI_HOST \\\n  ${override}\n`));
+	await assert.rejects(list, /disconnected/);
 	profiles[0].enabled = false;
 	await assert.rejects(list, /selected approval route changed/);
 	await assert.rejects(action(), /selected approval route changed/);
