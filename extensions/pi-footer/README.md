@@ -58,9 +58,9 @@ Other dependency statuses, such as `⠋ deps · installing 12s`, disappear after
 
 ### Tool rows
 
-The default mode is `off`, so the terminal user interface (TUI) shows Pi's own rows.
+The default mode is `group`. The terminal user interface (TUI) shows one summary line for each tool group.
 
-Run `/tool-rows group` or `/tool-rows line` when Pi is idle. A mode change reloads Pi extensions and redraws the transcript.
+Run `/tool-rows line` or `/tool-rows off` when Pi is idle. A mode change reloads Pi extensions and redraws the transcript.
 
 | Mode | Collapsed tool rows |
 | --- | --- |

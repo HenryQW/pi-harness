@@ -4,11 +4,11 @@ import { createConfigStore, field, parsers } from "@henryqw/pi-config-store";
 export const TOOL_ROW_MODES = ["group", "line", "off"] as const;
 export type ToolRowMode = (typeof TOOL_ROW_MODES)[number];
 
-/** A missing file or an invalid mode keeps Pi's own rows. */
+/** Group by default. Disable folding when the file cannot supply a valid mode. */
 export function createToolRowsConfigStore(agentDir?: string) {
 	return createConfigStore({
 		extensionId: "pi-tool-rows",
 		agentDir,
-		fields: { mode: field(parsers.oneOf(TOOL_ROW_MODES), "off") },
+		fields: { mode: field(parsers.oneOf(TOOL_ROW_MODES), "group", { onInvalid: "disable" }) },
 	});
 }
