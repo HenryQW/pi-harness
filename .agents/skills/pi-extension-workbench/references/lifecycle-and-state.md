@@ -55,6 +55,9 @@ Example paths below are relative to `examples/extensions/`.
   summary output length. Summaries use the model's output limit, reduced when
   needed to fit input and output in the context window; `generateSummary()` and
   `generateSummaryWithUsage()` ignore their `reserveTokens` argument.
+  In Pi 1.7, `estimateTokens()` returns zero for shell output marked
+  `excludeFromContext`, which includes `!!` commands. Use the native estimator
+  to keep shell output and context estimates consistent.
   See installed `docs/compaction.md`.
 - When the model registry owns streaming, let it resolve authentication and
   provider overrides for summaries and other model calls. Do not extract a

@@ -46,6 +46,9 @@ schema builder, remains supported within that contract.
   tool usage; do not count it twice. Report usage for the tool's own model calls.
   Preserve optional `Usage.cost.totalFromProvider`; a combined total is
   provider-reported only when every part is provider-reported.
+  `Usage.reasoning` and, in Pi 1.7, `Usage.imageOutput` are optional subsets of
+  `output`. Keep the breakdown when present. Add only `output` to token totals.
+  Preserve `cost.imageOutput` for models with a separate image output rate.
 - Honor cancellation. Use `pi.exec(command, args, { signal })` rather than shell
   assembly. Shared in-memory mutation may need sequential execution; file
   read-modify-write needs `withFileMutationQueue()` around the entire operation.
@@ -96,6 +99,13 @@ Role or authorization restrictions. Pi 1.4 also activates newly registered
 tools that the branch never added or removed, unless `defaultActive: false`.
 Pi 1.5 keeps the order of tools that stay active and appends newly active tools;
 reordering the same set does not cause a prompt update.
+
+Pi 1.7 can report a resume command to a compatible terminal through the Program
+Resume Protocol. The command carries the session ID, custom agent and session
+directories, and the original restriction and resource flags. Prefer native
+resume for this case. A terminal must trust the full command. Pi removes
+`OSC7577_TOKEN` before starting child processes. `--agent-dir` takes precedence
+over `PI_CODING_AGENT_DIR`. See `docs/terminal-setup.md` and `docs/cli.md`.
 
 ## Commands and messages
 
