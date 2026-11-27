@@ -50,7 +50,7 @@ The floor is the oldest Pi version the package supports, normally the major's `.
 
 ## Publish
 
-Push `main`. After CI succeeds, `.github/workflows/publish.yml` compares each public workspace version with npm and publishes only newer versions. Private workspaces are skipped.
+On a push to `main`, the publish workflow waits for CI to pass. The workflow gets dependency order from pnpm for workspaces under `extensions` and `packages`. Planning must finish before any package can publish. The workflow skips private workspaces and publishes only versions newer than the version on npm.
 
 ## First publication checklist
 
