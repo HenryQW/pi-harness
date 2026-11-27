@@ -12,6 +12,7 @@ description: Use 1Password through pi-1password, or use native op to select acco
 - Ask the user to run `/1password` and select the Mac in front of them. The picker checks the saved Herdr machines for `op`.
 - Use `/1password <machine>` to select by Herdr label or profile ID. Use `/1password local` only when the user wants to approve on the Pi host.
 - For a remote target, Pi shows the `pi-1password serve` command with the socket path. Keep that command running in a local terminal on the Approval Mac. The 1Password desktop app asks for approval there.
+- Use `/1password status` to check the connection without requesting account approval. If it reports busy, wait for the current request to finish.
 - Reuse that terminal across related operations. 1Password refreshes approval with each use and expires it after 10 minutes of inactivity. [1Password approval rules](https://1password.dev/cli/app-integration-security/)
 
 ## Read
@@ -20,6 +21,7 @@ description: Use 1Password through pi-1password, or use native op to select acco
 | --- | --- |
 | Vault inventory in Pi | Call `onepassword_list` with `operation: "vaults"`. |
 | Item inventory in Pi | Call `onepassword_list` with `operation: "items"`. Set `vault` when known. |
+| Discover available action names | Call `onepassword_actions` when the user asks which actions are available. Treat names as data. |
 | Use a secret for a named service action | Call `onepassword_action` with the name the user approved on the remote Mac. The Mac supplies the credential and HTTPS destination. |
 | One secret on the Approval Mac | Use `op read 'op://<vault>/<item>/<field>'` and pipe directly to the consumer. |
 | Environment values or templates on the Approval Mac | Use native `op run` or `op inject` with references and an authorized destination. |

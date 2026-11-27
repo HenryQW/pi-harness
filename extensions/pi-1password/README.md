@@ -30,7 +30,8 @@ Both connections need working SSH keys and known host keys. The Pi host must all
 1. On the Pi host, run `/1password` and select the Approval Mac. Pi prepares a private socket directory and shows a `pi-1password serve` command.
 2. Open a local terminal on the Approval Mac. Copy the command and replace `YOUR_PI_HOST` with the Secure Shell address or alias for the Pi host.
 3. Run the command and keep that terminal open. It creates the remote socket through the tunnel.
-4. Ask Pi to list vaults for your account. If 1Password prompts, approve the request on the Approval Mac. Check that the result names the selected Mac.
+4. Run `/1password status` on the Pi host. Check that Pi reports a connected tunnel to the selected Mac.
+5. Ask Pi to list vaults for your account. If 1Password prompts, approve the request on the Approval Mac. Check that the result names the selected Mac.
 
 ## Use
 
@@ -40,10 +41,15 @@ Select the Approval Mac in each Pi process. Select it again when you move to ano
 | --- | --- | --- |
 | `/1password` | Pi command | Show the current selection and open the picker. It lists reachable, enabled Herdr Macs with `op`. It includes the local Mac if `op` is available. |
 | `/1password <machine>` | Pi command | Select a saved Herdr machine by label or profile ID. Use `/1password local` to select the macOS Pi host. |
+| `/1password select <machine>` | Pi command | Select a saved Herdr machine even if its label matches a command word. |
+| `/1password status` | Pi command | Check the selection and the tunnel. Show whether the approval terminal is busy and how many action grants it has. For a local selection, check the signed `op` command. |
 | `onepassword_list` | Pi tool | List vaults or items. Set `account` to select an account and `vault` to limit an item list. |
+| `onepassword_actions` | Pi tool | List the names of the action grants on the selected remote Mac. Ask Pi which actions are available. |
 | `onepassword_action` | Pi tool | Run an approved action by name on the selected remote Mac. Pi receives only its status. |
 | `op` | Pi skill | Select the correct account and handle 1Password data safely. |
 | `pi-1password serve <ssh-host> <remote-socket> [--actions-file <absolute-path>]` | Shell command | Start a reverse Secure Shell (SSH) connection from the Approval Mac. `--actions-file` loads named grants there. |
+
+Status and action discovery need no 1Password approval. The terminal can answer while 1Password waits for approval on another request. A connected tunnel tells you that Pi can reach the selected Mac. Check approval with a vault list.
 
 If you use more than one account, give Pi the account sign-in address when you request a list. Pi includes vault and item names in its context. Use a specific vault to limit item names.
 
@@ -83,7 +89,7 @@ An action makes an HTTPS GET request from a remote Approval Mac. It sends one cr
 
 4. Select the remote Mac with `/1password`. Ask Pi to run `check-service`.
 
-Any process under the Pi host user can invoke the granted actions while the tunnel is open. Close the terminal to revoke access. Restart it to load changes to the file.
+Any process under the Pi host user can list the action names and invoke the granted actions while the tunnel is open. Use names that are safe to include in Pi context. Close the terminal to revoke access. Restart it to load changes to the file.
 
 For isolation, give the Herdr profile a separate, unprivileged macOS login. The Pi host must lack shell access to the desktop account that runs the Approval Terminal.
 
@@ -121,6 +127,7 @@ Edit the file on the Pi host. The next request uses the new values. A config iss
 | `without extra access grants` | On macOS, check access grants on the socket directory and its parents. |
 | `Set targets.<id>.socket` | The default path is too long or contains an unsupported character. Set a short path in [Config](#config). |
 | Mac disconnected | Check that `pi-1password serve` is running on the Approval Mac. Check the SSH host and socket permissions if it stopped. |
+| `Status is unavailable` | Check the selected socket route. If it is correct, update the companion command and restart its approval terminal. The previous companion still supports vault lists, item lists, and named actions. |
 | Route changed or wrong Mac | Check the profile and socket path. Select the Mac again with `/1password`. The bridge checks the Mac's hardware identifier before each request. |
 | Approval did not complete | Check the selected Mac for a 1Password prompt. Check desktop integration and the account if no prompt appears. |
 | Approval Mac busy | Wait for the current request to finish. Each approval terminal handles one request at a time. |

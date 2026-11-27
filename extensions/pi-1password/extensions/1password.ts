@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import { Type } from "typebox";
-import { forward, isActionName, localApproval, opArgs, parseProbe, prepareSocketDirectory, probeOutput, probeScript, runOp, socketPath } from "../src/bridge.mjs";
+import { approvalStatus, forward, isActionName, localApproval, opArgs, parseProbe, prepareSocketDirectory, probeOutput, probeScript, runOp, socketPath } from "../src/bridge.mjs";
 
 const extensionId = "pi-1password";
 const profileId = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
@@ -106,29 +106,63 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 	let selected: Selection | undefined;
 	const origin = hostname();
 
-	async function requestRemote(selection: Extract<Selection, { kind: "remote" }>, input: Parameters<typeof forward>[1], signal: AbortSignal | undefined, ctx: ExtensionContext) {
+	async function verifyRemote(selection: Extract<Selection, { kind: "remote" }>, ctx: ExtensionContext) {
 		const loaded = store.loadSync();
 		reporter.report(ctx, store, loaded);
 		if (loaded.status !== "ok" || loaded.issues.length) throw new Error(`Fix ${store.path} before using 1Password.`);
-		const { id, target, identity } = selection.machine;
+		const { id, target } = selection.machine;
 		const profile = (await listMachines(probe)).find((machine) => machine.id === id && machine.enabled);
 		if (profile?.target !== target || (await approvalSocket(loaded.value.targets, id)).path !== selection.socket) {
 			throw new Error("The selected approval route changed. Select it again with /1password.");
 		}
-		return forward(selection.socket, input, signal, identity);
+	}
+
+	async function requestRemote(selection: Extract<Selection, { kind: "remote" }>, input: Parameters<typeof forward>[1], signal: AbortSignal | undefined, ctx: ExtensionContext) {
+		await verifyRemote(selection, ctx);
+		return forward(selection.socket, input, signal, selection.machine.identity);
+	}
+
+	async function remoteStatus(selection: Extract<Selection, { kind: "remote" }>, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+		await verifyRemote(selection, ctx);
+		return approvalStatus(selection.socket, signal, selection.machine.identity);
 	}
 
 	pi.registerCommand("1password", {
-		description: "Select an approval Mac with op installed",
+		description: "Select an approval Mac or check /1password status",
 		async handler(args, ctx) {
-			const requested = args.trim();
-			const notify = (message: string) => {
+			const command = args.trim();
+			const explicit = /^select\s+(.+)$/.exec(command);
+			const requested = explicit?.[1] ?? command;
+			const notify = (message: string, level: "info" | "error" = "info") => {
 				const status = `Pi host: ${origin}. ${message}`;
-				if (ctx.hasUI) ctx.ui.notify(status, "info");
+				if (ctx.hasUI) ctx.ui.notify(status, level);
 				else process.stderr.write(`${status}\n`);
 			};
-			const local = !requested || requested === "local" ? await localApproval(probe) : null;
-			if (requested === "local") {
+			if (command === "status") {
+				const selection = selected;
+				if (!selection) {
+					notify("No approval Mac selected. Select one with /1password.");
+				} else if (selection.kind === "local") {
+					const local = await localApproval(probe);
+					if (local?.executable === selection.executable) {
+						notify("1Password approval: local. Signed op available. 1Password approval state is unknown.");
+					} else {
+						notify("1Password approval: local. Select /1password local again to verify the signed op command.", "error");
+					}
+				} else {
+					const prefix = `1Password approval: ${selection.machine.label}.`;
+					try {
+						const { busy, actions } = await remoteStatus(selection, undefined, ctx);
+						notify(`${prefix} Tunnel connected. Approval terminal ${busy ? "busy" : "idle"}. Action grants: ${actions.length}. 1Password approval state is unknown.`);
+					} catch (error) {
+						notify(`${prefix} ${error instanceof Error ? error.message : "Cannot check the approval terminal."}`, "error");
+					}
+				}
+				return;
+			}
+			const selectLocal = command === "local";
+			const local = !requested || selectLocal ? await localApproval(probe) : null;
+			if (selectLocal) {
 				if (!local) throw new Error("Local approval requires macOS and the native op command.");
 				selected = { kind: "local", executable: local.executable };
 				notify("1Password approval: local.");
@@ -200,6 +234,22 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 				: await requestRemote(selection, input, signal, ctx);
 			const name = selection.kind === "local" ? "local" : selection.machine.label;
 			return { content: [{ type: "text", text: JSON.stringify({ piHost: origin, approvalMac: name, rows }) }], details: undefined };
+		},
+	});
+
+	pi.registerTool({
+		name: "onepassword_actions",
+		label: "1Password action names",
+		description: "List configured action names on the selected remote approval Mac. Use when the user wants to see available actions. This does not request 1Password approval or run an action.",
+		parameters: Type.Object({}, { additionalProperties: false }),
+		async execute(_id, input, signal, _update, ctx) {
+			if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length) {
+				throw new Error("Action discovery takes no parameters.");
+			}
+			const selection = selected;
+			if (selection?.kind !== "remote") throw new Error("Select a remote approval Mac with /1password.");
+			const { actions } = await remoteStatus(selection, signal, ctx);
+			return { content: [{ type: "text", text: JSON.stringify({ approvalMac: selection.machine.label, actions }) }], details: undefined };
 		},
 	});
 

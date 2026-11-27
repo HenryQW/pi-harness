@@ -16,6 +16,7 @@
 - Select the Approval Mac explicitly. Herdr supplies the saved remote profiles. A Secure Shell (SSH) check verifies the native `op` signature and version.
 - The approval terminal compares its hardware identifier with the selected Mac before it runs a request.
 - Pi can list vault and item metadata or request a granted action by name. An action uses the grant's credential in a fixed HTTPS request and returns status only.
+- The tunnel status returns the terminal busy state and action names without invoking `op`. It does not query 1Password authorization.
 - An authenticated reverse SSH tunnel connects the Pi host to the approval terminal. The account that owns the socket on the Pi host can use the enabled operations.
 - The action grant file and the desktop account that runs the approval terminal must stay outside the Pi host's control.
 - The 1Password desktop app verifies the native `op` process and authorizes the approval terminal. Pi cannot move a system prompt between Macs.

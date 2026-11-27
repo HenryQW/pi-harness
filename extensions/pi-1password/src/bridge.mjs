@@ -263,6 +263,19 @@ export function approvalServer({ identity, execute, actions = new Map() }) {
 	let busy = false;
 	return createServer({ headersTimeout: 5000, requestTimeout: 5000, keepAliveTimeout: 1000 }, async (req, res) => {
 		res.setHeader("content-type", "application/json");
+		if (req.method === "GET" && req.url === "/status") {
+			if (req.headers["x-pi-approval-mac"] !== identity) {
+				res.writeHead(403).end();
+				return;
+			}
+			const output = JSON.stringify({ busy, actions: Array.from(actions.keys()).sort() });
+			if (Buffer.byteLength(output) > resultBytes) {
+				res.writeHead(500).end();
+				return;
+			}
+			res.end(output);
+			return;
+		}
 		if (req.method !== "POST" || req.url !== "/op") {
 			res.writeHead(404).end();
 			return;
@@ -309,13 +322,12 @@ export function approvalServer({ identity, execute, actions = new Map() }) {
 
 /**
  * @param {string} path
- * @param {{ operation: string, account?: string, vault?: string, action?: string }} input
+ * @param {string | undefined} payload
  * @param {AbortSignal | undefined} signal
  * @param {string} identity
+ * @returns {Promise<unknown>}
  */
-export async function forward(path, input, signal, identity) {
-	if (input.operation === "action") checkActionRequest(input);
-	else opArgs(input);
+async function send(path, payload, signal, identity) {
 	try {
 		await checkSocket(path);
 	} catch (error) {
@@ -324,31 +336,65 @@ export async function forward(path, input, signal, identity) {
 		}
 		throw error;
 	}
-	const payload = JSON.stringify(input);
-	const deadline = AbortSignal.timeout(timeoutMs + 5000);
-	/** @type {{ result?: unknown, error?: unknown, completed?: unknown, actionError?: unknown }} */
-	const response = await new Promise((resolve, reject) => {
+	const status = payload === undefined;
+	const deadline = AbortSignal.timeout(status ? 5000 : timeoutMs + 5000);
+	return new Promise((resolve, reject) => {
 		const req = request({
 			socketPath: path,
-			method: "POST",
-			path: "/op",
+			method: status ? "GET" : "POST",
+			path: status ? "/status" : "/op",
 			agent: false,
 			signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
 			headers: {
-				"content-type": "application/json", "content-length": Buffer.byteLength(payload),
 				"x-pi-approval-mac": identity,
+				...(payload !== undefined && { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }),
 			},
-		}, (res) => body(res, resultBytes).then(resolve, reject));
+		}, (res) => {
+			if (status && res.statusCode !== 200) {
+				res.destroy();
+				const message = res.statusCode === 404 ? "Status is unavailable. Check the selected socket route. If the route is correct, update pi-1password on the approval Mac and restart its approval terminal."
+					: res.statusCode === 403 ? actionErrors.mismatch : "The approval terminal could not report its status.";
+				reject(new Error(message));
+				return;
+			}
+			body(res, resultBytes).then(resolve, reject);
+		});
 		req.once("error", (error) => {
 			const code = "code" in error ? error.code : undefined;
 			if (code === "ECONNREFUSED" || code === "ENOENT") {
 				reject(new Error("The approval Mac is disconnected. Start its Secure Shell tunnel or select another target."));
+			} else if (status && deadline.aborted && !signal?.aborted) {
+				reject(new Error("The approval terminal did not report its status within 5 seconds."));
 			} else {
 				reject(error);
 			}
 		});
 		req.end(payload);
 	});
+}
+
+/** @param {string} path @param {AbortSignal | undefined} signal @param {string} identity */
+export async function approvalStatus(path, signal, identity) {
+	const response = /** @type {{ busy?: unknown, actions?: unknown } | null} */ (await send(path, undefined, signal, identity));
+	if (typeof response?.busy !== "boolean" || !Array.isArray(response.actions) ||
+		!response.actions.every(isActionName) || Object.keys(response).length !== 2) {
+		throw new Error("The approval terminal returned an invalid status.");
+	}
+	return { busy: response.busy, actions: response.actions };
+}
+
+/**
+ * @param {string} path
+ * @param {{ operation: string, account?: string, vault?: string, action?: string }} input
+ * @param {AbortSignal | undefined} signal
+ * @param {string} identity
+ */
+export async function forward(path, input, signal, identity) {
+	if (input.operation === "action") checkActionRequest(input);
+	else opArgs(input);
+	const response = /** @type {{ result?: unknown, error?: unknown, completed?: unknown, actionError?: unknown }} */ (
+		await send(path, JSON.stringify(input), signal, identity)
+	);
 	if (input.operation === "action") {
 		if (response?.completed === true) return true;
 		const code = response?.actionError;
