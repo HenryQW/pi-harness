@@ -524,6 +524,56 @@ async function selectTaskModels(ctx: ExtensionContext, options: string[]): Promi
 	}, { blocked: { kind: "question", message: "Select a task model" } });
 }
 
+function taskRouteScopeIssue(ctx: ExtensionContext, route: TaskModelRoute): string | undefined {
+	if (resolveTaskModelRoute(ctx, route)) return;
+
+	const preferredProvider = ctx.model?.provider;
+	const scopedModel = resolveAvailableModel(availableTaskModels(ctx), route.model, preferredProvider);
+	if (scopedModel) {
+		const levels = taskThinkingLevels(ctx, scopedModel);
+		return levels.length
+			? `Thinking level unavailable. Allowed levels are ${levels.join(", ")}.`
+			: "No thinking levels are available for this model in the current session.";
+	}
+
+	if (ctx.scopedModels.length) {
+		const unscopedModels = availableTaskModels({ ...ctx, scopedModels: [] });
+		if (resolveAvailableModel(unscopedModels, route.model, preferredProvider)) {
+			return "Outside the current session scope.";
+		}
+	}
+
+	const catalogModel = resolveAvailableModel(ctx.modelRegistry.getAll(), route.model, preferredProvider);
+	if (!catalogModel) return "Model is absent from Pi's catalog.";
+	if (!catalogModel.input.includes("text")) return "Model does not accept text input.";
+	return "Model is in Pi's catalog but is unavailable.";
+}
+
+function reportTaskModelScope(ctx: ExtensionContext, profiles: TaskModelsConfig["profiles"], issuesOnly = false): void {
+	const lines: string[] = [];
+	let hasIssues = false;
+	for (const name of PROFILE_NAMES) {
+		const profile = profiles[name];
+		if (!profile) continue;
+		for (const kind of ["primary", "fallback"] as const) {
+			const route = profile[kind];
+			if (!route) continue;
+			const issue = taskRouteScopeIssue(ctx, route);
+			if (issue) hasIssues = true;
+			else if (issuesOnly) continue;
+			lines.push(`${name} ${kind} · ${routeLabel(route)} · ${issue ?? "Available."}`);
+		}
+	}
+	if (!lines.length) {
+		if (!issuesOnly) ctx.ui.notify("No task model profiles are configured. Run /task-models to configure profiles.", "info");
+		return;
+	}
+	const heading = issuesOnly ? "Task model route issues in the current session" : "Task model routes in the current session";
+	const message = [heading, ...lines].join("\n");
+	if (ctx.hasUI) ctx.ui.notify(message, hasIssues ? "warning" : "info");
+	else process.stderr.write(`${message}\n`);
+}
+
 export function createTaskModelsExtension(
 	pi: ExtensionAPI,
 	options?: { agentDir?: string },
@@ -535,26 +585,40 @@ export function createTaskModelsExtension(
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
 	registerBiliModels(pi, agentDir, (ctx) => reporter.report(ctx, configStore, configStore.loadSync()));
 	pi.on("session_start", (_event, ctx) => {
-		if (configStore.loadSync().source === "missing") {
+		const loaded = configStore.loadSync();
+		if (loaded.source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
+			return;
 		}
+		if (loaded.status === "ok") reportTaskModelScope(ctx, loaded.value.profiles, true);
 	});
 	pi.registerCommand("task-models", {
 		getArgumentCompletions: (prefix) => {
 			const items = [
+				{ value: "check", description: "Check configured routes in this session's model scope" },
 				{ value: "preset", description: "Choose a saved profile setup" },
 			];
 			return items.filter(({ value }) => value.startsWith(prefix.trimStart()))
 				.map((item) => ({ ...item, label: item.value, value: prefix.slice(0, prefix.length - prefix.trimStart().length) + item.value }));
 		},
-		description: "configure task models or apply a preset",
+		description: "configure task models, check routes, or apply a preset",
 		handler: async (args, ctx) => {
 			const action = args.trim();
-			if (action && action !== "preset") {
-				ctx.ui.notify("Usage: /task-models [preset]", "error");
+			if (action && action !== "preset" && action !== "check") {
+				ctx.ui.notify("Usage: /task-models [check|preset]", "error");
 				return;
 			}
-			reporter.report(ctx, configStore, configStore.loadSync());
+			const loaded = configStore.loadSync();
+			if (action === "check") {
+				if (loaded.status === "disabled") {
+					ctx.ui.notify(disabledConfigMessage(configStore.path, loaded.issues), "error");
+					return;
+				}
+				reporter.report(ctx, configStore, loaded);
+				reportTaskModelScope(ctx, loaded.value.profiles);
+				return;
+			}
+			reporter.report(ctx, configStore, loaded);
 			// The repair store never disables, so a disabled config still shows and keeps the settings that loaded.
 			const snapshot = repairStore.loadSync();
 			const config: TaskModelsConfig = snapshot.status === "ok" ? snapshot.value : { profiles: {}, tasks: {} };
