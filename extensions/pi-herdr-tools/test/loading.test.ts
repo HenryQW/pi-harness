@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
 import {
@@ -13,7 +14,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
-const askQuestionRoot = fileURLToPath(new URL("../../pi-ask-question/", import.meta.url));
+const askQuestionManifest = findPackageJSON("@henryqw/pi-ask-question", import.meta.url);
+assert.ok(askQuestionManifest, "The pi-ask-question package must be installed for the loading tests.");
+const askQuestionRoot = dirname(askQuestionManifest);
 
 test("package loading registers all Herdr commands through one extension", async (t) => {
 	const isolated = await mkdtemp(join(tmpdir(), "pi-herdr-tools-loading-"));

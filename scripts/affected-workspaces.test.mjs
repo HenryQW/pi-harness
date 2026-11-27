@@ -189,8 +189,8 @@ test("version-only comparison does not ignore nested version fields or parse fai
 	}
 });
 
-test("global changes, manifests, removals, renames, and undeclared cross-package test consumers use the full suite", async (t) => {
-	for (const change of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "scripts/shared.mjs", "website/check.ts", "package-manifest", "added-manifest", "packages/core/nested/package.json", "remove", "rename", "type-change", "remove-package", "cross-package-test"]) {
+test("global changes, manifests, removals, and renames use the full suite", async (t) => {
+	for (const change of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json", "scripts/shared.mjs", "website/check.ts", "package-manifest", "added-manifest", "packages/core/nested/package.json", "remove", "rename", "type-change", "remove-package"]) {
 		await t.test(change, (t) => {
 			const f = fixture(t);
 			if (change === "remove") rmSync(join(f.cwd, "packages/core/source.js"));
@@ -205,12 +205,7 @@ test("global changes, manifests, removals, renames, and undeclared cross-package
 				manifest.devDependencies = {};
 				f.write("packages/consumer/package.json", JSON.stringify(manifest));
 			} else if (change === "remove-package") rmSync(join(f.cwd, "packages/other"), { recursive: true });
-			else if (change === "cross-package-test") {
-				f.write("extensions/ask-question/package.json", JSON.stringify({ name: "@henryqw/pi-ask-question", version: "1.0.0", dependencies: { "@test/core": "workspace:*" } }));
-				f.commit();
-				f.git("update-ref", "refs/remotes/origin/main", "HEAD");
-				f.write("packages/core/source.js", "changed\n");
-			} else if (change === "pnpm-lock.yaml") f.write(change, "lockfileVersion: '9.0'\nimporters: {}\n");
+			else if (change === "pnpm-lock.yaml") f.write(change, "lockfileVersion: '9.0'\nimporters: {}\n");
 			else if (change === "pnpm-workspace.yaml") f.write(change, "packages:\n  - packages/*\n  - extensions/*\nverifyDepsBeforeRun: false\n# changed\n");
 			else if (change === "package.json") f.write(change, JSON.stringify({ name: "changed-root", private: true, packageManager: rootManifest.packageManager }));
 			else f.write(change, "# changed\n");

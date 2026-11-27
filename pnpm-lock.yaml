@@ -160,6 +160,9 @@ importers:
       '@earendil-works/pi-tui':
         specifier: 1.5.0
         version: 1.5.0
+      '@henryqw/pi-ask-question':
+        specifier: ^3.4.0
+        version: link:../pi-ask-question
 
   extensions/pi-magpie:
     devDependencies:

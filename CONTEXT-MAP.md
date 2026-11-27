@@ -1,6 +1,6 @@
 # Context Map
 
-Each context defines package-specific language and its boundary. Contexts are added only when source or documentation supports concrete domain terms; shared implementation mechanics alone do not need a glossary.
+Each context defines package-specific language and its boundary. Contexts are added only when source or documentation supports concrete domain terms; shared implementation mechanics alone do not need a glossary. See [architecture and state ownership](docs/agents/architecture.md) for implementation boundaries and the dependency graph.
 
 ## Active contexts
 
