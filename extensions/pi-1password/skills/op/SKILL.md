@@ -11,7 +11,8 @@ description: Use 1Password through pi-1password, or use native op to select acco
 
 - Ask the user to run `/1password` and select the Mac in front of them. The picker checks the saved Herdr machines for `op`.
 - Use `/1password <machine>` to select by Herdr label or profile ID. Use `/1password local` only when the user wants to approve on the Pi host.
-- For a remote target, Pi shows the `pi-1password serve` command with the socket path. Keep that command running in a local terminal on the Approval Mac. The 1Password desktop app asks for approval there.
+- Use `/1password pair <mac-login> <pi-host-alias>` for on-demand approval. Ask the user to paste the authorization block in a local terminal on the Approval Mac. A vault list then starts the terminal when needed.
+- For a manual tunnel, use the start command that Pi shows when an unpaired Mac is disconnected. Keep that terminal open.
 - Use `/1password status` to check the connection without requesting account approval. If it reports busy, wait for the current request to finish.
 - Reuse that terminal across related operations. 1Password refreshes approval with each use and expires it after 10 minutes of inactivity. [1Password approval rules](https://1password.dev/cli/app-integration-security/)
 

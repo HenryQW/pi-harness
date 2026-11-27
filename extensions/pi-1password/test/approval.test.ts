@@ -4,6 +4,7 @@ import { EventEmitter, once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request } from "node:http";
 import { createServer } from "node:https";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -13,12 +14,60 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionToolContext, Regis
 import onePassword from "../extensions/1password.ts";
 import { loadActions } from "../src/actions.mjs";
 import { approvalServer, approvalStatus, forward, metadata, opArgs } from "../src/bridge.mjs";
+import { authorizationLine, authorizeLauncher, createLauncherKey, launcherKey, stopWhenIdle } from "../src/launcher.mjs";
 
 const secret = "fixture-api-key";
 const reference = "op://vault/item/field";
 const identity = "01234567-89ab-cdef-0123-456789abcdef";
 const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const exec = promisify(execFile);
+
+test("pairing appends one restricted key and preserves an existing SSH configuration", async (t) => {
+	const home = await mkdtemp(join(await realpath("/tmp"), "pi-op-authorize-"));
+	const previousHome = process.env.HOME;
+	process.env.HOME = home;
+	t.after(async () => {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		await rm(home, { recursive: true, force: true });
+	});
+	const keyPath = await launcherKey(["profile", "identity", "socket", "login"]);
+	const [key, repeated] = await Promise.all([createLauncherKey(keyPath), createLauncherKey(keyPath)]);
+	assert.equal(repeated, key);
+	assert.equal((await stat(keyPath)).mode & 0o777, 0o600);
+	const ssh = join(home, ".ssh");
+	await mkdir(ssh, { mode: 0o700 });
+	const authorized = join(ssh, "authorized_keys");
+	const existing = "# existing entry without trailing newline";
+	await writeFile(authorized, existing, { mode: 0o600 });
+	const argv = ["/bin/echo", "'quoted'", "launch"];
+	await assert.rejects(authorizeLauncher(`${key}\nssh-ed25519 more`, argv), /Use the launcher public key/);
+	await authorizeLauncher(key, argv);
+	await authorizeLauncher(key, argv);
+	const expected = authorizationLine(key, argv);
+	assert.match(expected, /^restrict,pty,command="exec /);
+	assert.equal(await readFile(authorized, "utf8"), `${existing}\n${expected}\n`);
+	await assert.rejects(authorizeLauncher(key, ["/bin/false"]), /Remove the old/);
+	assert.equal(await readFile(authorized, "utf8"), `${existing}\n${expected}\n`);
+});
+
+test("an on-demand companion counts idle time after requests finish", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const server = createHttpServer();
+	const active = new EventEmitter();
+	let stopped = false;
+	const cancel = stopWhenIdle(server, () => { stopped = true; }, 100);
+	t.after(cancel);
+	t.mock.timers.tick(90);
+	server.emit("request", { method: "POST" }, active);
+	t.mock.timers.tick(120);
+	assert.equal(stopped, false);
+	active.emit("close");
+	t.mock.timers.tick(80);
+	server.emit("request", { method: "GET" }, new EventEmitter());
+	t.mock.timers.tick(20);
+	assert.equal(stopped, true);
+});
 
 test("approval requires an explicit selection and prepares a default socket for an eligible Mac", async (t) => {
 	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-select-"));
@@ -61,6 +110,7 @@ test("approval requires an explicit selection and prepares a default socket for 
 		}
 		if (file === "/bin/sh") return herdrAvailable ? null : `${identity}\n/usr/bin/true\n2.42.0\n`;
 		assert.equal(file, "/usr/bin/ssh");
+		if (args[0] === "-G") return "hostname personal.example\nport 2222\n";
 		const target = args.at(-2)!;
 		probed.push(target);
 		return target === homeTarget ? `${identity}\n/opt/homebrew/bin/op\n2.42.0\n` : null;
@@ -80,12 +130,23 @@ test("approval requires an explicit selection and prepares a default socket for 
 	const action = (input: Record<string, unknown> = { action: "verify" }) => actionTool.execute("test", input, undefined, undefined, ctx);
 	const discover = (input: Record<string, unknown> = {}) => tools.get("onepassword_actions")!.execute("test", input, undefined, undefined, ctx);
 
+	const complete = command.getArgumentCompletions!;
+	assert.deepEqual((await complete("s"))?.map(({ label, value }) => ({ label, value })), [
+		{ label: "status", value: "status" },
+		{ label: "select", value: "select " },
+	]);
+	assert.deepEqual((await complete("  st"))?.map(({ value }) => value), ["  status"]);
+	assert.deepEqual(await complete("select Personal"), []);
+	assert.deepEqual((await complete(""))?.map(({ label }) => label),
+		process.platform === "darwin" ? ["status", "select", "pair", "local"] : ["status", "select", "pair"]);
+	assert.deepEqual(probed, []);
+
 	await command.handler("status", ctx);
 	assert.match(calls.at(-1)!, /No approval Mac selected/);
 	await assert.rejects(list, /Select an approval Mac/);
 	await assert.rejects(action(), /Select a remote approval Mac/);
 	await assert.rejects(discover(), /Select a remote approval Mac/);
-	await command.handler("", ctx);
+	await command.handler("select ", ctx);
 	assert.deepEqual(probed, [homeTarget, "other-mac"]);
 	await assert.rejects(list, /Select an approval Mac/);
 	await assert.rejects(command.handler("auto", ctx), /unavailable/);
@@ -93,8 +154,12 @@ test("approval requires an explicit selection and prepares a default socket for 
 	choose = "Personal Mac (home)";
 	await command.handler("", ctx);
 	const status = calls.at(-1)!;
-	assert.match(status, /1Password approval: Personal Mac/);
-	const socket = /^pi-1password serve YOUR_PI_HOST \\\n  (.+)$/m.exec(status)![1];
+	assert.match(status, /^1Password \| Tunnel disconnected\n  Pi host: .+\n  Approval Mac: Personal Mac\n\n/);
+	const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+	assert.ok(status.includes(`npx --yes --ignore-scripts @henryqw/pi-1password@${manifest.version}`));
+	assert.match(status, /local terminal on Personal Mac/);
+	assert.match(status, /run \/1password status/);
+	const socket = /^    serve PI_HOST_SSH_ALIAS \\\n    (.+)$/m.exec(status)![1];
 	const socketDir = dirname(socket);
 	assert.equal(socketDir, join(dir, ".pi-1password"));
 	assert.equal((await stat(socketDir)).mode & 0o777, 0o700);
@@ -112,7 +177,17 @@ test("approval requires an explicit selection and prepares a default socket for 
 	}
 	await assert.rejects(list, /disconnected/);
 	await command.handler("status", ctx);
-	assert.match(calls.at(-1)!, /Personal Mac.*disconnected/);
+	assert.match(calls.at(-1)!, /^1Password \| Tunnel disconnected/m);
+	await command.handler("pair desktop sf-mbp", ctx);
+	assert.match(calls.at(-1)!, /Authorize on the Approval Mac/);
+	assert.ok(calls.at(-1)!.includes(`--ignore-scripts @henryqw/pi-1password@${manifest.version}`));
+	assert.ok(calls.at(-1)!.includes(`authorize \\\n  sf-mbp ${socket}`));
+	assert.match(calls.at(-1)!, /'ssh-ed25519 [A-Za-z0-9+/]{68}'/);
+	assert.match(await readFile(`${socket}.pair`, "utf8"), /^[A-Za-z0-9_-]{32}\n$/);
+	assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).targets.home, { socket: null, launchUser: "desktop" });
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /On-demand tunnel idle/);
+	await assert.rejects(discover(), /disconnected/);
 	let runs = 0;
 	const server = approvalServer({ identity,
 		execute: async () => { assert.fail("Status and action discovery must not run op"); },
@@ -123,7 +198,14 @@ test("approval requires an explicit selection and prepares a default socket for 
 	await once(server, "listening");
 	await chmod(socket, 0o600);
 	await command.handler("status", ctx);
-	assert.match(calls.at(-1)!, /Personal Mac.*Tunnel connected.*idle.*Action grants: 2.*approval state is unknown/);
+	assert.deepEqual(calls.at(-1)!.split("\n"), [
+		"1Password | Tunnel connected",
+		`  Pi host: ${hostname()}`,
+		"  Approval Mac: Personal Mac",
+		"  Terminal: Idle",
+		"  Action grants: 2",
+		"  1Password approval: Unknown",
+	]);
 	await assert.rejects(discover({ reference }), /takes no parameters/);
 	assert.deepEqual((await discover()).content, [{ type: "text", text: JSON.stringify({
 		approvalMac: "Personal Mac", actions: ["check-service", "verify"],
@@ -133,9 +215,10 @@ test("approval requires an explicit selection and prepares a default socket for 
 	assert.deepEqual((await action()).content, [{ type: "text", text: "The approved 1Password action completed." }]);
 	profiles[0].label = "status";
 	await command.handler("select status", ctx);
-	assert.match(calls.at(-1)!, /1Password approval: status.*approval terminal is closed/);
+	assert.match(calls.at(-1)!, /Approval Mac: status/);
+	assert.doesNotMatch(calls.at(-1)!, /npx/);
 	await command.handler("status", ctx);
-	assert.match(calls.at(-1)!, /1Password approval: status.*Tunnel connected/);
+	assert.match(calls.at(-1)!, /^1Password \| Tunnel connected\n  Pi host: .+\n  Approval Mac: status/);
 	const override = join(dir, "home.sock");
 	await mkdir(configDir, { recursive: true });
 	await writeFile(configPath, JSON.stringify({ targets: { home: { socket: override } } }));
@@ -144,8 +227,13 @@ test("approval requires an explicit selection and prepares a default socket for 
 	await command.handler("status", ctx);
 	assert.match(calls.at(-1)!, /selected approval route changed/);
 	await command.handler("home", ctx);
-	assert.ok(calls.at(-1)?.includes(`pi-1password serve YOUR_PI_HOST \\\n  ${override}\n`));
+	assert.ok(calls.at(-1)?.includes(`serve PI_HOST_SSH_ALIAS \\\n    ${override}\n`));
 	await assert.rejects(list, /disconnected/);
+	const missingDirectory = join(dir, "missing");
+	await writeFile(configPath, JSON.stringify({ targets: { home: { socket: join(missingDirectory, "approval.sock") } } }));
+	await command.handler("home", ctx);
+	assert.match(calls.at(-1)!, /Create a private 0700 directory for the approval socket/);
+	assert.doesNotMatch(calls.at(-1)!, /npx/);
 	profiles[0].enabled = false;
 	await assert.rejects(list, /selected approval route changed/);
 	await assert.rejects(action(), /selected approval route changed/);
@@ -155,9 +243,9 @@ test("approval requires an explicit selection and prepares a default socket for 
 		choose = "local";
 		expectedOptions = ["local"];
 		await command.handler("", ctx);
-		assert.match(calls.at(-1)!, /1Password approval: local/);
+		assert.match(calls.at(-1)!, /Local approval selected/);
 		await command.handler("status", ctx);
-		assert.match(calls.at(-1)!, /local.*Signed op available.*approval state is unknown/);
+		assert.match(calls.at(-1)!, /^1Password \| Local approval\n  Pi host: .+\n  Signed op: Available\n  1Password approval: Unknown/);
 	}
 });
 
@@ -357,8 +445,35 @@ printf '%s' '${secret}'
 test("the companion rejects the old raw read and broad grant commands", async () => {
 	await assert.rejects(exec(process.execPath, [cli, "read", "/tmp/op.sock", reference, "--", "/bin/cat"]), /Usage/);
 	await assert.rejects(exec(process.execPath, [cli, "serve", "host", "/tmp/op.sock", "--allow-read"]), /Usage/);
+});
+
+test("the companion refuses actions under diagnostics or additional certificate trust", async (t) => {
+	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-runtime-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const script = join(dir, "probe.mjs");
 	const actionsUrl = new URL("../src/actions.mjs", import.meta.url).href;
-	await assert.rejects(exec(process.execPath, ["--input-type=module", "-e",
-		`const { loadActions } = await import(${JSON.stringify(actionsUrl)}); await loadActions('/missing', '/usr/bin/true');`,
-	], { env: { ...process.env, NODE_DEBUG: "https" } }), /Disable Node.js HTTP debug logging/);
+	await writeFile(script, `import { checkActionRuntime } from ${JSON.stringify(actionsUrl)};
+checkActionRuntime();\n`);
+	const protectedScript = join(dir, "protected.mjs");
+	await writeFile(protectedScript, `import assert from 'node:assert/strict';
+import { url } from 'node:inspector';
+import { checkActionRuntime } from ${JSON.stringify(actionsUrl)};
+assert.equal(checkActionRuntime(), true);
+process.kill(process.pid, 'SIGUSR1');
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert.equal(url(), undefined);\n`);
+	await exec(process.execPath, ["--disable-sigusr1", protectedScript]);
+	for (const category of ["http", "https", "stream"]) {
+		await assert.rejects(exec(process.execPath, [script], { env: { ...process.env, NODE_DEBUG: category } }),
+			/Disable Node\.js .*debug logging/, category);
+	}
+	for (const option of ["--inspect=127.0.0.1:0", `--tls-keylog=${join(dir, "keys")}`, "--heapsnapshot-signal=SIGUSR2", "--use-system-ca"]) {
+		await assert.rejects(exec(process.execPath, [option, script]), /without Node\.js runtime options/, option);
+	}
+	await assert.rejects(exec(process.execPath, [script], { env: { ...process.env, NODE_OPTIONS: "--heapsnapshot-signal=SIGUSR2" } }),
+		/without Node\.js runtime options/);
+	for (const setting of [{ NODE_EXTRA_CA_CERTS: join(dir, "extra.pem") }, { NODE_USE_SYSTEM_CA: "1" }]) {
+		await assert.rejects(exec(process.execPath, [script], { env: { ...process.env, ...setting } }),
+			/Unset NODE_EXTRA_CA_CERTS and NODE_USE_SYSTEM_CA/);
+	}
 });

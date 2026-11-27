@@ -63,7 +63,12 @@ export function socketPath(value) {
 
 /** @param {string} directory */
 async function checkSocketDirectory(directory) {
-	const stat = await lstat(directory);
+	const stat = await lstat(directory).catch((error) => {
+		if (error.code === "ENOENT") {
+			throw new Error(`Create a private 0700 directory for the approval socket at ${directory}.`);
+		}
+		throw error;
+	});
 	if (!stat.isDirectory() || stat.uid !== process.getuid?.() || (stat.mode & 0o7777) !== 0o700) {
 		throw new Error("Use a private 0700 directory owned by your user for the approval socket.");
 	}
@@ -320,6 +325,12 @@ export function approvalServer({ identity, execute, actions = new Map() }) {
 	});
 }
 
+export class ApprovalDisconnectedError extends Error {
+	constructor() {
+		super("The approval Mac is disconnected. Start its Secure Shell tunnel or select another target.");
+	}
+}
+
 /**
  * @param {string} path
  * @param {string | undefined} payload
@@ -332,7 +343,7 @@ async function send(path, payload, signal, identity) {
 		await checkSocket(path);
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-			throw new Error("The approval Mac is disconnected. Start its Secure Shell tunnel or select another target.");
+			throw new ApprovalDisconnectedError();
 		}
 		throw error;
 	}
@@ -362,7 +373,7 @@ async function send(path, payload, signal, identity) {
 		req.once("error", (error) => {
 			const code = "code" in error ? error.code : undefined;
 			if (code === "ECONNREFUSED" || code === "ENOENT") {
-				reject(new Error("The approval Mac is disconnected. Start its Secure Shell tunnel or select another target."));
+				reject(new ApprovalDisconnectedError());
 			} else if (status && deadline.aborted && !signal?.aborted) {
 				reject(new Error("The approval terminal did not report its status within 5 seconds."));
 			} else {

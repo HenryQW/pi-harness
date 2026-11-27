@@ -1,5 +1,6 @@
 import { lstat } from "node:fs/promises";
 import { request } from "node:https";
+import { url as inspectorUrl } from "node:inspector";
 import { dirname, isAbsolute, normalize } from "node:path";
 import { debuglog } from "node:util";
 import { createConfigStore, parsers, required } from "@henryqw/pi-config-store";
@@ -36,11 +37,24 @@ const grant = parsers.object({
 	header: required(parsers.oneOf(["bearer", "x-api-key"])),
 });
 
+export const disableInspectorSignal = "--disable-sigusr1";
+
+export function checkActionRuntime() {
+	const protectedFromSignal = process.execArgv.length === 1 && process.execArgv[0] === disableInspectorSignal;
+	if ((process.execArgv.length && !protectedFromSignal) || process.env.NODE_OPTIONS || inspectorUrl()) {
+		throw new Error("Start pi-1password without Node.js runtime options, NODE_OPTIONS, or an active debugger.");
+	}
+	if (process.env.NODE_EXTRA_CA_CERTS || process.env.NODE_USE_SYSTEM_CA) {
+		throw new Error("Unset NODE_EXTRA_CA_CERTS and NODE_USE_SYSTEM_CA before you enable 1Password actions.");
+	}
+	if (["http", "https", "stream"].some((category) => debuglog(category).enabled)) {
+		throw new Error("Disable Node.js HTTP, HTTPS, and stream debug logging before you enable 1Password actions.");
+	}
+	return protectedFromSignal;
+}
+
 /** @param {string} path @param {string} executable */
 export async function loadActions(path, executable) {
-	if (debuglog("http").enabled || debuglog("https").enabled) {
-		throw new Error("Disable Node.js HTTP debug logging before you enable 1Password actions.");
-	}
 	if (!isAbsolute(path) || normalize(path) !== path || /\p{C}/u.test(path)) throw new Error("Use an absolute action file path.");
 	const parents = await checkProtectedAncestors(path);
 	const file = await lstat(path);
