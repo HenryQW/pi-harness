@@ -1,6 +1,6 @@
 # Pi Footer
 
-Pi Footer shows checkout identity, model usage, work time, and extension status. It also supplies the independently selectable open command.
+Pi Footer shows checkout identity, model usage, work time, and extension status. It also supplies the independently selectable tool-row folding and open commands.
 
 ## Language
 
@@ -37,3 +37,11 @@ _Avoid_: editor command, project opener
 **Open URI**:
 An editor link for the current working directory when the open command supports the VS Code URI scheme. An arbitrary shell command is not an Open URI.
 _Avoid_: command link, shell URI
+
+**Tool-row mode**:
+How collapsed tool rows show in the transcript: one summary line for each tool group, one line for each finished tool, or Pi's own rows.
+_Avoid_: hide tool output, compact mode
+
+**Tool group**:
+The tool calls between a user message or agent text and the next agent text. Group mode shows a tool group as one summary line with its skills read and its token usage.
+_Avoid_: turn, batch

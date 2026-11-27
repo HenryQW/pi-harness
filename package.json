@@ -21,6 +21,7 @@
       "./extensions/pi-codegraph/extensions/codegraph.ts",
       "./extensions/pi-footer/extensions/footer.ts",
       "./extensions/pi-footer/extensions/open.ts",
+      "./extensions/pi-footer/extensions/tool-rows.ts",
       "./extensions/pi-notes/extensions/notes.ts",
       "./extensions/pi-pr/extensions/pr.ts",
       "./extensions/pi-task-models/extensions/task-models.ts",

@@ -319,7 +319,7 @@ flowchart LR
     E -->|Blocked| D
 ```
 
-`/done` holds the checkout lock, then the command-store lock, through actual checkout removal. The Git child inherits both lock descriptors. A parent crash cannot release them while that child continues. The primary update child inherits its primary-checkout lock.
+`/done` holds the checkout lock, then the command-store lock, through actual checkout removal. If the command-store lock is busy, `/done` releases the checkout lock and retries the removal checks for up to one second. If the store stays busy, wait for the other operation to finish before you run `/done` again. The Git child inherits both lock descriptors. A parent crash cannot release them while that child continues. The primary update child inherits its primary-checkout lock.
 
 These two mutations use native child processes. Git has no runtime timeout. After Git exits, Pi reads error output for at most 100 milliseconds. Later output from descendants is not saved. The error output buffer holds at most 8192 bytes. Other commands use Pi's executor.
 

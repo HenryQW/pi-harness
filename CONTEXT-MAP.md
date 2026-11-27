@@ -15,7 +15,7 @@ Each context defines package-specific language and its boundary. Contexts are ad
 | `pi-codegraph` | [Pi CodeGraph](extensions/pi-codegraph/CONTEXT.md) | Separate checkout indexes, seed indexes, and indexing consent |
 | `pi-config-store` | [Pi Config Store](packages/pi-config-store/CONTEXT.md) | Extension Config Homes, config issues, and safe replacement |
 | `pi-deps` | [Pi Deps](extensions/pi-deps/CONTEXT.md) | Repository opt-in and dependency preparation for new worktrees |
-| `pi-footer` | [Pi Footer](extensions/pi-footer/CONTEXT.md) | Checkout identity, usage, work time, status, and opening the current directory |
+| `pi-footer` | [Pi Footer](extensions/pi-footer/CONTEXT.md) | Checkout identity, usage, work time, status, tool-row folding, and opening the current directory |
 | `pi-goal` | [Pi Goal](extensions/pi-goal/CONTEXT.md) | Branch-derived Goals, Evidence-based completion, Continuation limits, and Budget |
 | `pi-herdr` | [Pi Herdr](packages/pi-herdr/CONTEXT.md) | Herdr panes, Pi-agent launches, and shell readiness |
 | `pi-herdr-tools` | [Pi Herdr Tools](extensions/pi-herdr-tools/CONTEXT.md) | Conversation clones, handoffs, side questions, titles, and worktree completion |

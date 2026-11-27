@@ -575,6 +575,102 @@ test("uses scoped models and pinned thinking for picker and route resolution", (
 	assert.equal(resolveTaskModelRoute(ctx, { model: "provider/excluded", thinkingLevel: "off" }), undefined);
 });
 
+test("/task-models check reports available, excluded, and unavailable routes without saving", async () => {
+	const dir = tempDir();
+	try {
+		const allowed = { provider: "openai-codex-2", id: "allowed", input: ["text"], reasoning: true };
+		const excluded = { provider: "provider", id: "excluded", input: ["text"], reasoning: false };
+		const unavailable = { ...excluded, id: "unavailable" };
+		const imageOnly = { ...excluded, id: "image-only", input: ["image"] };
+		const contents = JSON.stringify({ profiles: {
+			fast: {
+				primary: { model: "openai-codex/allowed", thinkingLevel: "high" },
+				fallback: { model: "provider/excluded", thinkingLevel: "off" },
+			},
+			frontier: {
+				primary: { model: "provider/missing", thinkingLevel: "off" },
+				fallback: { model: "openai-codex/allowed", thinkingLevel: "low" },
+			},
+			ultra: {
+				primary: { model: "provider/unavailable", thinkingLevel: "off" },
+				fallback: { model: "provider/image-only", thinkingLevel: "off" },
+			},
+		} });
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, contents);
+		const notices: string[] = [];
+		const { handler } = controlPlane(eventBus(), dir);
+		await handler("check", {
+			model: allowed,
+			scopedModels: [{ model: allowed, thinkingLevel: "high" }],
+			modelRegistry: {
+				getAvailable: () => [allowed, excluded, imageOnly],
+				getAll: () => [allowed, excluded, unavailable, imageOnly],
+			},
+			hasUI: true,
+			ui: { notify: (message: string) => notices.push(message) },
+		});
+		assert.deepEqual(notices.join("\n").split("\n"), [
+			"Task model routes in the current session",
+			"fast primary · openai-codex/allowed (high) · Available.",
+			"fast fallback · provider/excluded (off) · Outside the current session scope.",
+			"frontier primary · provider/missing (off) · Model is absent from Pi's catalog.",
+			"frontier fallback · openai-codex/allowed (low) · Thinking level unavailable. Allowed levels are high.",
+			"ultra primary · provider/unavailable (off) · Model is in Pi's catalog but is unavailable.",
+			"ultra fallback · provider/image-only (off) · Model does not accept text input.",
+		]);
+		assert.equal(readFileSync(file, "utf8"), contents);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("checks task model scope at each session start and reports only issues", (t) => {
+	const dir = tempDir();
+	try {
+		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
+		const fallback = { ...primary, id: "fallback" };
+		const contents = JSON.stringify({ profiles: { fast: {
+			primary: { model: "provider/primary", thinkingLevel: "off" },
+			fallback: { model: "provider/fallback", thinkingLevel: "off" },
+		} } });
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, contents);
+		const notices: Array<[string, string]> = [];
+		const { sessionStart } = controlPlane(eventBus(), dir);
+		const models = [primary, fallback];
+		const ctx = {
+			model: primary,
+			scopedModels: [{ model: primary }],
+			modelRegistry: { getAvailable: () => models, getAll: () => models },
+			hasUI: true,
+			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
+		};
+		const message = "Task model route issues in the current session\nfast fallback · provider/fallback (off) · Outside the current session scope.";
+		for (const reason of ["startup", "new"]) {
+			sessionStart({ type: "session_start", reason }, ctx);
+			assert.deepEqual(notices.splice(0), [[message, "warning"]]);
+		}
+		sessionStart({ type: "session_start", reason: "new" }, { ...ctx, scopedModels: models.map((model) => ({ model })) });
+		assert.deepEqual(notices, []);
+
+		const output: string[] = [];
+		const stderr = t.mock.method(process.stderr, "write", (chunk: string) => { output.push(chunk); return true; });
+		try {
+			sessionStart({ type: "session_start", reason: "startup" }, { ...ctx, hasUI: false });
+		} finally {
+			stderr.mock.restore();
+		}
+		assert.deepEqual(output, [`${message}\n`]);
+		assert.deepEqual(notices, []);
+		assert.equal(readFileSync(file, "utf8"), contents);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 	const dir = tempDir();
 	try {

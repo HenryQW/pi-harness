@@ -30,6 +30,9 @@ export interface CommandInventory {
 }
 export const terminal = (state: CommandState) => ["succeeded", "failed", "cancelled", "timeout", "output_limit"].includes(state);
 export class CommandRemovalBlocked extends Error {}
+export class CommandStoreBusy extends Error {
+	readonly code = "ELOCKED";
+}
 export function assertCommandRemovalAllowed(jobs: readonly Job[]): void {
 	if (jobs.some((job) => !terminal(job.state) && !job.released)) throw new CommandRemovalBlocked("Active or unknown background commands block worktree removal, including forced completion. Inspect /commands.");
 }
@@ -113,13 +116,21 @@ export async function withCommandStoreLock<T>(root: string, operation: (descript
 // Call under the checkout lock. Keep command publication excluded through actual removal.
 export async function withCommandRemovalGuard<T>(root: string, checkout: string, operation: (descriptor: number) => Promise<T>): Promise<T> {
 	await privateDirectory(root, true);
-	return await withCommandStoreLock(root, async (descriptor) => {
-		let jobs: Job[];
-		try { jobs = await listJobs(root, [checkout]); }
-		catch (error) { throw Object.assign(new CommandRemovalBlocked(error instanceof Error ? error.message : "Background command records cannot be verified; inspect /commands before removal.", { cause: error }), { code: (error as NodeJS.ErrnoException)?.code }); }
-		assertCommandRemovalAllowed(jobs);
-		return await operation(descriptor);
-	});
+	let entered = false;
+	try {
+		return await withCommandStoreLock(root, async (descriptor) => {
+			entered = true;
+			let jobs: Job[];
+			try { jobs = await listJobs(root, [checkout]); }
+			catch (error) { throw Object.assign(new CommandRemovalBlocked(error instanceof Error ? error.message : "Background command records cannot be verified; inspect /commands before removal.", { cause: error }), { code: (error as NodeJS.ErrnoException)?.code }); }
+			assertCommandRemovalAllowed(jobs);
+			return await operation(descriptor);
+		});
+	} catch (error) {
+		// The lock helper also reports ELOCKED for a legacy directory, which cannot clear by waiting.
+		if (entered || !(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "ELOCKED" || (error.cause as NodeJS.ErrnoException | undefined)?.code === "EISDIR") throw error;
+		throw new CommandStoreBusy(error.message, { cause: error });
+	}
 }
 export async function readPublishedSpec(root: string, dir: string): Promise<JobSpec> {
 	try { return await readSpec(dir); }
