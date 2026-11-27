@@ -53,6 +53,12 @@ test("no-arg mode checks packages moved between workspace roots", () => {
     const bumpedVersion = run(repo, process.execPath, [checkerPath]);
     assert.equal(bumpedVersion.status, 0, bumpedVersion.stderr);
     assert.match(bumpedVersion.stdout, /Package version checks passed\./);
+
+    writeFileSync(join(movedPackageDir, "package.json"), JSON.stringify({ name: "@test/example", version: ["1.0.1"], files: ["index.js"] }));
+    const invalidVersion = run(repo, process.execPath, [checkerPath]);
+    assert.equal(invalidVersion.status, 1);
+    assert.match(invalidVersion.stderr, /@test\/example: invalid semver 1\.0\.1/);
+    assert.doesNotMatch(invalidVersion.stderr, /TypeError/);
   } finally {
     rmSync(repo, { force: true, recursive: true });
   }

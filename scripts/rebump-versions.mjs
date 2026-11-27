@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { parseReleaseVersion } from './release-version.mjs'
 
 // Resolves version-only conflicts left by a merge or rebase onto main:
 // each conflicted package.json gets main's version plus the branch's bump level.
@@ -34,7 +35,6 @@ function unmergedPaths() {
   return stages
 }
 
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
 const VERSION_FIELD = /("version"\s*:\s*)"([^"]*)"/
 const PLACEHOLDER = '__REBUMP_VERSION__'
 const LEVELS = ['major', 'minor', 'patch']
@@ -42,10 +42,11 @@ const LEVELS = ['major', 'minor', 'patch']
 function readStage(file, stage) {
   const text = git(['show', `:${stage}:${file}`])
   const version = JSON.parse(text).version
-  if (typeof version !== 'string' || !SEMVER.test(version)) throw new Error(`stage ${stage} version ${version} is not plain x.y.z`)
+  const parts = parseReleaseVersion(version)
+  if (!parts) throw new Error(`stage ${stage} version ${version} is not plain x.y.z`)
   const match = text.match(VERSION_FIELD)
   if (match?.[2] !== version) throw new Error(`stage ${stage} top-level "version" is not the first "version" field`)
-  return { version, text: text.replace(VERSION_FIELD, `$1"${PLACEHOLDER}"`) }
+  return { version, parts, text: text.replace(VERSION_FIELD, `$1"${PLACEHOLDER}"`) }
 }
 
 function mergeTexts(current, base, other) {
@@ -79,18 +80,16 @@ for (const [file, stages] of unmergedPaths()) {
     const main = readStage(file, sides.main)
     const branch = readStage(file, sides.branch)
 
-    const baseParts = base.version.split('.').map(Number)
-    const branchParts = branch.version.split('.').map(Number)
-    const level = baseParts.findIndex((part, index) => part !== branchParts[index])
+    const level = base.parts.findIndex((part, index) => part !== branch.parts[index])
     if (level === -1) {
       left.push(`${file}: left conflicted (branch did not bump ${base.version})`)
       continue
     }
-    if (branchParts[level] < baseParts[level]) throw new Error(`branch version ${branch.version} is lower than base ${base.version}`)
+    if (branch.parts[level] < base.parts[level]) throw new Error(`branch version ${branch.version} is lower than base ${base.version}`)
 
-    const nextParts = main.version.split('.').map(Number)
-    nextParts[level] += 1
-    nextParts.fill(0, level + 1)
+    const nextParts = [...main.parts]
+    nextParts[level] += 1n
+    nextParts.fill(0n, level + 1)
     const next = nextParts.join('.')
 
     const merged = mergeTexts(...(sides.main === 2 ? [main, base, branch] : [branch, base, main]).map(stage => stage.text))

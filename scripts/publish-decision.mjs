@@ -1,14 +1,14 @@
 import { spawnSync } from 'node:child_process'
+import { compareReleaseVersions, parseReleaseVersion } from './release-version.mjs'
 
-function parseVersion(version) {
-  if (typeof version !== 'string' || /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version)?.[0] !== version) {
-    throw new Error(`Version must be plain x.y.z: ${JSON.stringify(version)}`)
-  }
-  return version.split('.').map(BigInt)
+function requireVersion(version) {
+  const parts = parseReleaseVersion(version)
+  if (!parts) throw new Error(`Version must be plain x.y.z: ${JSON.stringify(version)}`)
+  return parts
 }
 
 export function publishDecision(name, localVersion, run = spawnSync) {
-  const local = parseVersion(localVersion)
+  const local = requireVersion(localVersion)
   const result = run('npm', ['view', name, 'version', '--json'], { encoding: 'utf8' })
   if (result.error) throw result.error
   if (result.status !== 0) {
@@ -24,11 +24,9 @@ export function publishDecision(name, localVersion, run = spawnSync) {
   }
 
   const remoteVersion = JSON.parse(result.stdout)
-  const remote = parseVersion(remoteVersion)
-  for (let i = 0; i < 3; i++) {
-    if (local[i] > remote[i]) return 'publish'
-    if (local[i] < remote[i]) throw new Error(`${name}: local version ${localVersion} is lower than npm version ${remoteVersion}`)
-  }
+  const order = compareReleaseVersions(local, requireVersion(remoteVersion))
+  if (order > 0) return 'publish'
+  if (order < 0) throw new Error(`${name}: local version ${localVersion} is lower than npm version ${remoteVersion}`)
   return 'skip'
 }
 
