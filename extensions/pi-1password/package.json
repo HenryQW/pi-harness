@@ -1,6 +1,6 @@
 {
   "name": "@henryqw/pi-1password",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Route 1Password lists and approved actions to the Mac where you can approve them.",
   "keywords": ["pi-package", "pi", "1password"],
   "type": "module",

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { request } from "node:http";
+import { createServer as createHttpServer, request } from "node:http";
 import { createServer } from "node:https";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionToolContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import onePassword from "../extensions/1password.ts";
 import { loadActions } from "../src/actions.mjs";
-import { approvalServer, forward, metadata, opArgs } from "../src/bridge.mjs";
+import { approvalServer, approvalStatus, forward, metadata, opArgs } from "../src/bridge.mjs";
 
 const secret = "fixture-api-key";
 const reference = "op://vault/item/field";
@@ -78,9 +78,13 @@ test("approval requires an explicit selection and prepares a default socket for 
 	const actionTool = tools.get("onepassword_action")!;
 	assert.ok("type" in actionTool.parameters && actionTool.parameters.type === "object");
 	const action = (input: Record<string, unknown> = { action: "verify" }) => actionTool.execute("test", input, undefined, undefined, ctx);
+	const discover = (input: Record<string, unknown> = {}) => tools.get("onepassword_actions")!.execute("test", input, undefined, undefined, ctx);
 
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /No approval Mac selected/);
 	await assert.rejects(list, /Select an approval Mac/);
 	await assert.rejects(action(), /Select a remote approval Mac/);
+	await assert.rejects(discover(), /Select a remote approval Mac/);
 	await command.handler("", ctx);
 	assert.deepEqual(probed, [homeTarget, "other-mac"]);
 	await assert.rejects(list, /Select an approval Mac/);
@@ -107,18 +111,38 @@ test("approval requires an explicit selection and prepares a default socket for 
 		await exec("/bin/chmod", ["-N", socketDir]);
 	}
 	await assert.rejects(list, /disconnected/);
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /Personal Mac.*disconnected/);
 	let runs = 0;
-	const server = approvalServer({ identity, execute: async () => [], actions: new Map([["verify", async () => { runs++; }]]) });
+	const server = approvalServer({ identity,
+		execute: async () => { assert.fail("Status and action discovery must not run op"); },
+		actions: new Map([["verify", async () => { runs++; }], ["check-service", async () => { runs++; }]]),
+	});
 	t.after(() => { server.close(); server.closeAllConnections(); });
 	server.listen(socket);
 	await once(server, "listening");
 	await chmod(socket, 0o600);
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /Personal Mac.*Tunnel connected.*idle.*Action grants: 2.*approval state is unknown/);
+	await assert.rejects(discover({ reference }), /takes no parameters/);
+	assert.deepEqual((await discover()).content, [{ type: "text", text: JSON.stringify({
+		approvalMac: "Personal Mac", actions: ["check-service", "verify"],
+	}) }]);
+	assert.equal(runs, 0);
 	await assert.rejects(action({ action: "verify", reference }), /only an approved/);
 	assert.deepEqual((await action()).content, [{ type: "text", text: "The approved 1Password action completed." }]);
+	profiles[0].label = "status";
+	await command.handler("select status", ctx);
+	assert.match(calls.at(-1)!, /1Password approval: status.*approval terminal is closed/);
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /1Password approval: status.*Tunnel connected/);
 	const override = join(dir, "home.sock");
 	await mkdir(configDir, { recursive: true });
 	await writeFile(configPath, JSON.stringify({ targets: { home: { socket: override } } }));
 	await assert.rejects(action(), /selected approval route changed/);
+	await assert.rejects(discover(), /selected approval route changed/);
+	await command.handler("status", ctx);
+	assert.match(calls.at(-1)!, /selected approval route changed/);
 	await command.handler("home", ctx);
 	assert.ok(calls.at(-1)?.includes(`pi-1password serve YOUR_PI_HOST \\\n  ${override}\n`));
 	await assert.rejects(list, /disconnected/);
@@ -132,6 +156,8 @@ test("approval requires an explicit selection and prepares a default socket for 
 		expectedOptions = ["local"];
 		await command.handler("", ctx);
 		assert.match(calls.at(-1)!, /1Password approval: local/);
+		await command.handler("status", ctx);
+		assert.match(calls.at(-1)!, /local.*Signed op available.*approval state is unknown/);
 	}
 });
 
@@ -171,13 +197,73 @@ test("approval sockets require a matching Mac and private permissions", async (t
 	await once(server, "listening");
 	await chmod(socket, 0o600);
 	await assert.rejects(list("different-mac"), /does not match/);
+	await assert.rejects(approvalStatus(socket, undefined, "different-mac"), /does not match/);
+	assert.deepEqual(await approvalStatus(socket, undefined, identity), { busy: false, actions: [] });
 	await assert.rejects(forward(socket, { operation: "action", action: "verify" }, undefined, identity), /no grant/);
 	assert.deepEqual(await list(), [itemMetadata]);
 	await chmod(socket, 0o666);
 	await assert.rejects(list(), /0600 approval socket/);
+	await assert.rejects(approvalStatus(socket, undefined, identity), /0600 approval socket/);
 	await chmod(socket, 0o600);
 	await chmod(dir, 0o755);
 	await assert.rejects(list(), /private 0700 directory/);
+});
+
+test("status works while the terminal handles another request", { timeout: 10_000 }, async (t) => {
+	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-status-"));
+	const socket = join(dir, "op.sock");
+	const events = new EventEmitter();
+	const started = once(events, "started");
+	const server = approvalServer({ identity, async execute() {
+		const release = once(events, "release");
+		events.emit("started");
+		await release;
+		return [itemRow];
+	} });
+	t.after(async () => {
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await rm(dir, { recursive: true, force: true });
+	});
+	server.listen(socket);
+	await once(server, "listening");
+	await chmod(socket, 0o600);
+	const list = forward(socket, { operation: "items" }, undefined, identity);
+	try {
+		await Promise.race([started, list]);
+		assert.deepEqual(await approvalStatus(socket, undefined, identity), { busy: true, actions: [] });
+	} finally {
+		events.emit("release");
+		assert.deepEqual(await list, [itemMetadata]);
+	}
+	assert.deepEqual(await approvalStatus(socket, undefined, identity), { busy: false, actions: [] });
+});
+
+test("status handles old companions and rejects responses with grant details", async (t) => {
+	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-compat-"));
+	const socket = join(dir, "op.sock");
+	let supportsStatus = false;
+	const server = createHttpServer((req, res) => {
+		if (req.method === "POST" && req.url === "/op") {
+			res.end(JSON.stringify({ result: [itemMetadata] }));
+		} else if (supportsStatus) {
+			res.end(JSON.stringify({ busy: false, actions: ["verify"], reference }));
+		} else {
+			res.writeHead(404).end();
+		}
+	});
+	t.after(async () => {
+		server.closeAllConnections();
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+		await rm(dir, { recursive: true, force: true });
+	});
+	server.listen(socket);
+	await once(server, "listening");
+	await chmod(socket, 0o600);
+	await assert.rejects(approvalStatus(socket, undefined, identity), /Status is unavailable.*Check the selected socket route.*update pi-1password/);
+	assert.deepEqual(await forward(socket, { operation: "items" }, undefined, identity), [itemMetadata]);
+	supportsStatus = true;
+	await assert.rejects(approvalStatus(socket, undefined, identity), /invalid status/);
 });
 
 function send(socket: string, payload: object, mac = identity) {
