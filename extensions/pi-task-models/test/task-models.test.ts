@@ -626,6 +626,51 @@ test("/task-models check reports available, excluded, and unavailable routes wit
 	}
 });
 
+test("checks task model scope at each session start and reports only issues", (t) => {
+	const dir = tempDir();
+	try {
+		const primary = { provider: "provider", id: "primary", input: ["text"], reasoning: false };
+		const fallback = { ...primary, id: "fallback" };
+		const contents = JSON.stringify({ profiles: { fast: {
+			primary: { model: "provider/primary", thinkingLevel: "off" },
+			fallback: { model: "provider/fallback", thinkingLevel: "off" },
+		} } });
+		const file = configFile(dir);
+		mkdirSync(join(dir, "config", "pi-task-models"), { recursive: true });
+		writeFileSync(file, contents);
+		const notices: Array<[string, string]> = [];
+		const { sessionStart } = controlPlane(eventBus(), dir);
+		const models = [primary, fallback];
+		const ctx = {
+			model: primary,
+			scopedModels: [{ model: primary }],
+			modelRegistry: { getAvailable: () => models, getAll: () => models },
+			hasUI: true,
+			ui: { notify(message: string, level: string) { notices.push([message, level]); } },
+		};
+		const message = "Task model route issues in the current session\nfast fallback · provider/fallback (off) · Outside the current session scope.";
+		for (const reason of ["startup", "new"]) {
+			sessionStart({ type: "session_start", reason }, ctx);
+			assert.deepEqual(notices.splice(0), [[message, "warning"]]);
+		}
+		sessionStart({ type: "session_start", reason: "new" }, { ...ctx, scopedModels: models.map((model) => ({ model })) });
+		assert.deepEqual(notices, []);
+
+		const output: string[] = [];
+		const stderr = t.mock.method(process.stderr, "write", (chunk: string) => { output.push(chunk); return true; });
+		try {
+			sessionStart({ type: "session_start", reason: "startup" }, { ...ctx, hasUI: false });
+		} finally {
+			stderr.mock.restore();
+		}
+		assert.deepEqual(output, [`${message}\n`]);
+		assert.deepEqual(notices, []);
+		assert.equal(readFileSync(file, "utf8"), contents);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("resolves declaration defaults, explicit overrides, and fallbacks", () => {
 	const dir = tempDir();
 	try {

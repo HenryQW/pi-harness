@@ -549,7 +549,7 @@ function taskRouteScopeIssue(ctx: ExtensionContext, route: TaskModelRoute): stri
 	return "Model is in Pi's catalog but is unavailable.";
 }
 
-function reportTaskModelScope(ctx: ExtensionContext, profiles: TaskModelsConfig["profiles"]): void {
+function reportTaskModelScope(ctx: ExtensionContext, profiles: TaskModelsConfig["profiles"], issuesOnly = false): void {
 	const lines: string[] = [];
 	let hasIssues = false;
 	for (const name of PROFILE_NAMES) {
@@ -560,14 +560,18 @@ function reportTaskModelScope(ctx: ExtensionContext, profiles: TaskModelsConfig[
 			if (!route) continue;
 			const issue = taskRouteScopeIssue(ctx, route);
 			if (issue) hasIssues = true;
+			else if (issuesOnly) continue;
 			lines.push(`${name} ${kind} · ${routeLabel(route)} · ${issue ?? "Available."}`);
 		}
 	}
 	if (!lines.length) {
-		ctx.ui.notify("No task model profiles are configured. Run /task-models to configure profiles.", "info");
+		if (!issuesOnly) ctx.ui.notify("No task model profiles are configured. Run /task-models to configure profiles.", "info");
 		return;
 	}
-	ctx.ui.notify(["Task model routes in the current session", ...lines].join("\n"), hasIssues ? "warning" : "info");
+	const heading = issuesOnly ? "Task model route issues in the current session" : "Task model routes in the current session";
+	const message = [heading, ...lines].join("\n");
+	if (ctx.hasUI) ctx.ui.notify(message, hasIssues ? "warning" : "info");
+	else process.stderr.write(`${message}\n`);
 }
 
 export function createTaskModelsExtension(
@@ -581,9 +585,12 @@ export function createTaskModelsExtension(
 	const reporter = registerConfigReporting(pi, [configStore, presetsStore]);
 	registerBiliModels(pi, agentDir, (ctx) => reporter.report(ctx, configStore, configStore.loadSync()));
 	pi.on("session_start", (_event, ctx) => {
-		if (configStore.loadSync().source === "missing") {
+		const loaded = configStore.loadSync();
+		if (loaded.source === "missing") {
 			ctx.ui.notify(`Task model config is missing at ${configStore.path}; run /task-models to configure task routes.`, "warning");
+			return;
 		}
+		if (loaded.status === "ok") reportTaskModelScope(ctx, loaded.value.profiles, true);
 	});
 	pi.registerCommand("task-models", {
 		getArgumentCompletions: (prefix) => {
