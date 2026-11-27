@@ -501,6 +501,41 @@ test("/done recovery accepts real completion proof without writing a release", a
 	});
 });
 
+test("/done releases the checkout lock while waiting for command publication, then removes once", async (t) => {
+	const store = await mkdtemp(join(tmpdir(), "pi-done-command-store-"));
+	t.after(() => rm(store, { recursive: true, force: true }));
+	const key = await realpath(checkout);
+	const manager = new CommandManager(store, checkoutAdmission({ on() {}, exec: async () => ok(`${key}\n`) }));
+	let release!: () => void, notifyHeld!: () => void;
+	const gate = new Promise<void>(resolve => { release = resolve; });
+	const held = new Promise<void>(resolve => { notifyHeld = resolve; });
+	const holder = withWorktreeLock(store, async () => { notifyHeld(); await gate; });
+	try {
+		await Promise.race([held, holder]);
+		await withHerdrEnvironment("1", "w1:t1", async () => {
+			const events: string[] = [];
+			const ctx = context(events);
+			const waitForIdle = ctx.waitForIdle;
+			ctx.waitForIdle = async () => {
+				await waitForIdle();
+				if (events.filter(event => event === "idle").length === 2) {
+					await withWorktreeLock(checkout, async () => {});
+					release();
+					await holder;
+				}
+			};
+			const app = harness(snapshotExecutor(), manager.guardRemoval.bind(manager));
+			await app.command("", ctx);
+			assert.equal(events.filter(event => event.startsWith("confirm:")).length, 1);
+			assert.equal(app.calls.filter(call => call.args[1] === "list" && call.command === "git").length, 2);
+			assert.equal(app.calls.filter(call => call.args[1] === "remove").length, 1);
+		});
+	} finally {
+		release();
+		await holder;
+	}
+});
+
 for (const choice of [undefined, "Keep protection", "No", "cancel-confirmation", "non-ui", "record-lock", "store-lock", "checkout-lock"])
 test(`/done recovery preserves protection for ${choice ?? "Escape"}`, async (t) => {
 	await withHerdrEnvironment("1", "w1:t1", async () => {
@@ -510,8 +545,13 @@ test(`/done recovery preserves protection for ${choice ?? "Escape"}`, async (t) 
 		else f.answers.push(choice);
 		if (choice === "non-ui") Object.assign(f.ctx, { hasUI: false });
 		const run = () => app.command("--force", f.ctx);
-		if (choice === "store-lock" || choice === "checkout-lock") {
-			await withWorktreeLock(choice === "store-lock" ? f.store : checkout, async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
+		if (choice === "store-lock") {
+			await withWorktreeLock(f.store, async () => {
+				await assert.rejects(run(), /Command store is busy\. Run \/done again/);
+			});
+			assert.equal(f.choices.length, 0);
+		} else if (choice === "checkout-lock") {
+			await withWorktreeLock(checkout, async () => { await assert.rejects(run(), { code: "ELOCKED" }); });
 			assert.equal(f.choices.length, 0);
 		} else if (choice === "record-lock") {
 			// A held start lock cannot be stolen, even after explicit consent.

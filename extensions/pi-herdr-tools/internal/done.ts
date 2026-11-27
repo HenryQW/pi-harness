@@ -1,9 +1,10 @@
 import { tmpdir } from "node:os";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExecResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createHerdrClient, withWorktreeLock } from "@henryqw/pi-herdr";
 import { verifyPaneTarget, requiredString } from "./worktree.ts";
 import { absolutePath } from "./repository.ts";
-import { CommandRemovalBlocked } from "./command-state.ts";
+import { CommandRemovalBlocked, CommandStoreBusy } from "./command-state.ts";
 import { runLockedGit } from "./locked-git.ts";
 
 type SnapshotPane = { tab_id?: unknown; cwd?: unknown };
@@ -68,7 +69,7 @@ export default function herdrDoneExtension(pi: ExtensionAPI,
 			}
 
 			let target: string | undefined, identity: string | undefined, removalStarted = false;
-			const remove = async () => {
+			const removeOnce = async () => {
 				await ctx.waitForIdle();
 				check();
 				const checkout = absolutePath((await execOrThrow("git", ["rev-parse", "--show-toplevel"], ctx.cwd)).replace(/\r?\n$/, ""), "Git checkout");
@@ -135,6 +136,24 @@ export default function herdrDoneExtension(pi: ExtensionAPI,
 					});
 				});
 				return { siblingTabIds, mainCheckout, parentIsBare };
+			};
+			const remove = async () => {
+				let deadline: number | undefined;
+				for (;;) {
+					try { return await removeOnce(); }
+					catch (error) {
+						if (removalStarted || !(error instanceof CommandStoreBusy)) throw error;
+						deadline ??= performance.now() + 1_000;
+						const wait = Math.min(50, deadline - performance.now());
+						if (wait > 0) {
+							// Retry from the beginning after the checkout lock has been released.
+							await delay(wait);
+							check();
+							if (performance.now() < deadline) continue;
+						}
+						throw new Error("Command store is busy. Run /done again when the other operation finishes.", { cause: error });
+					}
+				}
 			};
 			let removed: Awaited<ReturnType<typeof remove>>;
 			try { removed = await remove(); }
