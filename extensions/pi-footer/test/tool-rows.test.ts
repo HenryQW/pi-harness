@@ -87,14 +87,14 @@ function setup(t: { after(fn: () => void): void }, config?: unknown) {
 }
 
 test("off mode preserves Pi's renderer and native fallback", async (t) => {
-	const { start, resolve } = setup(t);
+	const { start, resolve } = setup(t, { mode: "off" });
 	await start();
 	assert.equal(resolve(), base);
 	assert.equal(resolve("bash", () => undefined), undefined);
 });
 
-test("group mode folds the tools between agent replies into one line", async (t) => {
-	const { start, resolve, row, handlers, ctx, thinkingLabels } = setup(t, { mode: "group" });
+test("with no config file, tools between agent replies fold into one line", async (t) => {
+	const { start, resolve, row, handlers, ctx, thinkingLabels } = setup(t);
 	await start();
 	assert.equal(thinkingLabels.at(-1), "");
 
