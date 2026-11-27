@@ -30,11 +30,18 @@ Run `/task-models`, select `fast`, then choose a primary model and thinking leve
 | Surface | Type | Purpose |
 | --- | --- | --- |
 | `/task-models` | command | Configure profiles and assign them to active tasks. |
+| `/task-models check` | command | Check configured routes against the current session's model scope. |
 | `/task-models preset` | command | Apply a saved profile setup. |
 | Option+S / Alt+S in `/task-models` | shortcut | Save configured profiles as a named preset in the interactive terminal. |
 | Session start | ui | Warn about missing config and config or preset problems. Show an error when routing is disabled. |
 
 Configure each profile your consumers require. `fav` has no fallback. Select an active task to override its declared profile; choosing its declared default removes the override.
+
+### Check routes
+
+Run `/task-models check` before delegation to inspect your configured primary and fallback routes. Each line shows the profile, route, model, thinking level, and result.
+
+The check distinguishes a model outside the current session's scope from one absent from Pi's catalog. It also reports unavailable models, non-text models, and thinking levels the session cannot use. The check is read-only and uses the current session's scope. Delegate launches resolve separately.
 
 ### Delegate routes
 
