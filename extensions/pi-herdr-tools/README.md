@@ -64,11 +64,15 @@ Use `background_command` for an already authorized, noninteractive local command
 
 Use `{"action":"list"}` to list jobs. Use `{"action":"status","id":"<job-id>"}` for status and the last 8192 output bytes. Use `{"action":"cancel","id":"<job-id>"}` to request cancellation. Lists show at most 20 jobs and the total count. Results include the full output path. Failed commands, limits, cancellation, and unknown ownership are error results.
 
-In the interactive terminal, run `/commands` to inspect commands. Type in `Search` to filter commands and pruned receipts. Search ignores case and matches text within identifiers, status, command text, and checkout paths. Use Backspace to edit the search or Control+U to clear it.
+In the interactive terminal, run `/commands` to inspect commands. The list opens in the editor area, below the conversation, and shows at most 10 rows. Each view leaves three rows free for the Pi footer. Commands that hold or can hold a checkout come first: unverified records, then `unknown`, then live commands. Finished commands follow, newest first. Each row shows the age of the command.
+
+Type in `Search` to filter commands and pruned receipts. Search ignores case and matches text within identifiers, status, command text, and checkout paths. Use Backspace to edit the search or Control+U to clear it.
 
 Use the arrow keys or Page Up and Page Down to navigate matches. Press Tab to switch between search and configured list keys. Enter opens the selected command. Escape or Control+C closes the list without changes. If the terminal is too small, enlarge it to select a command.
 
-Select a command, then select `Show output`. A scrollable view shows its saved status and a snapshot of the last 8192 output bytes. Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
+Select a command, then select `Show output`. A scrollable view in the editor area shows its saved status and a snapshot of the last 8192 output bytes. Its output area uses at most half of the terminal rows.
+
+Use the arrow keys to scroll and the Page Up and Page Down keys to move one page. Use Escape, Enter, or Control+C to close the view without cancelling the command. The view uses your configured selection keys. Reopen it for a new snapshot.
 
 RPC, the remote procedure call mode, uses native selection dialogs when `ctx.hasUI` is true. The search field is available only in the terminal. Output uses a notification, not the custom terminal view. Without a user interface, `/commands` only reports the inventory and makes no changes. The `background_command` cancellation tool remains available.
 
@@ -88,11 +92,13 @@ Do not use interactive commands, remote jobs, detached processes, or commands th
 
 In `/commands`, first select `Cancel and recheck` or `Recheck proof`. Cancellation asks the live runner to stop its own child group. A recheck releases protection only when saved records prove completion. Neither action starts another command or signals a saved process number.
 
+A runner fault does not need this recovery when termination is proved. The runner stops its command group, then saves `failed` with a fault name such as `runner_control_EIO`. The name gives the runner stage and the system error code. Pi then releases the checkout at its next check, about one second later. The runner pane shows the full error message. A failed heartbeat write does not stop a command.
+
 If termination remains unproved, read the warning. Select `Yes` only if you accept the risk and want to release protection.
 
 The confirmation defaults to `No`. `No`, Escape, and Control+C keep protection. You do not need to type a command identifier.
 
-The recovery confirmation keeps the complete warning visible above a bounded list. In a small terminal, selection stays blocked until the warning and an action fit. RPC uses native `No` and `Yes` selection, with `No` first. Without a user interface, recovery cannot release protection.
+The recovery confirmation draws over the bottom of the screen and keeps the complete warning visible above a bounded list. In a small terminal, selection stays blocked until the warning and an action fit. RPC uses native `No` and `Yes` selection, with `No` first. Without a user interface, recovery cannot release protection.
 
 **A live command could still write after release. Both Pi writes and checkout removal can become possible.** Release is a user decision, not proof of termination. Without verified completion, status shows `unknown` and `released by user, termination unproved`. The extension preserves the active record, evidence, and output.
 
@@ -135,7 +141,7 @@ flowchart LR
 
 After confirmation, batch pruning runs in the background. A status shows when it is active. You can continue to use Pi while it runs. A final notification names each deleted, skipped, or failed item. A failed item does not bypass checks for later items.
 
-An item not selected is never deleted. `/commands prune` requires a user interface; there is no non-interactive deletion option.
+The batch never deletes an item that you did not select. `/commands prune` requires a user interface; there is no non-interactive deletion option.
 
 Select a verified finished command in `/commands`, then select `Prune finished output`. The confirmation defaults to `Keep output`. Select `Delete output despite this risk` only if you accept permanent loss of the saved log. Escape and the default selection keep the output.
 
@@ -150,6 +156,10 @@ The extension skips items while the session is busy or after the branch changes.
 Pruning deletes only `output.log`. It does not erase the saved command text. The specification, claim, terminal result, delivery record, and any dispatch, cancellation, release, or other audit evidence remain. A small pruning receipt records permission for deletion. Lock files remain unchanged. These retained records prevent another launch after reload.
 
 Pruned commands disappear from the default `/commands` list. Run `/commands pruned` for a read-only receipt view; status reports that output has been pruned. Only records with a pruning receipt and absent output are excluded from the `retainedJobs` limit. If deletion fails or is interrupted, output that still exists stays visible. Before another deletion, Pi requires new human confirmation.
+
+Pi also prunes old output without a dialog. About one time each hour, each Pi session deletes the `output.log` of verified finished commands that ended more than `pruneAfterDays` days ago. Age replaces the confirmation and the session checks. The delivery receipt, the verified terminal state, and the record locks stay mandatory.
+
+Live, unknown, and undelivered commands keep their output. An interrupted deletion also waits for a person. One pass prunes at most 25 outputs; a backlog continues one minute later. Set `pruneAfterDays` to `0` to keep all output until you prune it. While the configuration file has an issue, Pi prunes nothing.
 
 Every dialog checks the session, branch, and lifecycle again before it permits a change. Escape makes no change. A changed session or branch requires you to reopen `/commands`. No dialog holds a command lock.
 
@@ -339,6 +349,7 @@ Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. For the shared r
   "outputBytes": 10485760,
   "concurrency": 4,
   "retainedJobs": 1000,
+  "pruneAfterDays": 7,
   "btw": {
     "autoSubmit": false,
     "tools": "inherit",
@@ -367,6 +378,7 @@ Package-owned: `~/.pi/agent/config/pi-herdr-tools/config.json`. For the shared r
 | `outputBytes` | Maximum combined standard output and error bytes per job. | Integer, 1024 to 104857600. | `10485760` |
 | `concurrency` | Maximum active or unknown jobs that the user has not released. | Integer, 1 to 16. | `4` |
 | `retainedJobs` | Maximum job records whose output has not been pruned before launch is refused. | Integer, 1 to 10000. | `1000` |
+| `pruneAfterDays` | Age in days after which Pi prunes the delivered output of a finished command. `0` disables automatic pruning. | Integer, 0 to 3650. | `7` |
 
 Edit the file to change policy; each launch loads it again. Existing jobs keep their saved limits. No automatic job queue or retry is provided.
 
@@ -378,9 +390,9 @@ Side threads select the first authenticated viable route before launch. Titles u
 
 ## State and storage
 
-Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion and stop at the output limit. Records and tabs are not removed automatically.
+Command records are private generated state under `~/.pi/agent/config/pi-herdr-tools/commands/`, outside transcripts. Each job keeps its immutable specification, runner claim, terminal identities, log, cancellation control, completion, and delivery record. The command text and output can contain secrets; do not share this directory. Logs stay readable after completion until they are pruned, and stop at the output limit. Records and tabs are not removed automatically.
 
-The record limit does not authorize output deletion. Use `/commands` to inspect verified finished commands and explicitly accept the warned output loss before pruning. Never delete active, unknown, or malformed state to permit another launch.
+The record limit does not authorize output deletion. Use `/commands` to inspect verified finished commands and explicitly accept the warned output loss before pruning. Only the `pruneAfterDays` age policy deletes delivered output without that confirmation. Never delete active, unknown, or malformed state to permit another launch.
 
 Write admission checks only jobs in the exact target checkout set. Startup and periodic recovery check the current checkout. Removal checks its target checkout, including read jobs.
 
@@ -392,9 +404,9 @@ The `/commands` inventory reports each record independently of strict write admi
 
 Runtime limits, cancellation, and output limits stop the child group without waiting for its record lock. Cancellation uses an atomic private control file. The cancel tool validates the immutable specification and writes the request before it reads locked status. Its status response can still wait for that lock. A late cancellation request does not change a verified terminal result.
 
-A pending heartbeat must finish before the final state is saved, but not before the child is stopped. A state-write failure cannot release ownership.
+A pending heartbeat must finish before the final state is saved, but not before the child is stopped. A failed heartbeat write does not stop the command; Pi can report `unknown` until the next heartbeat. The runner tries to save the final state three times. If each try fails, ownership is not released.
 
-The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. The runner cannot track descendants that detach or escape; those commands are not supported.
+The runner waits for output streams to close after group termination. If group termination is unproved, or output streams stay open for more than four seconds after the termination check, it records `unknown`, not success. After a runner fault with proved termination and closed output, it records `failed` with the fault name. The runner cannot track descendants that detach or escape; those commands are not supported.
 
 On Linux, use an init process that reaps exited child processes. A zombie is an exited process whose parent has not collected its status. Without child reaping, zombie process groups can remain `unknown` and keep writer admission held. A process-table snapshot is not proof of termination and cannot release ownership.
 
@@ -419,6 +431,7 @@ Clones are separate session files in the Pi-selected session directory. Each con
 | Failure | Recovery |
 | --- | --- |
 | Unknown command ownership | Inspect `/commands` and the private state directory. Cancellation is a request, not proof of termination. Do not retry the command or delete its state. |
+| Runner fault: `failed` with `runner_<stage>_<code>` | The runner stopped the command after its own error, and termination is proved. The checkout is free. Read the runner pane for the error message. The command can have stopped in the middle of its work; inspect its output before a new launch. |
 | Recovery or delivery warning | The first three distinct warnings can identify a job, a state-file stage, and a fixed error category. One generic warning covers further failures or missing safe context. Warnings do not include commands, tokens, or exception text. Inspect the named job; do not delete unknown state. |
 | Proved non-dispatch | Inspect the saved failed or cancelled result. The command did not start. Any later launch requires a new explicit decision. |
 | Command runtime or output limit | Inspect the bounded log and error status. Any later launch is a new explicit decision. |

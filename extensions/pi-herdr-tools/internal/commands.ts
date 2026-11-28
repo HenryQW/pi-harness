@@ -9,10 +9,11 @@ import { createHerdrToolsConfigStore } from "./config.ts";
 import { showCommandOutput, showCommandText } from "./command-output.ts";
 import { selectCommandOutput } from "./command-select.ts";
 import { checkoutAdmission, checkoutKey, HerdrRequestError, requestHerdr, withWorktreeLock, type CheckoutAdmission } from "@henryqw/pi-herdr";
-import { cancelJob, inventoryJobs, jobId, listJobs, outputTail, privateDirectory, pruneJob, readJob, readPrivate, readPublishedSpec, recordNonDispatch, recoveryDiagnostic, releaseJob, terminal, userReleased, validateSpec, withCommandRemovalGuard, withCommandStoreLock, writePrivate, type Job, type JobSpec } from "./command-state.ts";
+import { cancelJob, inventoryJobs, jobId, listJobs, outputTail, privateDirectory, pruneExpired, pruneJob, readJob, readPrivate, readPublishedSpec, recordNonDispatch, recoveryDiagnostic, releaseJob, terminal, userReleased, validateSpec, withCommandRemovalGuard, withCommandStoreLock, writePrivate, type Job, type JobSpec } from "./command-state.ts";
 
 const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const completionType = "background-command-completion";
+const agePruneBatch = 25;
 const pruneWarning = "Another Pi session may still need it. Pi cannot prove that all readers have finished. Deletion cannot be undone. Only output.log is deleted; identity, completion, delivery, and audit records remain.";
 export const commandParameters = Type.Object({
 	action: Type.String({ enum: ["launch", "list", "status", "cancel"] }),
@@ -166,6 +167,14 @@ async function recoverCommand(manager: CommandManager, spec: JobSpec, ctx: Exten
 
 function recovery(job: Job): string | null {
 	return job.released ? terminal(job.state) ? "released by user; completion later verified" : "released by user, termination unproved" : null;
+}
+function age(time: number): string {
+	const minutes = Math.max(0, Math.floor((Date.now() - time) / 60_000));
+	return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m ago` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ago` : `${Math.floor(minutes / 1440)}d ago`;
+}
+// Records that hold or can hold a checkout come first: unverified, then unknown, then live, then finished.
+function rank(item: { job?: Job }): number {
+	return !item.job ? 0 : terminal(item.job.state) || item.job.released ? 3 : item.job.state === "unknown" ? 1 : 2;
 }
 function summary(job: Job) {
 	return { id: job.spec.id, state: job.state, recovery: recovery(job), outputPruned: job.pruned === true, access: job.spec.access, checkout: job.spec.checkout,
@@ -366,14 +375,15 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 					if (pruneScan === scan) { pruneScan = undefined; if (!pruning) ctx.ui.setStatus("commands-prune", undefined); }
 				}
 			}
-			const inventory = (await inventoryJobs(manager.root)).filter(item => showPruned ? item.job?.pruned : !item.job?.pruned);
+			const inventory = (await inventoryJobs(manager.root)).filter(item => showPruned ? item.job?.pruned : !item.job?.pruned)
+				.sort((a, b) => rank(a) - rank(b) || (b.spec?.createdAt ?? 0) - (a.spec?.createdAt ?? 0));
 			check();
 			if (!ctx.hasUI) {
 				process.stdout.write(JSON.stringify(inventory.map(item => item.job ? summary(item.job) : { id: item.id, category: item.category, diagnostic: item.diagnostic })) + "\n");
 				return;
 			}
 			if (!inventory.length) { ctx.ui.notify(showPruned ? "No pruned command receipts." : "No unpruned commands. Use /commands pruned to inspect receipts.", "info"); return; }
-			const rows = inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}`);
+			const rows = inventory.map((item, index) => `${index + 1}. ${item.id ?? "Unverified record"} ${item.job ? [item.job.state, recovery(item.job)].filter(Boolean).join("; ") : item.category}${item.job?.pruned ? " (output pruned)" : ""}${item.spec ? ` · ${age(item.spec.createdAt)}` : ""}`);
 			const searchText = inventory.map((item, index) => `${rows[index]} ${item.spec?.command ?? ""} ${item.spec?.checkout ?? ""}`);
 			const selected = await selectCommandOutput(ctx, showPruned ? "Pruned command receipts" : "Background commands", rows, { searchable: true, searchText });
 			check();
@@ -408,6 +418,7 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 	let context: ExtensionContext | undefined;
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let scanning: Promise<void> | undefined;
+	let pruneDue = 0;
 	const warnings = new Set<string>();
 	const report = (ctx: ExtensionContext, error: unknown, job?: Job) => {
 		if (context !== ctx) return;
@@ -450,6 +461,15 @@ export function registerCommands(pi: ExtensionAPI): CommandManager {
 					pi.sendMessage({ customType: completionType, content: `Background command ${job.spec.id}: ${job.state}. Output: ${job.outputPath}. Inspect the result and continue the existing request when appropriate.`, display: true, details: summary(job) }, { triggerTurn: true, deliverAs: "followUp" });
 				}); } catch (error) { report(ctx, error, job); }
 			}
+		} catch (error) { report(ctx, error); }
+		if (context !== ctx || Date.now() < pruneDue) return;
+		pruneDue = Date.now() + 3_600_000;
+		try {
+			const loaded = store.loadSync();
+			// A config issue can hide a disabled policy behind the default. Then nothing is deleted.
+			if (loaded.status !== "ok" || loaded.issues.length || !loaded.value.pruneAfterDays) return;
+			// A pass is short, so it does not delay completion delivery. A backlog continues after one minute.
+			if (await pruneExpired(manager.root, Date.now() - loaded.value.pruneAfterDays * 86_400_000, agePruneBatch) === agePruneBatch) pruneDue = Date.now() + 60_000;
 		} catch (error) { report(ctx, error); }
 	};
 	pi.on("session_start", async (_event, ctx) => {

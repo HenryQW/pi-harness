@@ -1,11 +1,23 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { decodeKittyPrintable, getSelectPageIndex, Input, matchesKey, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
-/** Keep the warning visible and bound the list to the terminal height. */
+/** Native selector rows shown at one time. */
+const maxVisible = 10;
+/** Pi draws its footer and status below the editor area. The view leaves these rows free. */
+export const footerRows = 3;
+/** Shorter terminals give the border rows to the content. */
+export const framedRows = 10 + footerRows;
+
+/**
+ * Show a native selector in the editor area. A title with a warning draws over the bottom of the screen instead:
+ * only an overlay has known bounds, so only there can the guard prove that the warning and the selection are visible.
+ */
 export async function selectCommandOutput(ctx: ExtensionContext, title: string, options: string[], { searchable = false, searchText }: { searchable?: boolean; searchText?: string[] } = {}): Promise<string | undefined> {
 	if (ctx.mode !== "tui") return ctx.ui.select(title, options);
 	return ctx.ui.custom<string | undefined>((tui, theme, keys, done) => {
-		const header = new Text(theme.fg("accent", title), 0, 0);
+		const [heading, ...detail] = title.split("\n");
+		const header = new Text([theme.fg("accent", theme.bold(heading!)), ...detail.map(line => theme.fg("warning", line))].join("\n"), 0, 0);
+		const border = new DynamicBorder(text => theme.fg("border", text));
 		const items = options.map((value, index) => ({ value, label: value, search: searchText?.[index] ?? value }));
 		const input = new Input({ prompt: "Search: ", placeholder: "Type to filter" });
 		const hint = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action).join("/");
@@ -19,6 +31,7 @@ export async function selectCommandOutput(ctx: ExtensionContext, title: string, 
 			list = undefined;
 		};
 		return {
+			// Page keys move the list, not the transcript.
 			capturesViewportInput: true,
 			get focused() { return focused; },
 			set focused(value: boolean) { focused = value; input.focused = value && searchFocus; },
@@ -28,7 +41,9 @@ export async function selectCommandOutput(ctx: ExtensionContext, title: string, 
 				renderedColumns = tui.terminal.columns;
 				renderedIndex = index;
 				renderedItems = filtered;
-				const available = renderedRows - lines.length - 2 - Number(searchable); // Reserve the indicator, hints, and optional search input.
+				const frame = renderedRows >= framedRows ? border.render(width) : [];
+				// Reserve the Pi footer, indicator, hints, optional search input, and frame.
+				const available = Math.min(maxVisible, renderedRows - footerRows - lines.length - 2 - Number(searchable) - 2 * frame.length);
 				fits = width >= 40 && available >= 1;
 				if (!fits) return [truncateToWidth(`Enlarge terminal; ${hint("tui.select.cancel")} cancels.`, width)];
 				if (!list || capacity !== available) {
@@ -42,7 +57,7 @@ export async function selectCommandOutput(ctx: ExtensionContext, title: string, 
 				const help = searchable
 					? `${searchFocus ? "Search" : "List keys"} · Tab switch · Enter select · Esc cancel`
 					: `${hint("tui.select.confirm")} select · ${hint("tui.select.cancel")} cancel · ${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} page`;
-				return [...lines, ...(searchable ? input.render(width) : []), ...list.render(width), theme.fg("dim", truncateToWidth(help, width))];
+				return [...frame, ...lines, ...(searchable ? input.render(width) : []), ...list.render(width), theme.fg("dim", truncateToWidth(help, width)), ...frame];
 			},
 			handleInput(data: string): void {
 				if (searchFocus && (pasting || data.includes("\x1b[200~"))) {
@@ -91,5 +106,6 @@ export async function selectCommandOutput(ctx: ExtensionContext, title: string, 
 			},
 			invalidate() { header.invalidate(); input.invalidate(); list?.invalidate(); },
 		};
-	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 }, blocked: { kind: "question", message: title.split("\n")[0]! } });
+	}, { ...(title.includes("\n") ? { overlay: true, overlayOptions: { anchor: "bottom-center" as const, width: "100%" as const, maxHeight: "100%" as const, margin: 0 } } : {}),
+		blocked: { kind: "question", message: title.split("\n")[0]! } });
 }
