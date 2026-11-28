@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter, once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer, request } from "node:http";
 import { createServer } from "node:https";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
@@ -14,42 +15,14 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionToolContext, Regis
 import onePassword from "../extensions/1password.ts";
 import { loadActions } from "../src/actions.mjs";
 import { approvalServer, approvalStatus, forward, metadata, opArgs } from "../src/bridge.mjs";
-import { authorizationLine, authorizeLauncher, createLauncherKey, launcherKey, stopWhenIdle } from "../src/launcher.mjs";
+import { ApprovalLauncher, stopWhenIdle } from "../src/launcher.mjs";
+import { connectHerdr, detectHost } from "../src/ssh.mjs";
 
 const secret = "fixture-api-key";
 const reference = "op://vault/item/field";
 const identity = "01234567-89ab-cdef-0123-456789abcdef";
 const cli = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 const exec = promisify(execFile);
-
-test("pairing appends one restricted key and preserves an existing SSH configuration", async (t) => {
-	const home = await mkdtemp(join(await realpath("/tmp"), "pi-op-authorize-"));
-	const previousHome = process.env.HOME;
-	process.env.HOME = home;
-	t.after(async () => {
-		if (previousHome === undefined) delete process.env.HOME;
-		else process.env.HOME = previousHome;
-		await rm(home, { recursive: true, force: true });
-	});
-	const keyPath = await launcherKey(["profile", "identity", "socket", "login"]);
-	const [key, repeated] = await Promise.all([createLauncherKey(keyPath), createLauncherKey(keyPath)]);
-	assert.equal(repeated, key);
-	assert.equal((await stat(keyPath)).mode & 0o777, 0o600);
-	const ssh = join(home, ".ssh");
-	await mkdir(ssh, { mode: 0o700 });
-	const authorized = join(ssh, "authorized_keys");
-	const existing = "# existing entry without trailing newline";
-	await writeFile(authorized, existing, { mode: 0o600 });
-	const argv = ["/bin/echo", "'quoted'", "launch"];
-	await assert.rejects(authorizeLauncher(`${key}\nssh-ed25519 more`, argv), /Use the launcher public key/);
-	await authorizeLauncher(key, argv);
-	await authorizeLauncher(key, argv);
-	const expected = authorizationLine(key, argv);
-	assert.match(expected, /^restrict,pty,command="exec /);
-	assert.equal(await readFile(authorized, "utf8"), `${existing}\n${expected}\n`);
-	await assert.rejects(authorizeLauncher(key, ["/bin/false"]), /Remove the old/);
-	assert.equal(await readFile(authorized, "utf8"), `${existing}\n${expected}\n`);
-});
 
 test("an on-demand companion counts idle time after requests finish", (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -69,6 +42,85 @@ test("an on-demand companion counts idle time after requests finish", (t) => {
 	assert.equal(stopped, true);
 });
 
+test("SSH detection verifies candidate routes and prefers a shared connection", async () => {
+	let configured = ["distant", "wrong-user", "first-alias", "pi-host.site"];
+	const names = ["pi-host.local", "192.0.2.1"];
+	const proofText = "a".repeat(32);
+	const proof = createHash("sha256").update(proofText).digest("hex");
+	const attempts: string[] = [];
+	const signal = new AbortController().signal;
+	const closed: string[] = [];
+	let freshOnly = false;
+	const sources = {
+		aliases: async () => configured,
+		known: async () => ["pi-host.example", "[pi-host.example]:2222", "unrelated.example"],
+		resolve: async (host: string) => host === "laptop-mesh" ? ["192.0.2.1"] : [],
+		connect: async (host: string, path: string) => ({
+			control: ["-S", path],
+			close: async () => { closed.push(host); },
+		}),
+		probe: async (_file: string, args: string[]) => {
+			const destination = args[args.indexOf("--") + 1];
+			if (args.includes("-GT")) {
+				if (destination === names[0]) return null;
+				const name = destination.endsWith("mesh-laptop") ? "laptop-mesh"
+					: ["distant", "pi-host.site"].includes(destination) ? "elsewhere.example" : "pi-host.example";
+				return `host ${destination.split("@").at(-1)}\nhostname ${name}\ncontrolpath /tmp/${destination}\n`;
+			}
+			if (args.includes("check")) return ["wrong-user", "pi-host.site"].includes(destination) ? "" : null;
+			assert.ok(args.includes("BatchMode=yes") && args.includes("StrictHostKeyChecking=yes"));
+			assert.ok(args.includes("ClearAllForwardings=yes") && !args.includes("-R"));
+			attempts.push(destination);
+			if (freshOnly && destination === "wrong-user" && args.includes("/tmp/test/ssh-0")) return proofText;
+			return ["pi-host.site", "ssh://pi@pi-host.example:2222", "mesh-laptop"].includes(destination) ? proofText : "wrong proof";
+		},
+	};
+	const detect = (digest = proof) => detectHost(names, "pi", "/private/pi.sock", digest, "/tmp/test", signal, sources);
+	const shared = await detect();
+	assert.equal(shared.host, "pi-host.site");
+	assert.ok(shared.control.includes("/tmp/pi-host.site"));
+	assert.deepEqual(attempts.splice(0), ["wrong-user", "pi-host.site"]);
+	freshOnly = true;
+	configured = ["wrong-user"];
+	const fresh = await detect();
+	assert.equal(fresh.host, "wrong-user");
+	assert.ok(fresh.control.includes("/tmp/test/ssh-0"));
+	assert.deepEqual(attempts.splice(0), ["wrong-user", "wrong-user"]);
+	await fresh.close?.();
+	assert.deepEqual(closed.splice(0), ["wrong-user"]);
+	configured = [];
+	const known = await detect();
+	assert.equal(known.host, "ssh://pi@pi-host.example:2222");
+	assert.deepEqual(attempts.splice(0), ["pi@pi-host.example", "ssh://pi@pi-host.example:2222"]);
+	assert.deepEqual(closed.splice(0), ["pi@pi-host.example"]);
+	await known.close?.();
+	configured = ["mesh-laptop"];
+	const matchedAddress = await detect();
+	assert.equal(matchedAddress.host, "mesh-laptop");
+	assert.deepEqual(attempts.splice(0), ["mesh-laptop"]);
+	await matchedAddress.close?.();
+	await assert.rejects(detect("0".repeat(64)), /Cannot find a trusted SSH route/);
+	attempts.length = 0;
+	const automatic = (digest: string) => connectHerdr("/private/pi.sock", digest, "/tmp/test", signal,
+		async (_file, args) => {
+			assert.ok(args.includes("ClearAllForwardings=yes") && !args.includes("-R"));
+			assert.ok(args.includes("ProxyCommand=/usr/bin/false"));
+			const socket = args[args.indexOf("-S") + 1];
+			attempts.push(socket);
+			return socket === "/tmp/herdr-right" ? proofText : "wrong proof";
+		},
+		async (host, _probe, scan) => {
+			assert.equal(scan, true);
+			return ["/tmp/herdr-wrong", "/tmp/herdr-right"].map((socket) => ({
+				host, shared: ["-S", socket, "-o", "ProxyCommand=/usr/bin/false"],
+			}));
+		});
+	assert.deepEqual((await automatic(proof)).control, ["-S", "/tmp/herdr-right", "-o", "ProxyCommand=/usr/bin/false"]);
+	assert.deepEqual(attempts.splice(0), ["/tmp/herdr-wrong", "/tmp/herdr-right"]);
+	await assert.rejects(automatic("0".repeat(64)), /No active Herdr SSH tunnel/);
+	assert.deepEqual(attempts, ["/tmp/herdr-wrong", "/tmp/herdr-right"]);
+});
+
 test("approval requires an explicit selection and prepares a default socket for an eligible Mac", async (t) => {
 	const dir = await mkdtemp(join(await realpath("/tmp"), "pi-op-select-"));
 	const configDir = join(dir, "config", "pi-1password");
@@ -85,6 +137,9 @@ test("approval requires an explicit selection and prepares a default socket for 
 		await rm(dir, { recursive: true, force: true });
 	});
 
+	const launch = t.mock.method(ApprovalLauncher.prototype, "startOnDemand", async () => {
+		throw new Error("No active Herdr SSH tunnel");
+	});
 	const homeTarget = "ssh://user@personal.example:2222";
 	const profiles = [
 		{ id: "home", label: "Personal Mac", target: homeTarget, enabled: true },
@@ -110,16 +165,17 @@ test("approval requires an explicit selection and prepares a default socket for 
 		}
 		if (file === "/bin/sh") return herdrAvailable ? null : `${identity}\n/usr/bin/true\n2.42.0\n`;
 		assert.equal(file, "/usr/bin/ssh");
-		if (args[0] === "-G") return "hostname personal.example\nport 2222\n";
 		const target = args.at(-2)!;
 		probed.push(target);
 		return target === homeTarget ? `${identity}\n/opt/homebrew/bin/op\n2.42.0\n` : null;
 	});
 	let choose: string | undefined;
 	let expectedOptions = ["Personal Mac (home)"];
+	const prompts: string[] = [];
 	const ctx = { hasUI: true, ui: {
 		notify(message: string) { calls.push(message); },
-		async select(_title: string, options: string[]) {
+		async select(title: string, options: string[]) {
+			prompts.push(title);
 			assert.deepEqual(options, expectedOptions);
 			return choose;
 		},
@@ -148,24 +204,53 @@ test("approval requires an explicit selection and prepares a default socket for 
 	await assert.rejects(discover(), /Select a remote approval Mac/);
 	await command.handler("select ", ctx);
 	assert.deepEqual(probed, [homeTarget, "other-mac"]);
+	await command.handler("pair", ctx);
+	assert.equal(prompts.at(-1), "2. Select the Approval Mac.");
+	assert.deepEqual(await readdir(dir), []);
 	await assert.rejects(list, /Select an approval Mac/);
+	choose = "Personal Mac (home)";
 	await assert.rejects(command.handler("auto", ctx), /unavailable/);
 	await assert.rejects(command.handler("Missing op", ctx), /unavailable/);
-	choose = "Personal Mac (home)";
-	await command.handler("", ctx);
-	const status = calls.at(-1)!;
-	assert.match(status, /^1Password \| Tunnel disconnected\n  Pi host: .+\n  Approval Mac: Personal Mac\n\n/);
+	await assert.rejects(command.handler("pair desktop sf-mbp", ctx), /Use \/1password pair <pi-host-alias>/);
+	await assert.rejects(command.handler("pair --invalid", ctx), /Use \/1password pair <pi-host-alias>/);
+	await command.handler("pair", ctx);
+	const automatic = calls.at(-1)!;
+	assert.match(automatic, /^3\. Copy this command into Terminal on Personal Mac\. Press Return\.$/m);
+	assert.match(automatic, /^4\. Keep Terminal open while you use Pi\.$/m);
+	assert.match(automatic, /^  pair \/.+ \\$/m);
+	assert.ok(automatic.includes(hostname()));
+	const promptCount = prompts.length;
+	await command.handler("pair sf-mbp", ctx);
+	const pairing = calls.at(-1)!;
+	assert.equal(prompts.length, promptCount);
 	const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-	assert.ok(status.includes(`npx --yes --ignore-scripts @henryqw/pi-1password@${manifest.version}`));
-	assert.match(status, /local terminal on Personal Mac/);
-	assert.match(status, /run \/1password status/);
-	const socket = /^    serve PI_HOST_SSH_ALIAS \\\n    (.+)$/m.exec(status)![1];
+	const start = `npx --yes --ignore-scripts @henryqw/pi-1password@${manifest.version} `;
+	const lines = pairing.split("\n");
+	const startIndex = lines.findIndex((line) => line.startsWith(start));
+	assert.notEqual(startIndex, -1);
+	assert.equal(lines[startIndex], `${start}\\`);
+	const args = lines.slice(startIndex + 1, startIndex + 4).map((line) => {
+		assert.ok(line.endsWith(" \\"));
+		return line.slice(2, -2);
+	});
+	const [alias, socket, proofFlag] = args;
+	const digest = lines[startIndex + 4].slice(2, -2);
+	assert.equal(lines[startIndex + 5].trim(), `--approval-mac ${identity}`);
+	assert.equal(alias, "serve sf-mbp");
 	const socketDir = dirname(socket);
 	assert.equal(socketDir, join(dir, ".pi-1password"));
 	assert.equal((await stat(socketDir)).mode & 0o777, 0o700);
+	assert.deepEqual(await readdir(socketDir), [`${basename(socket)}.pair`]);
+	assert.equal(proofFlag, "--host-proof");
+	assert.equal((await stat(`${socket}.pair`)).mode & 0o777, 0o600);
+	const token = (await readFile(`${socket}.pair`, "utf8")).trim();
+	assert.equal(digest, createHash("sha256").update(token).digest("hex"));
+	assert.ok(!pairing.includes(token));
 	await assert.rejects(stat(configPath), { code: "ENOENT" });
-	await command.handler("home", ctx);
-	assert.equal(calls.at(-1), status);
+	assert.ok(automatic.includes(digest));
+	await command.handler("", ctx);
+	assert.match(calls.at(-1)!, /On-demand tunnel idle/);
+	assert.equal(launch.mock.callCount(), 0);
 	await chmod(socketDir, 0o1700);
 	await assert.rejects(command.handler("home", ctx), /private 0700 directory/);
 	assert.equal((await stat(socketDir)).mode & 0o7777, 0o1700);
@@ -175,18 +260,26 @@ test("approval requires an explicit selection and prepares a default socket for 
 		await assert.rejects(command.handler("home", ctx), /without extra access grants/);
 		await exec("/bin/chmod", ["-N", socketDir]);
 	}
-	await assert.rejects(list, /disconnected/);
+	await assert.rejects(list, /No active Herdr SSH tunnel/);
+	assert.equal(launch.mock.callCount(), 1);
+	assert.deepEqual(launch.mock.calls[0].arguments.slice(0, 3), [socket, identity, homeTarget]);
+	const launchCommand = launch.mock.calls[0].arguments[3];
+	assert.ok(launchCommand);
+	assert.ok(launchCommand.includes(`_ondemand ${socket} `));
+	assert.ok(launchCommand.endsWith(` --host-proof ${digest} --approval-mac ${identity}`));
+	assert.ok(!launchCommand.includes(token));
+	await assert.rejects(action(), /disconnected/);
 	await command.handler("status", ctx);
-	assert.match(calls.at(-1)!, /^1Password \| Tunnel disconnected/m);
-	await command.handler("pair desktop sf-mbp", ctx);
-	assert.match(calls.at(-1)!, /Authorize on the Approval Mac/);
-	assert.ok(calls.at(-1)!.includes(`--ignore-scripts @henryqw/pi-1password@${manifest.version}`));
-	assert.ok(calls.at(-1)!.includes(`authorize \\\n  sf-mbp ${socket}`));
-	assert.match(calls.at(-1)!, /'ssh-ed25519 [A-Za-z0-9+/]{68}'/);
-	assert.match(await readFile(`${socket}.pair`, "utf8"), /^[A-Za-z0-9_-]{32}\n$/);
-	assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).targets.home, { socket: null, launchUser: "desktop" });
+	assert.match(calls.at(-1)!, /^1Password \| On-demand tunnel idle/m);
+	assert.equal(launch.mock.callCount(), 1);
+	await mkdir(configDir, { recursive: true });
+	await writeFile(configPath, JSON.stringify({ targets: { home: { launchUser: "desktop" } } }));
 	await command.handler("status", ctx);
 	assert.match(calls.at(-1)!, /On-demand tunnel idle/);
+	await command.handler("pair sf-mbp", ctx);
+	assert.equal(calls.at(-1), pairing);
+	assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).targets.home, { launchUser: "desktop" });
+	await writeFile(configPath, "{}");
 	await assert.rejects(discover(), /disconnected/);
 	let runs = 0;
 	const server = approvalServer({ identity,
@@ -227,8 +320,9 @@ test("approval requires an explicit selection and prepares a default socket for 
 	await command.handler("status", ctx);
 	assert.match(calls.at(-1)!, /selected approval route changed/);
 	await command.handler("home", ctx);
-	assert.ok(calls.at(-1)?.includes(`serve PI_HOST_SSH_ALIAS \\\n    ${override}\n`));
-	await assert.rejects(list, /disconnected/);
+	await command.handler("pair sf-mbp", ctx);
+	assert.ok(calls.at(-1)?.includes(`  ${override} `));
+	await assert.rejects(list, /No active Herdr SSH tunnel/);
 	const missingDirectory = join(dir, "missing");
 	await writeFile(configPath, JSON.stringify({ targets: { home: { socket: join(missingDirectory, "approval.sock") } } }));
 	await command.handler("home", ctx);
@@ -445,6 +539,7 @@ printf '%s' '${secret}'
 test("the companion rejects the old raw read and broad grant commands", async () => {
 	await assert.rejects(exec(process.execPath, [cli, "read", "/tmp/op.sock", reference, "--", "/bin/cat"]), /Usage/);
 	await assert.rejects(exec(process.execPath, [cli, "serve", "host", "/tmp/op.sock", "--allow-read"]), /Usage/);
+	await assert.rejects(exec(process.execPath, [cli, "serve", "host", "/tmp/op.sock", "--host-proof", "bad"]), /Usage/);
 });
 
 test("the companion refuses actions under diagnostics or additional certificate trust", async (t) => {

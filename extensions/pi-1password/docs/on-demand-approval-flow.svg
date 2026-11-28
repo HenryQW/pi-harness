@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="on-demand-approval-flow-title on-demand-approval-flow-desc" id="on-demand-approval-flow-root">
+    <title id="on-demand-approval-flow-title">On-demand 1Password approval</title>
+    <desc id="on-demand-approval-flow-desc">The first list starts an approval terminal through the saved Secure Shell login. The terminal checks the Mac identity and Pi host proof. It adds a reverse socket forward to the open Herdr connection. Pi uses that forward for lists. The 1Password app approves locally and Pi receives metadata.</desc>
+    <defs>
+      <style>#on-demand-approval-flow-root text { font-family: Geist, system-ui, sans-serif; fill: #101828; }
+      #on-demand-approval-flow-root .actor { fill: #fff; stroke: #4c5665; stroke-width: 1.2; }
+      #on-demand-approval-flow-root .name { font-size: 24px; font-weight: 600; }
+      #on-demand-approval-flow-root .detail { font-size: 16px; fill: #4c5665; }
+      #on-demand-approval-flow-root .label { font-size: 17px; font-weight: 500; text-anchor: middle; }
+      #on-demand-approval-flow-root .lifeline { fill: none; stroke: #4c5665; stroke-opacity: .45; stroke-width: 1.2; stroke-dasharray: 4 6; }
+      #on-demand-approval-flow-root .message { stroke: #4c5665; stroke-width: 2; marker-end: url(#on-demand-approval-flow-arrow); }
+      #on-demand-approval-flow-root .reply { stroke-dasharray: 6 5; }
+      #on-demand-approval-flow-root .herdr { stroke: #1d4ed8; marker-end: url(#on-demand-approval-flow-blue-arrow); }</style>
+      <marker id="on-demand-approval-flow-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+        <path d="M0 0 L8 4 L0 8 Z" fill="#4c5665"/>
+      </marker>
+      <marker id="on-demand-approval-flow-blue-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto">
+        <path d="M0 0 L8 4 L0 8 Z" fill="#1d4ed8"/>
+      </marker>
+    </defs>
+
+    <rect width="1280" height="720" fill="#f0eee9"/>
+    <rect x="464" y="40" width="776" height="640" rx="8" fill="#e6e4de" stroke="#4c5665" stroke-width="1.2" stroke-dasharray="6 5"/>
+    <text class="name" x="496" y="80">Approval Mac</text>
+
+    <path class="lifeline" d="M236 156 V660 M652 156 V660 M1044 156 V660"/>
+    <line class="message" x1="236" y1="216" x2="652" y2="216"/>
+    <line class="message" x1="652" y1="288" x2="236" y2="288"/>
+    <line class="message herdr" x1="652" y1="360" x2="236" y2="360"/>
+    <line class="message" x1="236" y1="432" x2="652" y2="432"/>
+    <line class="message" x1="652" y1="504" x2="1044" y2="504"/>
+    <line class="message reply" x1="1044" y1="576" x2="652" y2="576"/>
+    <line class="message reply" x1="652" y1="648" x2="236" y2="648"/>
+
+    <rect class="actor" x="112" y="96" width="248" height="64" rx="8"/>
+    <rect class="actor" x="532" y="96" width="240" height="64" rx="8"/>
+    <rect class="actor" x="924" y="96" width="240" height="64" rx="8"/>
+    <g text-anchor="middle">
+      <text class="name" x="236" y="124">Pi host</text>
+      <text class="detail" x="236" y="144">First vault or item list</text>
+      <text class="name" x="652" y="124">Approval terminal</text>
+      <text class="detail" x="652" y="144">Checks Mac identity on start</text>
+      <text class="name" x="1044" y="124">1Password app</text>
+      <text class="detail" x="1044" y="144">Prompts on this Mac</text>
+    </g>
+
+    <g class="label">
+      <rect x="264" y="180" width="360" height="28" rx="4" fill="#f0eee9"/>
+      <text x="444" y="200">Start through saved Secure Shell login</text>
+      <rect x="296" y="252" width="296" height="28" rx="4" fill="#f0eee9"/>
+      <text x="444" y="272">Check Pi host proof over Herdr</text>
+      <rect x="272" y="324" width="344" height="28" rx="4" fill="#f0eee9"/>
+      <text x="444" y="344" style="fill:#1d4ed8">Add reverse socket forward to Herdr</text>
+      <rect x="332" y="396" width="224" height="28" rx="4" fill="#f0eee9"/>
+      <text x="444" y="416">Send list through forward</text>
+      <rect x="712" y="468" width="272" height="28" rx="4" fill="#e6e4de"/>
+      <text x="848" y="488">Request approval through op</text>
+      <rect x="696" y="540" width="304" height="28" rx="4" fill="#e6e4de"/>
+      <text x="848" y="560">Authorize terminal for the account</text>
+      <rect x="296" y="612" width="296" height="28" rx="4" fill="#f0eee9"/>
+      <text x="444" y="632">Return metadata through forward</text>
+    </g>
+  </svg>
