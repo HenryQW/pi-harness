@@ -6,6 +6,7 @@ import { registerConfigReporting } from "@henryqw/pi-config-store";
 import { createOpenInConfigStore } from "./open-in-config.ts";
 import { configuredOpenUri } from "./open.ts";
 import { createFooterConfigStore, paintFooter } from "./footer-config.ts";
+import { formatDuration } from "./format-duration.ts";
 import { formatTokens } from "./format-tokens.ts";
 
 const THINKING_COLORS = {
@@ -38,14 +39,6 @@ function subagentBackgroundUsage(details: unknown): CountedUsage | undefined {
 	const total = usage?.cost?.total;
 	if (!isNonNegativeNumber(usage?.input) || !isNonNegativeNumber(usage.output) || !isNonNegativeNumber(total)) return;
 	return { input: usage.input, output: usage.output, cost: { total } };
-}
-
-function formatDuration(milliseconds: number): string {
-	const totalSeconds = Math.floor(milliseconds / 1_000);
-	const hours = Math.floor(totalSeconds / 3_600);
-	const minutes = Math.floor(totalSeconds % 3_600 / 60);
-	const seconds = totalSeconds % 60;
-	return hours ? `${hours}h ${minutes}m ${seconds}s` : minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function sanitizeStatus(text: string): string {
