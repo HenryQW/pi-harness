@@ -11,7 +11,7 @@ function viewer(metadata: string, output: string, rows = 100, bindings = {}) {
 	const keys = new KeybindingsManager({ ...TUI_KEYBINDINGS, "app.clear": { defaultKeys: "ctrl+c" } }, bindings);
 	const ctx = { ui: { custom(factory: Function) {
 		return new Promise<void>((done) => {
-			component = factory(tui, { fg: (_token: string, value: string) => `\x1b[${color}m${value}\x1b[39m` }, keys, done);
+			component = factory(tui, { fg: (_token: string, value: string) => `\x1b[${color}m${value}\x1b[39m`, bold: (value: string) => value }, keys, done);
 		});
 	} } } as unknown as ExtensionContext;
 	const closed = showCommandOutput(ctx, metadata, output);
@@ -31,7 +31,7 @@ test("output stays literal, with spaces, blank lines, Unicode, and a final line 
 	const output = "# not Markdown\n**literal**\n  a   b  \n\n \n\n雪😀\n";
 	const view = viewer("status", output);
 	const expected = ["status", "", snapshot, ...output.split("\n")].map((line) => line + " ".repeat(100 - visibleWidth(line)));
-	assert.deepEqual(view.lines(100).slice(1, -1), expected);
+	assert.deepEqual(view.lines(100).slice(2, -2), expected);
 	view.key("\r"); await view.closed;
 });
 
@@ -40,7 +40,7 @@ test("wrapping does not drop spaces or cut long tokens", async () => {
 	const view = viewer("status", ascii + "\nabcd雪e\u0301😀");
 	const expected = ["status", "", snapshot, ...ascii.split("\n")].flatMap((line) => line.match(/.{1,7}/g) ?? [""]);
 	expected.push("abcd雪e\u0301", "😀");
-	assert.deepEqual(view.lines(7).slice(1, -1), expected.map((line) => line + " ".repeat(7 - visibleWidth(line))));
+	assert.deepEqual(view.lines(7).slice(2, -2), expected.map((line) => line + " ".repeat(7 - visibleWidth(line))));
 	view.key("\x1b"); await view.closed;
 });
 
@@ -48,21 +48,21 @@ test("terminal, clipboard, cursor, and directional controls are visible escapes"
 	const output = "\x1b]52;c;secret\x07\x1b[2J\r\t\b\x00\x7f\x9b31m\u202e\u2066";
 	const view = viewer("status", output);
 	const escaped = "\\u001b]52;c;secret\\u0007\\u001b[2J\\u000d\\u0009\\u0008\\u0000\\u007f\\u009b31m\\u202e\\u2066";
-	assert.equal(view.lines(160)[4], escaped.padEnd(160));
+	assert.equal(view.lines(160)[5], escaped.padEnd(160));
 	view.key("\x03"); await view.closed;
 });
 
 test("only empty output gets the empty marker", async () => {
 	for (const output of ["", " \n\n"]) {
 		const view = viewer("status", output);
-		const body = view.lines(100).slice(1, -1);
+		const body = view.lines(100).slice(2, -2);
 		assert.deepEqual(body.slice(3), (output === "" ? ["(No output.)"] : output.split("\n")).map((line) => line.padEnd(100)));
 		view.key("\x1b"); await view.closed;
 	}
 });
 
 test("configured keys scroll by line and page, with resize clamping and theme invalidation", async () => {
-	const view = viewer("status", Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n"), 6,
+	const view = viewer("status", Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n"), 12,
 		{ "tui.select.up": "k", "tui.select.down": "j", "tui.select.pageUp": "p", "tui.select.pageDown": "n", "tui.select.cancel": "q" });
 	const first = view.lines(40);
 	assert.ok(first.at(-1)!.includes("q close"));
@@ -78,8 +78,8 @@ test("configured keys scroll by line and page, with resize clamping and theme in
 	for (let i = 0; i < 30; i++) view.key("n");
 	view.tui.terminal.rows = 2;
 	view.lines(3);
-	view.tui.terminal.rows = 100;
-	assert.equal(view.lines(40)[1]!.trimEnd(), "status");
+	view.tui.terminal.rows = 200;
+	assert.equal(view.lines(40)[2]!.trimEnd(), "status");
 	view.setColor(32);
 	view.component.invalidate();
 	assert.ok(view.component.render(40).every((line) => !line.includes("\x1b[31m")));

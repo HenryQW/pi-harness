@@ -8,19 +8,20 @@ for (const title of ["Prune finished outputs · 0 selected", "Delete these 1000 
 test(`bounded native list keeps its heading and action visible: ${title.split("\n")[0]}`, async () => {
 	const options = ["Keep output", ...Array.from({ length: 1000 }, (_, index) => `output-${index} /saved/${index}/output.log`), "Delete output despite this risk"];
 	let component!: Component, resolved = false;
-	const terminal = { rows: 12, columns: 80 };
+	const terminal = { rows: 15, columns: 80 };
 	const keys = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.select.up": "k", "tui.select.down": "j", "tui.select.pageDown": "n", "tui.select.cancel": "q" });
-	const ctx = { mode: "tui", ui: { custom(factory: Function, options: { blocked: { kind: string; message: string } }) {
+	const ctx = { mode: "tui", ui: { custom(factory: Function, options: { overlay?: boolean; blocked: { kind: string; message: string } }) {
 		assert.deepEqual(options.blocked, { kind: "question", message: title.split("\n")[0] });
+		assert.equal(options.overlay === true, title.includes("\n"), "Only a warned confirmation needs the known bounds of an overlay.");
 		return new Promise<string | undefined>(done => {
-			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, keys,
+			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, keys,
 				(value: string | undefined) => { resolved = true; done(value); });
 		});
 	} } } as unknown as ExtensionContext;
 	const result = selectCommandOutput(ctx, title, options);
 	const render = () => {
 		const lines = component.render(terminal.columns).map(stripTerminalSequences);
-		assert.ok(lines.length <= terminal.rows);
+		assert.ok(lines.length <= Math.max(1, terminal.rows - 3), "The Pi footer keeps its rows.");
 		assert.ok(lines.every(line => visibleWidth(line) <= terminal.columns));
 		return lines.join("\n");
 	};
@@ -40,7 +41,7 @@ test(`bounded native list keeps its heading and action visible: ${title.split("\
 	assert.match(render(), /Enlarge terminal/);
 	component.handleInput!("\r");
 	assert.equal(resolved, false);
-	terminal.rows = 12; terminal.columns = 20;
+	terminal.rows = 15; terminal.columns = 20;
 	assert.match(render(), /Enlarge terminal/);
 	component.handleInput!("\r");
 	assert.equal(resolved, false);
@@ -57,11 +58,11 @@ test(`bounded native list keeps its heading and action visible: ${title.split("\
 test("search filters a long list, edits input, handles no matches, and selects only the visible original item", async () => {
 	const options = Array.from({ length: 1000 }, (_, index) => `${index + 1}. job-${index} · printf '雪 ${index}'`);
 	let component!: Component & Focusable, resolved = false;
-	const terminal = { rows: 8, columns: 60 };
+	const terminal = { rows: 11, columns: 60 };
 	const keys = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.select.down": "ctrl+n", "tui.select.up": "ctrl+p" });
 	const ctx = { mode: "tui", ui: { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
-			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, keys,
+			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, keys,
 				(value: string | undefined) => { resolved = true; done(value); });
 		});
 	} } } as unknown as ExtensionContext;
@@ -69,7 +70,7 @@ test("search filters a long list, edits input, handles no matches, and selects o
 	component.focused = true;
 	const render = () => {
 		const lines = component.render(terminal.columns);
-		assert.ok(lines.length <= terminal.rows);
+		assert.ok(lines.length <= Math.max(1, terminal.rows - 3), "The Pi footer keeps its rows.");
 		assert.ok(lines.every(line => visibleWidth(line) <= terminal.columns));
 		return lines.join("\n");
 	};
@@ -100,10 +101,10 @@ test("search filters a long list, edits input, handles no matches, and selects o
 for (const cancel of ["\x1b", "\x03"])
 test(`search cancellation preserves the list even after a terminal shrink: ${JSON.stringify(cancel)}`, async () => {
 	let component!: Component;
-	const terminal = { rows: 8, columns: 60 };
+	const terminal = { rows: 11, columns: 60 };
 	const ctx = { mode: "tui", ui: { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
-			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+			component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
 		});
 	} } } as unknown as ExtensionContext;
 	const options = ["one", "two", "three"];
@@ -119,10 +120,10 @@ test(`search cancellation preserves the list even after a terminal shrink: ${JSO
 
 test("search accepts printable selection bindings and Tab enables list shortcuts", async () => {
 	let component!: Component;
-	const terminal = { rows: 8, columns: 80 };
+	const terminal = { rows: 11, columns: 80 };
 	const keys = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.select.up": "k", "tui.select.down": "j", "tui.select.pageDown": "n", "tui.select.cancel": "q" });
 	const ctx = { mode: "tui", ui: { custom(factory: Function) {
-		return new Promise<string | undefined>(done => { component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, keys, done); });
+		return new Promise<string | undefined>(done => { component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, keys, done); });
 	} } } as unknown as ExtensionContext;
 	const result = selectCommandOutput(ctx, "Commands", ["jqkn first", "jqkn second"], { searchable: true });
 	component.render(80);
@@ -138,9 +139,9 @@ test("search accepts printable selection bindings and Tab enables list shortcuts
 
 test("search accepts a bracketed paste split across input events", async () => {
 	let component!: Component;
-	const terminal = { rows: 8, columns: 80 };
+	const terminal = { rows: 11, columns: 80 };
 	const ctx = { mode: "tui", ui: { custom(factory: Function) {
-		return new Promise<string | undefined>(done => { component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done); });
+		return new Promise<string | undefined>(done => { component = factory({ terminal, requestRender() {} }, { fg: (_color: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done); });
 	} } } as unknown as ExtensionContext;
 	const result = selectCommandOutput(ctx, "Commands", ["first", "paste target"], { searchable: true });
 	component.render(80);

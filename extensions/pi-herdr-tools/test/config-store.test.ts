@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { createHerdrToolsConfigStore, DEFAULT_CONFIG } from "../internal/config.ts";
 
-const defaults = { runtimeMs: 600_000, outputBytes: 10_485_760, concurrency: 4, retainedJobs: 1000, btw: { ...DEFAULT_CONFIG } };
+const defaults = { runtimeMs: 600_000, outputBytes: 10_485_760, concurrency: 4, retainedJobs: 1000, pruneAfterDays: 7, btw: { ...DEFAULT_CONFIG } };
 
 async function withStore(
 	run: (agentDir: string, store: ReturnType<typeof createHerdrToolsConfigStore>) => Promise<void>,

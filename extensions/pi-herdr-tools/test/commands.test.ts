@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import fs, { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import fs, { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import timers, { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import { Compile } from "typebox/compile";
@@ -15,7 +15,7 @@ import { checkoutAdmission, HerdrRequestError, withWorktreeLock } from "@henryqw
 import { extensionConfigDir } from "@henryqw/pi-config-store";
 import { KeybindingsManager, stripTerminalSequences, TUI_KEYBINDINGS, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { CommandManager, commandParameters, registerCommands, validateRequest } from "../internal/commands.ts";
-import { atomicState, cancelJob, claimRunner, inventoryJobs, listJobs, outputTail, pruneJob, readJob, readPrivate, recordNonDispatch, recoveryDiagnostic, releaseJob, startUnreleased, terminal, writePrivate, type Job, type JobSpec } from "../internal/command-state.ts";
+import { atomicState, cancelJob, claimRunner, inventoryJobs, listJobs, outputTail, pruneExpired, pruneJob, readJob, readPrivate, recordNonDispatch, recoveryDiagnostic, releaseJob, startUnreleased, terminal, writePrivate, type Job, type JobSpec } from "../internal/command-state.ts";
 
 const runner = fileURLToPath(new URL("../dist/command-runner.js", import.meta.url));
 const policy = { runtimeMs: 5000, outputBytes: 4096, concurrency: 4, retainedJobs: 100 };
@@ -37,8 +37,8 @@ async function assertLockHeld(dir: string) {
 async function assertLockReleased(dir: string) {
 	assert.equal(await withWorktreeLock(dir, async () => true), true);
 }
-function start(dir: string, spec: JobSpec, runnerPath = runner) {
-	const child = spawn(process.execPath, [runnerPath, dir], { env: { ...process.env, HERDR_WORKSPACE_ID: spec.workspaceId,
+function start(dir: string, spec: JobSpec, runnerPath = runner, nodeArgs: string[] = []) {
+	const child = spawn(process.execPath, [...nodeArgs, runnerPath, dir], { env: { ...process.env, HERDR_WORKSPACE_ID: spec.workspaceId,
 		HERDR_TAB_ID: "tab", HERDR_PANE_ID: "pane", HERDR_SOCKET_PATH: spec.socketPath }, stdio: "ignore" });
 	const done = new Promise<number | null>((resolve) => child.once("exit", resolve));
 	return { child, done };
@@ -244,6 +244,62 @@ test("unclosed output from an escaped descendant records unknown instead of rele
 	assert.equal(job.result?.failure, "output_close_timeout");
 });
 
+test("a group probe that reports EPERM after a signal still proves cancellation", async (t) => {
+	const f = await fixture(t, "sleep 60");
+	// macOS reports EPERM, not ESRCH, while a signalled group holds only members that are not reaped yet.
+	const probe = join(f.root, "probe.mjs");
+	await writeFile(probe, `const kill = process.kill; let probes = 0;
+process.kill = (pid, signal) => { if (pid < 0 && signal === 0 && probes++ < 3) throw Object.assign(new Error("kill EPERM"), { code: "EPERM" }); return kill.call(process, pid, signal); };`);
+	const execution = start(f.dir, f.spec, runner, ["--import", pathToFileURL(probe).href]);
+	await waitFor(async () => (await readJob(f.dir)).state === "running" ? true : undefined);
+	await cancelJob(await readJob(f.dir));
+	assert.equal(await execution.done, 0);
+	const job = await readJob(f.dir);
+	assert.equal(job.state, "cancelled", JSON.stringify(job.result));
+	assert.equal(job.result?.signal, "SIGTERM");
+});
+
+test("a start-lock release that fails after the shell starts still stops the shell before the final record", async (t) => {
+	const marker = join(tmpdir(), `runner-marker-${randomUUID()}`);
+	t.after(() => rm(marker, { force: true }));
+	const f = await fixture(t, `sleep 1; touch ${marker}`);
+	const fault = join(f.root, "fault.mjs");
+	await writeFile(fault, `import fs from "node:fs"; import { syncBuiltinESMExports } from "node:module";
+const close = fs.closeSync; let failed = false;
+fs.closeSync = (descriptor) => { close(descriptor); if (!failed && fs.existsSync(process.argv[2] + "/output.log")) { failed = true; throw Object.assign(new Error("close EIO"), { code: "EIO" }); } };
+syncBuiltinESMExports();`);
+	assert.equal(await start(f.dir, f.spec, runner, ["--import", pathToFileURL(fault).href]).done, 1);
+	const job = await readJob(f.dir);
+	assert.deepEqual([job.state, job.result?.failure, job.result?.signal], ["failed", "runner_start_EIO", "SIGTERM"]);
+	await delay(1500);
+	await assert.rejects(fs.lstat(marker), { code: "ENOENT" }, "The shell must not run after the terminal record.");
+});
+
+test("a runner fault with proved termination is a named terminal failure; a missed heartbeat stops nothing", { timeout: 15_000 }, async (t) => {
+	const unstarted = await fixture(t, "sleep 60");
+	await writeFile(join(unstarted.dir, "output.log"), "", { mode: 0o600 });
+	assert.equal(await start(unstarted.dir, unstarted.spec).done, 1);
+	assert.deepEqual([(await readJob(unstarted.dir)).state, (await readJob(unstarted.dir)).result?.failure], ["failed", "runner_start_EEXIST"]);
+
+	const foreign = await fixture(t, "echo $$; sleep 60");
+	const stopped = start(foreign.dir, foreign.spec);
+	const pid = await waitFor(async () => { const text = await outputTail(await readJob(foreign.dir)); return /^\d+\n$/.test(text) ? Number(text) : undefined; });
+	await writeFile(join(foreign.dir, "cancel.json"), JSON.stringify({ id: randomUUID(), token: randomUUID() }), { mode: 0o600 });
+	await stopped.done;
+	assert.deepEqual([(await readJob(foreign.dir)).state, (await readJob(foreign.dir)).result?.failure], ["failed", "runner_control_error"]);
+	assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+
+	const healthy = await fixture(t, "sleep 3");
+	const execution = start(healthy.dir, healthy.spec);
+	await waitFor(async () => (await readJob(healthy.dir)).state === "running" ? true : undefined);
+	// The runner cannot write its next heartbeat into a read-only job directory.
+	await chmod(healthy.dir, 0o500);
+	await delay(1500);
+	await chmod(healthy.dir, 0o700);
+	assert.equal(await execution.done, 0);
+	assert.equal((await readJob(healthy.dir)).state, "succeeded");
+});
+
 test("one-time runner claim prevents duplicate execution, including after an interrupted claim", async (t) => {
 	const f = await fixture(t, "printf once; sleep 0.1", { createdAt: Date.now() - 30_000 });
 	const first = start(f.dir, f.spec);
@@ -336,7 +392,7 @@ test("Show output uses an awaited terminal view but keeps RPC notifications and 
 			customCalls++;
 			return new Promise<void>((done) => {
 				component = factory({ terminal: { rows: 300, columns: 100 }, requestRender() {} },
-					{ fg: (_color: string, text: string) => `\x1b[39m${text}\x1b[39m` },
+					{ fg: (_color: string, text: string) => `\x1b[39m${text}\x1b[39m`, bold: (text: string) => text },
 					new KeybindingsManager(TUI_KEYBINDINGS), done);
 				if (customCalls === 1) { component.render(100); component.handleInput!("\r"); }
 			});
@@ -1223,7 +1279,9 @@ test("a contended start gate fails closed in the installed runner before a shell
 	const f = await fixture(t, "printf must-not-start");
 	await withWorktreeLock(join(f.dir, "spec.json"), async () => {
 		assert.equal(await start(f.dir, f.spec).done, 1);
-		assert.equal((await readJob(f.dir)).state, "unknown");
+		// No shell started, so the record is final and holds no checkout.
+		const job = await readJob(f.dir);
+		assert.deepEqual([job.state, job.result?.failure], ["failed", "runner_start_ELOCKED"]);
 		await assert.rejects(fs.lstat(join(f.dir, "output.log")), { code: "ENOENT" });
 		await assertLockHeld(join(f.dir, "spec.json"));
 	});
@@ -1289,11 +1347,11 @@ async function commandUI(t: TestContext, finished = false, commandText = "true")
 		},
 		custom(factory: Function) {
 			return new Promise<string | undefined>((done, reject) => {
-				const component: Component = factory({ terminal: { rows: 20, columns: 200 }, requestRender() {} },
-					{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+				const component: Component = factory({ terminal: { rows: 23, columns: 200 }, requestRender() {} },
+					{ fg: (_color: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
 				const lines = component.render(200).map(stripTerminalSequences);
 				const option = lines.find(line => line.startsWith("→ "))!.slice(2).trimEnd();
-				void ctx.ui.select(lines[0]!.trimEnd(), [option]).then(answer => component.handleInput!(answer ? "\r" : "\x1b"), reject);
+				void ctx.ui.select(lines.find(line => !line.startsWith("─"))!.trimEnd(), [option]).then(answer => component.handleInput!(answer ? "\r" : "\x1b"), reject);
 			});
 		},
 	} };
@@ -1347,8 +1405,8 @@ test(`${pruned ? "pruned receipts" : "commands list"} pages to a later command a
 	});
 	Object.assign(ui.ctx.ui, { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
-			const component: Component = factory({ terminal: { rows: 10, columns: 100 }, requestRender() {} },
-				{ fg: (_color: string, text: string) => text }, keys, done);
+			const component: Component = factory({ terminal: { rows: 13, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text, bold: (text: string) => text }, keys, done);
 			const render = () => {
 				const lines = component.render(100).map(stripTerminalSequences);
 				assert.ok(lines.length <= 10);
@@ -1377,8 +1435,8 @@ test(`${pruned ? "pruned receipts" : "commands list"} searches command text and 
 	t.mock.method(ui.ctx.ui, "select", async (title: string) => { selectedId = title.split(":")[0]!; return undefined; });
 	Object.assign(ui.ctx.ui, { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
-			const component: Component = factory({ terminal: { rows: 10, columns: 100 }, requestRender() {} },
-				{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+			const component: Component = factory({ terminal: { rows: 13, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
 			component.render(100);
 			for (const character of "NEEDLE") component.handleInput!(character);
 			const lines = component.render(100).map(stripTerminalSequences);
@@ -1395,6 +1453,35 @@ test(`${pruned ? "pruned receipts" : "commands list"} searches command text and 
 	assert.equal(selectedId, target.spec.id);
 	assert.equal((await inventoryJobs(ui.manager.root)).length, 26, "Search must preserve every record.");
 	await assert.rejects(fs.lstat(join(target.dir, "cancel.json")), { code: "ENOENT" });
+});
+
+test("the commands list puts records that hold a checkout first, then the newest", async (t) => {
+	const ui = await batchUI(t);
+	const old = await ui.add({ createdAt: Date.now() - 3 * 86_400_000 });
+	const stuck = await fixture(t, "true", { sessionId: ui.spec.sessionId, checkout: ui.spec.checkout, callEntryId: ui.spec.callEntryId, createdAt: Date.now() - 7_200_000 });
+	await cp(stuck.dir, join(ui.manager.root, stuck.spec.id), { recursive: true });
+	ui.answers.push(undefined);
+	await ui.command.handler("", ui.ctx);
+	assert.deepEqual(ui.choices[0]!.map(row => row.replace(/^\d+\. /, "")),
+		[`${stuck.spec.id} unknown · 2h ago`, `${ui.spec.id} failed · now`, `${old.spec.id} failed · 3d ago`]);
+});
+
+test("age prunes only delivered output of finished commands", async (t) => {
+	const ui = await batchUI(t);
+	const pending = await ui.add(), live = await fixture(t, "true");
+	// An old command that ended a short time ago keeps its output.
+	const late = await ui.add({ createdAt: Date.now() - 30 * 86_400_000 });
+	assert.equal(await pruneExpired(ui.manager.root, Date.now() - 86_400_000), 0);
+	await rm(late.dir, { recursive: true });
+	await rm(join(pending.dir, "delivered.json"));
+	await cp(live.dir, join(ui.manager.root, live.spec.id), { recursive: true });
+	await writeFile(join(ui.manager.root, live.spec.id, "output.log"), "live", { mode: 0o600 });
+	assert.equal(await pruneExpired(ui.manager.root, Date.now() - 60_000), 0, "A recent command keeps its output.");
+	assert.equal(await pruneExpired(ui.manager.root, Date.now() + 60_000), 1);
+	assert.equal((await readJob(ui.dir)).pruned, true);
+	assert.equal(await outputTail(await readJob(pending.dir)), "saved output");
+	assert.equal(await outputTail(await readJob(join(ui.manager.root, live.spec.id))), "live");
+	assert.equal(await pruneExpired(ui.manager.root, Date.now() + 60_000), 0);
 });
 
 test("commands completion filters pruning paths without executing them", async (t) => {
@@ -1614,8 +1701,8 @@ test("terminal batch pruning bounds both menus and opens exact identities before
 	t.mock.method(ui.ctx.ui, "select", async () => { throw new Error("The unbounded terminal selector must not be used."); });
 	Object.assign(ui.ctx.ui, { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
-			const component: Component = factory({ terminal: { rows: 18, columns: 100 }, requestRender() {} },
-				{ fg: (_color: string, text: string) => text }, keys, done);
+			const component: Component = factory({ terminal: { rows: 21, columns: 100 }, requestRender() {} },
+				{ fg: (_color: string, text: string) => text, bold: (text: string) => text }, keys, done);
 			const render = () => {
 				const lines = component.render(100).map(stripTerminalSequences);
 				assert.ok(lines.length <= 18);
@@ -1779,7 +1866,7 @@ test(`terminal recovery keeps the full warning and requires a visible choice: ${
 	Object.assign(ui.ctx.ui, { custom(factory: Function) {
 		return new Promise<string | undefined>(done => {
 			const component: Component = factory({ terminal, requestRender() {} },
-				{ fg: (_color: string, text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
+				{ fg: (_color: string, text: string) => text, bold: (text: string) => text }, new KeybindingsManager(TUI_KEYBINDINGS), done);
 			const render = () => {
 				const lines = component.render(terminal.columns).map(stripTerminalSequences);
 				assert.ok(lines.length <= terminal.rows);

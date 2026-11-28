@@ -335,8 +335,8 @@ export async function startUnreleased<T>(dir: string, spec: JobSpec, start: () =
 		return start();
 	});
 }
-// Only the human command handler calls this after explicit warned confirmation.
-export async function pruneJob(dir: string, expected: JobSpec, check: () => void, checkScope: () => Promise<void>): Promise<void> {
+// The human command handler calls this after explicit warned confirmation. pruneExpired calls it by age, with confirmed false.
+export async function pruneJob(dir: string, expected: JobSpec, check: () => void, checkScope: () => Promise<void>, confirmed = true): Promise<void> {
 	await checkSpec(dir, expected);
 	await withWorktreeLock(join(dir, "spec.json"), () => withWorktreeLock(dir, async () => {
 		const verify = async () => {
@@ -357,12 +357,39 @@ export async function pruneJob(dir: string, expected: JobSpec, check: () => void
 		await verify();
 		// Persist permission before deletion. A receipt alone never reports output as absent.
 		if (!await controlRecord(dir, expected, "pruned")) await publishControl(dir, expected, "pruned", check);
+		else if (!confirmed) throw new Error("An interrupted deletion needs a person; output is preserved.");
 		const job = await verify();
 		check();
 		try { await unlink(job.outputPath); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		await syncDirectory(dir);
 	}));
+}
+// Age replaces the human confirmation. Every other pruning check still applies under the record locks.
+export async function pruneExpired(root: string, cutoff: number, limit = Infinity): Promise<number> {
+	await privateDirectory(root, true);
+	let removed = 0;
+	for (const name of await readdir(root)) {
+		if (removed >= limit) break;
+		if (!uuid.test(name)) continue;
+		const dir = join(root, name);
+		try {
+			const spec = await readSpec(dir);
+			// A command cannot finish before its creation, so a recent record needs no lock.
+			if (spec.createdAt >= cutoff) continue;
+			// An existing receipt means pruned output or an interrupted deletion that needs a person.
+			// These unlocked checks keep the pass short. pruneJob repeats them under the record locks.
+			if (await controlRecord(dir, spec, "pruned") || await readPrivateUnlocked(join(dir, "delivered.json")) === undefined) continue;
+			const job = await readJob(dir, false);
+			const finished = job.result?.updatedAt ?? job.nonDispatch?.updatedAt;
+			if (!terminal(job.state) || finished === undefined || finished >= cutoff) continue;
+			await pruneJob(dir, spec, () => {}, async () => {}, false);
+			removed++;
+		} catch {
+			// Unverified, undelivered, and locked records keep their output for a later pass or /commands prune.
+		}
+	}
+	return removed;
 }
 export async function inventoryJobs(root: string): Promise<CommandInventory[]> {
 	await privateDirectory(root, true);
@@ -419,7 +446,7 @@ export async function outputTail(job: Job): Promise<string> {
 	let handle;
 	try { handle = await open(job.outputPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
 	catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return await controlRecord(job.dir, job.spec, "pruned") ? "(Output has been pruned by the user.)" : "";
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return await controlRecord(job.dir, job.spec, "pruned") ? "(Output has been pruned.)" : "";
 		throw error;
 	}
 	try {

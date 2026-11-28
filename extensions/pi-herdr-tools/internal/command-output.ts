@@ -1,4 +1,5 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { footerRows, framedRows } from "./command-select.ts";
 import { ScrollView, Text, truncateToWidth, visibleWidth, VStack } from "@earendil-works/pi-tui";
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -34,6 +35,8 @@ export async function showCommandText(ctx: ExtensionContext, heading: string, co
 		const scroll = new ScrollView(body);
 		const title = new Text("", 0, 0);
 		const footer = new Text("", 0, 0);
+		const border = new DynamicBorder(text => theme.fg("border", text));
+		const framed = () => tui.terminal.rows >= framedRows;
 		let cachedWidth: number | undefined;
 		const hint = (action: Parameters<typeof keys.getKeys>[0]) => keys.getKeys(action).join("/");
 		const help = `${hint("tui.select.cancel")} close · ${hint("tui.select.up")}/${hint("tui.select.down")} scroll · ${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} page`;
@@ -46,18 +49,23 @@ export async function showCommandText(ctx: ExtensionContext, heading: string, co
 				}
 				const lines = scroll.render(width);
 				const rows = Math.max(1, tui.terminal.rows);
-				// Overlays use render(), not the fullscreen layout engine.
-				scroll.updateLayout(lines.length, rows >= 3 ? rows - 2 : 1, () => tui.requestRender());
+				// The editor area shares the screen with the transcript and the Pi footer. The whole view, with
+				// its heading, hints, and frame, takes half the terminal at most. Short content keeps the view short.
+				const chrome = Number(rows >= 3) + Number(rows >= 2) + (framed() ? 2 : 0);
+				scroll.updateLayout(lines.length, Math.max(1, Math.min(rows - footerRows, Math.floor(rows / 2)) - chrome), () => tui.requestRender());
 				return lines.slice(scroll.scrollTop, scroll.scrollTop + scroll.viewportHeight);
 			},
 			invalidate() { cachedWidth = undefined; scroll.invalidate(); },
 		};
 		const layout = new VStack();
 		return {
+			// Page keys scroll the output, not the transcript.
+			capturesViewportInput: true,
 			render(width: number): string[] {
 				layout.clear();
+				if (framed()) layout.addChild(border);
 				if (tui.terminal.rows >= 3) {
-					title.setText(theme.fg("accent", truncateToWidth(heading, width)));
+					title.setText(theme.fg("accent", theme.bold(truncateToWidth(heading, width))));
 					layout.addChild(title);
 				}
 				layout.addChild(viewport);
@@ -65,6 +73,7 @@ export async function showCommandText(ctx: ExtensionContext, heading: string, co
 					footer.setText(theme.fg("dim", truncateToWidth(help, width)));
 					layout.addChild(footer);
 				}
+				if (framed()) layout.addChild(border);
 				return layout.render(width);
 			},
 			handleInput(data: string): void {
@@ -76,5 +85,5 @@ export async function showCommandText(ctx: ExtensionContext, heading: string, co
 			},
 			invalidate() { cachedWidth = undefined; layout.invalidate(); },
 		};
-	}, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+	});
 }

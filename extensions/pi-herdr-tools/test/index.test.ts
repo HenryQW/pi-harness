@@ -130,7 +130,7 @@ type HerdrToolsConfig = Awaited<ReturnType<ConfigStorePort["update"]>>;
 class FakeConfigStore implements ConfigStorePort {
 	readonly extensionId = "pi-herdr-tools";
 	readonly path = "/agent/config/pi-herdr-tools/config.json";
-	config: HerdrToolsConfig = { runtimeMs: 600_000, outputBytes: 10_485_760, concurrency: 4, retainedJobs: 1000, btw: { ...DEFAULT_CONFIG } };
+	config: HerdrToolsConfig = { runtimeMs: 600_000, outputBytes: 10_485_760, concurrency: 4, retainedJobs: 1000, pruneAfterDays: 7, btw: { ...DEFAULT_CONFIG } };
 	issues: ConfigIssue[] = [];
 
 	loadSync(): ConfigLoad<HerdrToolsConfig> {
@@ -480,7 +480,7 @@ test("config routes before Herdr and model launch checks", async () => {
 test("config show, updates, and reset use nested btw and preserve command policy", async () => {
 	await withParentEnvironment(async (agentDir) => {
 		const configStore = createHerdrToolsConfigStore(agentDir);
-		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10 };
+		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10, pruneAfterDays: 3 };
 		await configStore.save({ ...policy, btw: { autoSubmit: true, tools: "none", split: "down" } });
 		const harness = await createHarness(new FakeStore(), herdrExec(), configStore);
 		const ctx = createCommandContext();
@@ -508,7 +508,7 @@ test("config reset repairs only btw issues and refuses malformed files or siblin
 		await mkdir(dirname(configStore.path), { recursive: true });
 		const harness = await createHarness(new FakeStore(), herdrExec(), configStore);
 		const command = harness.commands.get("btw")!;
-		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10 };
+		const policy = { runtimeMs: 1000, outputBytes: 2048, concurrency: 1, retainedJobs: 10, pruneAfterDays: 3 };
 		try {
 			for (const btw of [null, { autoSubmit: true, split: "left", "extra-key": 3 }]) {
 				const before = JSON.stringify({ ...policy, btw });

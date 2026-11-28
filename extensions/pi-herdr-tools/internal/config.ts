@@ -63,6 +63,7 @@ export function createHerdrToolsConfigStore(agentDir?: string) {
 			outputBytes: field(parsers.integer({ min: 1024, max: 104_857_600 }), 10_485_760),
 			concurrency: field(parsers.integer({ min: 1, max: 16 }), 4),
 			retainedJobs: field(parsers.integer({ min: 1, max: 10_000 }), 1000),
+			pruneAfterDays: field(parsers.integer({ min: 0, max: 3650 }), 7),
 			btw: field(parsers.object({
 				autoSubmit: field(parsers.boolean(), DEFAULT_CONFIG.autoSubmit),
 				tools: field(parsers.oneOf(TOOL_MODES), DEFAULT_CONFIG.tools),
