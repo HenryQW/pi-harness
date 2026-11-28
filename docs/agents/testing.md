@@ -43,9 +43,8 @@ Run all package test scripts when the comparison includes:
 - An unsupported dependency reference during version-only selection.
 - A removed or renamed file, a file type change, or an unresolved merge. These changes can also make the current dependency graph insufficient.
 - A file outside a current `extensions/*` or `packages/*` workspace. This includes the lockfile, workspace settings, root configuration, shared scripts, evaluation files, and website files.
-- An affected `@henryqw/pi-ask-question` package, including changes to its dependencies. Tests in `pi-herdr-tools` read this package without a declared dependency edge.
 
-Keep these cross-package test exceptions in `scripts/affected-workspaces.mjs` until the package dependency graph includes them. Add a safe fallback before adding any other cross-package test access that pnpm cannot see.
+Declare test dependencies on other workspaces in `devDependencies`. Load those packages through Node.js package resolution so pnpm can select their test consumers.
 
 ## Pull requests and main
 

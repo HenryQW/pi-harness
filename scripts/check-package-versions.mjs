@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { compareReleaseVersions, parseReleaseVersion } from './release-version.mjs'
 
 const revisions = process.argv.slice(2)
 if (revisions[0] === '--') revisions.shift()
@@ -61,23 +62,6 @@ function publishedChange(file, packageDir, packageJson) {
   return packageJson.files.some(entry => relative === entry || relative.startsWith(`${entry}/`))
 }
 
-const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/
-
-function parseSemver(version) {
-  if (!SEMVER.test(version)) return null
-  return version.split('.').map(Number)
-}
-
-function isUpgrade(previous, current) {
-  const prev = parseSemver(previous)
-  const curr = parseSemver(current)
-  if (!prev || !curr) return false
-  for (let i = 0; i < 3; i++) {
-    if (curr[i] !== prev[i]) return curr[i] > prev[i]
-  }
-  return false
-}
-
 const failures = []
 
 for (const packageDir of packageDirs) {
@@ -93,21 +77,18 @@ for (const packageDir of packageDirs) {
   const previous = packageJsonAt(mergeBase, manifest) ?? workspaceRoots
     .map(root => packageJsonAt(mergeBase, path.posix.join(root, path.posix.basename(packageDir), 'package.json')))
     .find(candidate => candidate?.name === current.name)
+  const curr = parseReleaseVersion(current.version)
   if (previous) {
-    const prev = parseSemver(previous.version)
-    const curr = parseSemver(current.version)
+    const prev = parseReleaseVersion(previous.version)
     if (!prev || !curr) {
       failures.push(`${current.name}: invalid semver ${!prev ? previous.version : current.version}`)
     } else if (previous.version === current.version) {
       failures.push(`${current.name}: version remains ${current.version}`)
-    } else if (!isUpgrade(previous.version, current.version)) {
+    } else if (compareReleaseVersions(curr, prev) < 0) {
       failures.push(`${current.name}: version must increase (was ${previous.version}, now ${current.version})`)
     }
-  } else {
-    // New package: current version still must be valid semver.
-    if (!parseSemver(current.version)) {
-      failures.push(`${current.name}: invalid semver ${current.version}`)
-    }
+  } else if (!curr) {
+    failures.push(`${current.name}: invalid semver ${current.version}`)
   }
 }
 

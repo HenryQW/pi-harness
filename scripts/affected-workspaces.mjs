@@ -3,10 +3,6 @@ import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-// This package has a consumer outside the declared dependency graph:
-// pi-herdr-tools/test/loading.test.ts.
-const crossPackageTestSources = new Set(["@henryqw/pi-ask-question"]);
-
 /** Return selected workspace names, or null when all workspace tests are required. */
 export function affectedWorkspaces(base, packageManagerExecPath) {
 	const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -101,9 +97,6 @@ export function affectedWorkspaces(base, packageManagerExecPath) {
 	const selected = new Set(list(filters).map(({ name }) => name));
 	if ([...requiredPackages].some((name) => !selected.has(name))) {
 		throw new Error("pnpm affected selection omitted a required package. Run pnpm test and check the selector.");
-	}
-	if ([...crossPackageTestSources].some((name) => selected.has(name))) {
-		return fullSuite("affected cross-package tests have no declared dependency edge");
 	}
 	return [...selected];
 }
