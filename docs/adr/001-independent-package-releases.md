@@ -17,4 +17,4 @@ Packages release without monorepo-wide coordination. Release policy and enforcem
 
 ## Workspace dependency order
 
-Use manifest dependencies and pnpm's workspace order for releases. An ordered list in the workflow can miss dependencies of a newly added package. A second dependency sorter would need to reproduce pnpm's workspace resolution rules. The release script asks pnpm for a complete order before it runs any publication command. An automated fixture checks dependency order and verifies that cycles prevent publication.
+Use manifest dependencies and pnpm's workspace order for releases. An ordered list in the workflow can miss dependencies of a newly added package. A second dependency sorter would need to reproduce pnpm's workspace resolution rules. The workspace install rejects cycles before the release script runs. The release script asks pnpm for a complete order before it runs any publication command. Automated fixtures check both rules.

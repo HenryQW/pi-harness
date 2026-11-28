@@ -4,6 +4,7 @@ packages:
   - website
 
 linkWorkspacePackages: true
+disallowWorkspaceCycles: true
 
 allowBuilds:
   esbuild: true

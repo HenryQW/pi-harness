@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-function release(t, dependencyFields = {}) {
+function releaseFixture(t, dependencyFields = {}) {
   const cwd = mkdtempSync(join(tmpdir(), 'publish-workspaces-'))
   t.after(() => rmSync(cwd, { recursive: true, force: true }))
   const write = (path, contents, mode) => {
@@ -15,7 +15,7 @@ function release(t, dependencyFields = {}) {
     writeFileSync(file, contents, { mode })
   }
   write('package.json', JSON.stringify({ private: true }))
-  write('pnpm-workspace.yaml', 'packages: [extensions/*, packages/*, website]\nlinkWorkspacePackages: true\n')
+  copyFileSync(new URL('../pnpm-workspace.yaml', import.meta.url), join(cwd, 'pnpm-workspace.yaml'))
   const manifests = [
     ['packages/core', { name: '@test/core', ...dependencyFields }],
     ['extensions/consumer', { name: '@test/consumer', dependencies: { '@test/core': '^1.0.0' } }],
@@ -37,21 +37,23 @@ if (action === 'view' && ['@test/core', '@test/consumer', '@test/unchanged'].inc
 }
 `, 0o755)
   write('bin/pnpm', '#!/bin/sh\nprintf "%s\\n" "Scope: all workspace projects"\nPATH="$RELEASE_TEST_PNPM_PATH" exec pnpm "$@"\n', 0o755)
-  return spawnSync(process.execPath, [fileURLToPath(new URL('./publish-workspaces.mjs', import.meta.url))], {
+  return {
     cwd, encoding: 'utf8', timeout: 30_000,
     env: { ...process.env, RELEASE_TEST_PNPM_PATH: process.env.PATH, PATH: `${join(cwd, 'bin')}${delimiter}${process.env.PATH}` },
-  })
+  }
 }
 
 test('publishes prerequisites before consumers and skips private or unchanged packages', t => {
-  const result = release(t)
+  const script = fileURLToPath(new URL('./publish-workspaces.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script], releaseFixture(t))
   assert.equal(result.status, 0, result.stderr || result.error?.message)
   assert.deepEqual(result.stdout.match(/^PUBLISHED .+$/gm), ['PUBLISHED @test/core', 'PUBLISHED @test/consumer'])
 })
 
-test('a publish dependency cycle fails before publication', t => {
-  const result = release(t, { peerDependencies: { '@test/consumer': '^1.0.0' } })
-  assert.equal(result.status, 1, result.stderr || result.error?.message)
-  assert.match(result.stderr, /ERR_PNPM_TASK_CYCLE/)
-  assert.doesNotMatch(result.stdout, /^PUBLISHED /m)
+test('the workspace install gate rejects dependency cycles', t => {
+  const fixture = releaseFixture(t, { peerDependencies: { '@test/consumer': '^1.0.0' } })
+  const result = spawnSync('pnpm', ['install', '--lockfile-only', '--ignore-scripts', '--store-dir', join(fixture.cwd, 'store')], fixture)
+  const output = result.stdout + result.stderr
+  assert.equal(result.status, 1, result.error?.message ?? output)
+  assert.match(output, /ERR_PNPM_DISALLOW_WORKSPACE_CYCLES/)
 })
