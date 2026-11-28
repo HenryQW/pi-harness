@@ -48,6 +48,7 @@ function setup(t: { after(fn: () => void): void }, config?: unknown) {
 	let leaf: string | null = null;
 	let idle = true;
 	let reloads = 0;
+	let renders = 0;
 	const start = () => handlers.get("session_start")!({}, ctx);
 	const ctx = {
 		hasUI: true,
@@ -70,7 +71,7 @@ function setup(t: { after(fn: () => void): void }, config?: unknown) {
 	};
 	const resolve = (toolName = "bash", next = () => base as ToolRenderers | undefined) => resolver!(toolName, next);
 	const row = (id: string, renderersFor: ToolRenderers, cmd: string, done = true, name = "bash", args: object = { cmd }) => {
-		const component = new ToolExecutionComponent(name, id, args, undefined, renderersFor, { requestRender() {} } as never, agentDir);
+		const component = new ToolExecutionComponent(name, id, args, undefined, renderersFor, { requestRender() { renders++; } } as never, agentDir);
 		if (done) component.updateResult({ content: [{ type: "text", text: "one\ntwo\nthree" }], isError: false } as never);
 		return component;
 	};
@@ -83,6 +84,7 @@ function setup(t: { after(fn: () => void): void }, config?: unknown) {
 		},
 		setIdle: (value: boolean) => { idle = value; },
 		getReloads: () => reloads,
+		getRenders: () => renders,
 	};
 }
 
@@ -127,11 +129,58 @@ test("with no config file, tools between agent replies fold into one line", asyn
 	assert.match(stripAnsi(row("outside-branch", resolve()!, "archived").render(60).join("\n")), /run archived/);
 	const partial = { content: [toolCall("c")] };
 	await handlers.get("message_update")!({ assistantMessageEvent: { type: "toolcall_start", partial, contentIndex: 0 } }, ctx);
-	assert.match(stripAnsi(row("c", renderers, "id").render(80).join("\n")), /▸ 1 tool: bash · running bash/);
+	assert.match(stripAnsi(row("c", renderers, "id").render(80).join("\n")), /▸ running bash · 1 tool: bash/);
 
 	// Expansion shows every row in full.
 	second.setExpanded(true);
 	assert.ok(second.render(60).map(stripAnsi).some((line) => line.includes("three")));
+});
+
+test("the collapsed group refreshes the running tool's elapsed time and stops when tools finish", async (t) => {
+	const { start, handlers, ctx, row, resolve, getRenders } = setup(t, { mode: "group" });
+	let now = 0;
+	t.mock.method(performance, "now", () => now);
+	t.mock.timers.enable({ apis: ["setInterval"] });
+	const tick = () => {
+		now += 1_000;
+		t.mock.timers.tick(1_000);
+	};
+	await start();
+	const begin = (id: string, toolName: string) => handlers.get("tool_execution_start")!({ toolCallId: id, toolName, args: {} }, ctx);
+	const end = (id: string, isError = false) => handlers.get("tool_execution_end")!({ toolCallId: id, isError }, ctx);
+
+	await begin("a", "bash");
+	const first = row("a", resolve()!, "sleep", false);
+	const summary = (width = 80) => stripAnsi(first.render(width).join("\n"));
+	assert.match(summary(24), /running bash 0s/);
+	const initialRenders = getRenders();
+	tick();
+	assert.equal(getRenders(), initialRenders + 1);
+	assert.match(summary(), /running bash 1s/);
+
+	await begin("b", "read");
+	assert.match(summary(), /running read 0s/);
+	await end("b", true);
+	first.setExpanded(true);
+	const expandedRenders = getRenders();
+	tick();
+	assert.equal(getRenders(), expandedRenders);
+	first.setExpanded(false);
+	assert.match(summary(), /running bash 2s/);
+
+	await end("a");
+	const finishedRenders = getRenders();
+	tick();
+	assert.equal(getRenders(), finishedRenders);
+	assert.doesNotMatch(summary(), /running/);
+	assert.match(summary(), /1 failed/);
+
+	await begin("c", "bash");
+	assert.match(summary(), /running bash 0s/);
+	await handlers.get("session_shutdown")!({}, ctx);
+	const shutdownRenders = getRenders();
+	tick();
+	assert.equal(getRenders(), shutdownRenders);
 });
 
 test("restores every tool call from an assistant message and counts usage once", async (t) => {

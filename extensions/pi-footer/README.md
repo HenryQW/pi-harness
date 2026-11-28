@@ -68,7 +68,7 @@ Run `/tool-rows line` or `/tool-rows off` when Pi is idle. A mode change reloads
 | `line` | The first line of each finished call. A running or failed call keeps its full row. |
 | `off` | Pi's own rows. |
 
-The summary line shows the skills whose `SKILL.md` file the agent read, and the input and output tokens of the messages that made the calls. The footer counts tokens the same way. A running call shows `running <tool>`.
+The summary line shows the skills whose `SKILL.md` file the agent read, and the input and output tokens of the messages that made the calls. The footer counts tokens the same way. A running call shows its elapsed time, such as `running bash 12s`. The summary updates each second while tools run.
 
 Press the tool-expansion key (`app.tools.expand`, `Ctrl+O` by default) to show every row in full. Pi can still display inline images in folded rows.
 

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Text, stripTerminalSequences, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { registerConfigReporting } from "@henryqw/pi-config-store";
+import { formatDuration } from "./format-duration.ts";
 import { formatTokens } from "./format-tokens.ts";
 import { createToolRowsConfigStore, TOOL_ROW_MODES, type ToolRowMode } from "./tool-rows-config.ts";
 
@@ -72,7 +73,8 @@ function unwrap(component: Component | undefined): Component | undefined {
 type RowState = "running" | "done" | "failed";
 /** The tool calls between two boundaries: a user message or agent text. */
 interface Group {
-	rows: Map<string, { name: string; state: RowState }>;
+	rows: Map<string, { name: string; state: RowState; startedAt?: number }>;
+	redraw?: () => void;
 	/** Skills that the agent read in this group, by SKILL.md folder name. */
 	skills: Set<string>;
 	/** Token usage of the assistant messages that made the calls, counted as the footer counts it. */
@@ -93,12 +95,17 @@ function summaryLine(group: Group, theme: Theme, pad: number, keyHint: KeyHint):
 	for (const row of rows) counts.set(row.name, (counts.get(row.name) ?? 0) + 1);
 	const names = [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name)).join(", ");
 	const failed = rows.filter((row) => row.state === "failed").length;
-	const running = rows.filter((row) => row.state === "running").at(-1);
-	let text = theme.fg("muted", `▸ ${rows.length} tool${rows.length === 1 ? "" : "s"}: ${names}`);
+	const pending = rows.filter((row) => row.state === "running");
+	const running = pending.filter((row) => row.startedAt !== undefined).at(-1) ?? pending.at(-1);
+	let text = theme.fg("muted", "▸ ");
+	if (running) {
+		const elapsed = running.startedAt === undefined ? "" : ` ${formatDuration(performance.now() - running.startedAt)}`;
+		text += theme.fg("accent", `running ${running.name}${elapsed} · `);
+	}
+	text += theme.fg("muted", `${rows.length} tool${rows.length === 1 ? "" : "s"}: ${names}`);
 	if (group.skills.size > 0) text += theme.fg("muted", ` · skills: ${[...group.skills].join(", ")}`);
 	if (group.input + group.output > 0) text += theme.fg("dim", ` · ↑ ${formatTokens(group.input)} ↓ ${formatTokens(group.output)}`);
 	if (failed > 0) text += theme.fg("error", ` · ${failed} failed`);
-	if (running) text += theme.fg("accent", ` · running ${running.name}`);
 	text += theme.fg("dim", " · ") + keyHint("app.tools.expand", "to expand");
 	return " ".repeat(pad) + text;
 }
@@ -133,6 +140,8 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 
 	const newGroup = (): Group => ({ rows: new Map(), skills: new Set(), input: 0, output: 0 });
 	const groupOf = new Map<string, Group>();
+	const activeCalls = new Map<string, Group>();
+	let redrawTimer: ReturnType<typeof setInterval> | undefined;
 	let current = newGroup();
 	let manager: ExtensionContext["sessionManager"] | undefined;
 	let observedLeaf: string | null = null;
@@ -164,14 +173,22 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	const stopTimer = () => {
+		clearInterval(redrawTimer);
+		redrawTimer = undefined;
+		activeCalls.clear();
+	};
+
 	const setState = (id: string, state: RowState) => {
 		const row = groupOf.get(id)?.rows.get(id);
 		if (row) row.state = state;
+		if (activeCalls.delete(id) && activeCalls.size === 0) stopTimer();
 	};
 
 	const grouping = (ctx: ExtensionContext) => ctx.mode === "tui" && mode === "group";
 	const rebuild = () => {
 		if (!manager) return;
+		stopTimer();
 		observedLeaf = manager.getLeafId();
 		groupOf.clear();
 		current = newGroup();
@@ -217,6 +234,7 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", rebuild);
 	pi.on("session_compact", rebuild);
+	pi.on("session_shutdown", stopTimer);
 
 	// Pi dispatches these events before drawing the corresponding rows.
 	pi.on("message_start", (event, ctx) => {
@@ -243,7 +261,13 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 		}
 	});
 	pi.on("tool_execution_start", (event, ctx) => {
-		if (grouping(ctx) && !event.parentToolCallId) join(event.toolCallId, event.toolName, event.args);
+		if (!grouping(ctx) || event.parentToolCallId) return;
+		const group = join(event.toolCallId, event.toolName, event.args);
+		group.rows.get(event.toolCallId)!.startedAt ??= performance.now();
+		activeCalls.set(event.toolCallId, group);
+		redrawTimer ??= setInterval(() => {
+			for (const activeGroup of new Set(activeCalls.values())) activeGroup.redraw?.();
+		}, 1_000).unref();
 	});
 	pi.on("tool_execution_end", (event, ctx) => {
 		if (grouping(ctx)) setState(event.toolCallId, event.isError ? "failed" : "done");
@@ -311,10 +335,11 @@ export default function toolRowsExtension(pi: ExtensionAPI): void {
 					return frame(baseCall(), theme, context, true);
 				}
 				const group = groupOf.get(context.toolCallId);
-				if (group && !context.expanded) {
-					return group.rows.keys().next().value === context.toolCallId
-						? new Summary(() => summaryLine(group, theme, context.outputPad, context.keyHint))
-						: new Hidden();
+				if (group?.rows.keys().next().value === context.toolCallId) {
+					group.redraw = context.expanded ? undefined : context.invalidate;
+					if (!context.expanded) return new Summary(() => summaryLine(group, theme, context.outputPad, context.keyHint));
+				} else if (group && !context.expanded) {
+					return new Hidden();
 				}
 				const clip = mode === "line" && !context.expanded && !context.isPartial && !context.isError;
 				return frame(clip ? new Clip(baseCall()) : baseCall(), theme, context, true);
