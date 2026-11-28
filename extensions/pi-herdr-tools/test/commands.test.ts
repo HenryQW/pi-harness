@@ -173,7 +173,8 @@ test("shared recovery refuses a pipe in completed history without holding its lo
 		assert.ok((await lstat(file)).isFIFO());
 		assert.deepEqual(await readFile(process.argv[2] + "/state.json"), before);
 		for (const dir of [manager.root, process.argv[2]]) assert.equal(await withWorktreeLock(dir, async () => true), true);`;
-	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, f.root, dir], { encoding: "utf8", timeout: 5000 });
+	// The limit only detects a read that waits on the pipe. A loaded machine needs several seconds to start this child.
+	const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, f.root, dir], { encoding: "utf8", timeout: 30_000 });
 	assert.equal(result.error, undefined, result.stderr);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 });
