@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, networkInterfaces, userInfo } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createConfigStore, field, parsers, registerConfigReporting } from "@henryqw/pi-config-store";
 import { Type } from "typebox";
 import { ApprovalDisconnectedError, approvalStatus, forward, isActionName, localApproval, opArgs, parseProbe, prepareSocketDirectory, probeOutput, probeScript, runOp, socketPath } from "../src/bridge.mjs";
-import { ApprovalLauncher, createLauncherKey, launcherAddress, launcherKey, launchUser, pairingToken, shellQuote, sshAlias } from "../src/launcher.mjs";
+import { ApprovalLauncher, launcherAddress, launcherKey, launchUser, pairingToken, sshAlias } from "../src/launcher.mjs";
 
 const extensionId = "pi-1password";
 const { name, version } = createRequire(import.meta.url)("../package.json") as { name: string; version: string };
@@ -17,6 +17,21 @@ const sshHost = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 const sshUser = /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/;
 const sshPort = /^(?:ssh:\/\/)(?:[a-zA-Z0-9_][a-zA-Z0-9_.-]*@)?([a-zA-Z0-9][a-zA-Z0-9_.-]*|\[[a-fA-F0-9:.]+\])(?::([0-9]{1,5}))?$/;
 const remoteProbe = `/bin/sh -c '${probeScript.replaceAll("'", "'\\''")}'`;
+
+function piHostArguments(origin: string) {
+	const user = userInfo().username;
+	const hints = new Set([origin.replace(/\.$/, ""), ...Object.values(networkInterfaces()).flatMap((addresses) =>
+		(addresses ?? []).filter(({ family, internal }) => family === "IPv4" && !internal).map(({ address }) => address),
+	)].filter((host) => sshHost.test(host)));
+	if (!sshUser.test(user) || !hints.size) {
+		throw new Error("Cannot determine the Pi host name or user. Use /1password pair <pi-host-alias>.");
+	}
+	return [user, Array.from(hints).join(",")];
+}
+
+async function hostProof(socket: string) {
+	return createHash("sha256").update(await pairingToken(socket)).digest("hex");
+}
 
 type Machine = { id: string; label: string; target: string; enabled: boolean };
 type ApprovalMachine = Machine & { identity: string };
@@ -134,15 +149,24 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 
 	async function requestRemote(selection: Extract<Selection, { kind: "remote" }>, input: Parameters<typeof forward>[1], signal: AbortSignal | undefined, ctx: ExtensionContext) {
 		const user = await verifyRemote(selection, ctx);
+		if (input.operation !== "action") await launcher.waitForStart(selection.socket);
 		const request = () => forward(selection.socket, input, signal, selection.machine.identity);
 		try {
 			return await request();
 		} catch (error) {
-			if (!(error instanceof ApprovalDisconnectedError) || !user) throw error;
+			if (!(error instanceof ApprovalDisconnectedError) || (!user && input.operation === "action")) throw error;
 			signal?.throwIfAborted();
-			await launcher.start(await launchRoute(selection, user));
+			if (user) {
+				await launcher.start(await launchRoute(selection, user));
+			} else {
+				const { machine, socket } = selection;
+				const args = ["_ondemand", socket, "--host-proof", await hostProof(socket), "--approval-mac", machine.identity];
+				signal?.throwIfAborted();
+				const command = `PATH=/opt/homebrew/bin:/usr/local/bin:$PATH; export PATH; exec npx --yes --ignore-scripts ${name}@${version} ${args.join(" ")}`;
+				await launcher.startOnDemand(socket, machine.identity, machine.target, command);
+			}
 			signal?.throwIfAborted();
-			if (await verifyRemote(selection, ctx) !== user) throw new Error("The paired launcher changed. Request approval again.");
+			if (await verifyRemote(selection, ctx) !== user) throw new Error("The approval route changed. Request approval again.");
 			return request();
 		}
 	}
@@ -160,7 +184,7 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 			const options = [
 				{ label: "status", value: "status", description: "Check the current approval route" },
 				{ label: "select", value: "select ", description: "Open the picker or enter a Herdr machine label" },
-				{ label: "pair", value: "pair ", description: "Set up on-demand approval for the selected Mac" },
+				{ label: "pair", value: "pair", description: "Get the approval setup command" },
 			];
 			if (process.platform === "darwin") {
 				options.push({ label: "local", value: "local", description: "Use this Mac for vault and item lists" });
@@ -170,8 +194,9 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 		},
 		async handler(args, ctx) {
 			const command = args.trim();
+			const pairing = command === "pair" || /^pair\s/u.test(command);
 			const explicit = /^select\s+(.+)$/.exec(command);
-			const requested = command === "select" ? "" : explicit?.[1] ?? command;
+			const requested = pairing || command === "select" ? "" : explicit?.[1] ?? command;
 			const notify = (heading: string, lines: string[] = [], level: "info" | "error" = "info") => {
 				const status = [`1Password | ${heading}`, `  Pi host: ${origin}`, ...lines].join("\n");
 				if (ctx.hasUI) ctx.ui.notify(status, level);
@@ -192,63 +217,49 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 					]);
 				} catch (error) {
 					if (error instanceof ApprovalDisconnectedError) {
-						if (user) {
-							notify("On-demand tunnel idle", [approvalMac, "", "A vault list, item list, or named action starts the terminal."]);
-							return;
-						}
-						notify("Tunnel disconnected", [
-							approvalMac,
-							"",
-							"For on-demand approval, run /1password pair <mac-login> <pi-host-alias>.",
-							"For a manual tunnel, use the command below.",
-							"",
-							`Run this in a local terminal on ${machine.label}:`,
-							`  npx --yes --ignore-scripts ${name}@${version} \\`,
-							"    serve PI_HOST_SSH_ALIAS \\",
-							`    ${socket}`,
-							"",
-							"Replace PI_HOST_SSH_ALIAS with the SSH address or alias for the Pi host.",
-							"Keep that terminal open. In Pi, run /1password status to check the connection.",
-						]);
+						notify("On-demand tunnel idle", [approvalMac, "", user
+							? "A vault list, item list, or named action starts the terminal."
+							: "A vault or item list starts approval through the active SSH tunnel."]);
 					} else {
 						notify("Status check failed", [approvalMac, "", error instanceof Error ? error.message : "Cannot check the approval terminal."], "error");
 					}
 				}
 			};
-			if (command === "pair" || /^pair\s/u.test(command)) {
-				const [user, host, extra] = command.split(/\s+/).slice(1);
-				if (!user || !host || extra || !sshAlias.test(host)) {
-					throw new Error("Use /1password pair <mac-login> <pi-host-alias>. Use the Approval Mac login and its SSH alias for this Pi host.");
+			const pairArgs = pairing ? command.split(/\s+/).slice(1) : [];
+			const [alias] = pairArgs;
+			if (pairArgs.length > 1 || (alias && !sshAlias.test(alias))) {
+				throw new Error("Use /1password pair <pi-host-alias>. Enter the SSH alias or user@hostname as used on the Approval Mac.");
+			}
+			async function preparePairing(selection: Extract<Selection, { kind: "remote" }>) {
+				let route: string[];
+				if (alias) {
+					route = [`  serve ${alias} \\`, `  ${selection.socket} \\`];
+				} else {
+					const [user, hints] = piHostArguments(origin);
+					route = [`  pair ${selection.socket} \\`, `  ${user} \\`, `  ${hints} \\`];
 				}
-				if (selected?.kind !== "remote") throw new Error("Select a remote approval Mac with /1password.");
-				const selection = selected;
-				await verifyRemote(selection, ctx);
-				const route = await launchRoute(selection, launchUser(user));
-				const publicKey = await createLauncherKey(route.key);
-				const proof = createHash("sha256").update(await pairingToken(selection.socket)).digest("hex");
-				const id = selection.machine.id;
-				await store.update((config) => ({ targets: { ...config.targets, [id]: {
-					socket: Object.hasOwn(config.targets, id) ? config.targets[id].socket : null,
-					launchUser: user,
-				} } }));
-				const companion = '"$HOME/.pi-1password-companion"';
-				notify("Authorize on the Approval Mac", [
+				const proof = await hostProof(selection.socket);
+				selected = selection;
+				notify("Start approval in Terminal", [
 					`  Approval Mac: ${selection.machine.label}`,
 					"",
-					"Paste this block into a local terminal on that Mac:",
-					...[
-						`npm install --prefix ${companion} --ignore-scripts ${name}@${version} &&`,
-						`  ${companion}/node_modules/.bin/pi-1password authorize`,
-						`  ${host} ${selection.socket}`,
-						`  ${proof}`,
-						`  ${user} ${selection.machine.identity}`,
-					].map((line) => `${line} \\`),
-					`  ${shellQuote(publicKey)}`,
+					`3. Copy this command into Terminal on ${selection.machine.label}. Press Return.`,
 					"",
-					"Then ask Pi for a vault list to test the connection.",
+					`npx --yes --ignore-scripts ${name}@${version} \\`,
+					...route,
+					"  --host-proof \\",
+					`  ${proof} \\`,
+					`  --approval-mac ${selection.machine.identity}`,
+					"",
+					"4. Keep Terminal open while you use Pi.",
 				]);
+			}
+			if (pairing && selected?.kind === "remote") {
+				await verifyRemote(selected, ctx);
+				await preparePairing(selected);
 				return;
 			}
+			if (pairing && !ctx.hasUI) throw new Error("Select an Approval Mac with /1password <machine> first.");
 			if (command === "status") {
 				const selection = selected;
 				if (!selection) {
@@ -266,7 +277,7 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 				return;
 			}
 			const selectLocal = command === "local";
-			const local = !requested || selectLocal ? await localApproval(probe) : null;
+			const local = !pairing && (!requested || selectLocal) ? await localApproval(probe) : null;
 			if (selectLocal) {
 				if (!local) throw new Error("Local approval requires macOS and the native op command.");
 				selected = { kind: "local", executable: local.executable };
@@ -299,7 +310,8 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 				return;
 			} else {
 				const current = selected?.kind === "local" ? "local" : selected?.machine.label ?? "none";
-				const answer = await ctx.ui.select(`1Password approval Mac (current: ${current})`, Array.from(options.keys()));
+				const title = pairing ? "2. Select the Approval Mac." : `1Password approval Mac (current: ${current})`;
+				const answer = await ctx.ui.select(title, Array.from(options.keys()));
 				if (answer === undefined) return;
 				choice = options.get(answer);
 			}
@@ -314,9 +326,14 @@ export default function onePassword(pi: ExtensionAPI, probe = probeOutput) {
 			reporter.report(ctx, store, loaded);
 			if (loaded.status !== "ok" || loaded.issues.length) throw new Error(`Fix ${store.path} before selecting an approval Mac.`);
 			const { path: socket, managed } = await approvalSocket(loaded.value.targets, choice.id);
+			const selection = { kind: "remote", machine: choice, socket } as const;
+			if (pairing) {
+				await preparePairing(selection);
+				return;
+			}
 			if (managed) await prepareSocketDirectory(socket);
-			selected = { kind: "remote", machine: choice, socket };
-			await showRemoteStatus(selected);
+			selected = selection;
+			await showRemoteStatus(selection);
 		},
 	});
 

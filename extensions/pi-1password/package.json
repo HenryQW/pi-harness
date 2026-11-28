@@ -1,12 +1,12 @@
 {
   "name": "@henryqw/pi-1password",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Route 1Password lists and approved actions to the Mac where you can approve them.",
   "keywords": ["pi-package", "pi", "1password"],
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "license": "MIT",
-  "files": ["LICENSE", "extensions", "src", "skills", "docs/remote-action-flow.svg", "README.md"],
+  "files": ["LICENSE", "extensions", "src", "skills", "docs/on-demand-approval-flow.svg", "docs/remote-action-flow.svg", "README.md"],
   "bin": { "pi-1password": "./src/cli.mjs" },
   "scripts": {
     "test": "node --test test/*.test.ts",

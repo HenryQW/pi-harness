@@ -327,7 +327,7 @@ export function approvalServer({ identity, execute, actions = new Map() }) {
 
 export class ApprovalDisconnectedError extends Error {
 	constructor() {
-		super("The approval Mac is disconnected. Start its Secure Shell tunnel or select another target.");
+		super("The approval Mac is disconnected. Run /1password pair to get the start command.");
 	}
 }
 
